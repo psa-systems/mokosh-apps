@@ -10,6 +10,8 @@ use crate::components::{
 use crate::utils::money::format_money_str;
 use crate::Route;
 
+// SPEC-14.5.7: every report field defaults on a missing or unparseable
+// value rather than failing deserialization.
 #[derive(Clone, Debug, Deserialize)]
 struct Bucket {
     #[serde(default)]
@@ -148,6 +150,7 @@ struct CustomSpec {
 }
 
 /// Generic columns / rows / totals envelope returned by the builder.
+// SPEC-14.5.7: columns/rows/totals default on a missing field.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 struct CustomResult {
     #[serde(default)]
@@ -171,6 +174,7 @@ enum ReportKind {
     Unsupported,
 }
 
+// SPEC-14.5.6: the report_type to backend report kind mapping.
 fn report_kind(report_type: &str) -> ReportKind {
     match report_type {
         "ticket-volume" | "sla-performance" | "resolution-time" | "tech-performance" => {
@@ -188,6 +192,7 @@ fn report_kind(report_type: &str) -> ReportKind {
 /// report pages here read five server reports between them, so an export is
 /// the server's report rather than the page's slice of it; the button says
 /// which. `None` for a kind the server does not serve.
+// SPEC-14.5.4: CSV/PDF export maps 1:1 to the server report a kind reads.
 fn export_key(kind: ReportKind) -> Option<&'static str> {
     match kind {
         ReportKind::Tickets => Some("tickets"),
@@ -210,6 +215,7 @@ struct ReportView {
 }
 
 /// Reports home page
+// SPEC-14.5.1: static catalog, no fetch and no write control.
 #[component]
 pub fn ReportsPage() -> Element {
     use_page_title("Reports");
@@ -311,6 +317,7 @@ fn ReportCategory(props: ReportCategoryProps) -> Element {
 }
 
 /// Report detail page
+// SPEC-14.5.2: report_type selects the title and the backend report kind.
 #[derive(Props, Clone, PartialEq)]
 pub struct ReportDetailPageProps {
     pub report_type: String,
@@ -355,6 +362,8 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
     // the builder and a fixed report. `build_view` is a pure no-op
     // (ReportKind::Unsupported -> default) for the builder type, so hoisting it
     // fires no network for that path.
+    // SPEC-14.5.14: called before the report-builder early return so hook
+    // order stays stable across a route param flip.
     let report_type = props.report_type.clone();
     let view_data = crate::hooks::use_remote_resource(move || {
         let rt = report_type.clone();
@@ -363,6 +372,8 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
 
     // The custom report builder is its own interactive surface, not a
     // fixed report.
+    // SPEC-14.5.3: report_type "report-builder" renders the interactive
+    // builder instead of a fixed report view.
     if props.report_type == "report-builder" {
         return rsx! {
             PageHeader {
@@ -404,6 +415,7 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                 // (PMS-876). Both carry the report's own gate server-side, so
                 // a finance-only report answers a technician's click with the
                 // role message rather than a file.
+                // SPEC-14.5.4: export buttons shown only for a supported kind.
                 if view.supported {
                     if let Some(key) = export_key(report_kind(&props.report_type)) {
                         crate::components::DownloadButton {
@@ -428,6 +440,7 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
         if is_loading {
             crate::components::DetailSkeleton {} // PMS-353
         } else if !view.supported {
+            // SPEC-14.5.13: unsupported report_type renders this exact message.
             Card {
                 p { class: "text-sm text-muted",
                     "This report isn't available yet. The reports service powers the ticket, time, billing, project, and client reports. The custom report builder is planned but not implemented."
@@ -519,6 +532,8 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
 /// (`$1,234.56`, `1,234.56 USD`), and percentages (`87%`). Returns
 /// `None` for free-form strings so the chart silently drops rows that
 /// don't parse rather than crashing on them.
+// SPEC-14.5.17: accepts int, decimal, currency and percent strings; a
+// non-parsing row is dropped from the chart but kept in the table.
 fn parse_chartable_value(raw: &str) -> Option<f64> {
     let cleaned: String = raw
         .chars()
@@ -552,6 +567,8 @@ fn chart_data_from_breakdown(rows: &[(String, String)]) -> Vec<BarChartDatum> {
 /// `.unwrap_or_default()` behavior - while propagating a failure caused by an
 /// unreachable server so the primary resource becomes `Unavailable` and the
 /// page renders the honest outage state instead of a report full of zeros.
+// SPEC-14.5.9: a reachable-server fetch failure degrades to T::default();
+// an unreachable-server failure propagates as Err to surface an outage.
 async fn fetch_or_default<T>(path: &str) -> Result<T, String>
 where
     T: Default + serde::de::DeserializeOwned,
@@ -571,12 +588,17 @@ where
 /// failure while the server is still reachable degrades to the type default
 /// via `fetch_or_default`. Billing requires a manager role, so a
 /// lower-privilege session still yields an empty (but supported) billing view.
+// SPEC-14.5.8: the billing report's role gate is server-side only; a 403
+// degrades to an empty but supported view, never a client-side role check.
+// SPEC-14.5.16: the five backend report endpoints this page reads, by kind.
 async fn build_view(report_type: &str) -> Result<ReportView, String> {
     match report_kind(report_type) {
         ReportKind::Tickets => {
             let tickets = fetch_or_default::<TicketsReport>("/reports/tickets").await?;
             // Secondary KPI aggregate: degrade to zeros on any failure (during
             // a real outage the primary fetch above already returned early).
+            // SPEC-14.5.10: a secondary aggregate failure logs an error and
+            // degrades to zero rather than failing the page.
             let dash = crate::hooks::fetch::api::get_authed::<DashReport>("/reports/dashboard")
                 .await
                 // The zeros this substitutes are indistinguishable from a
@@ -705,6 +727,7 @@ fn CustomReportBuilder() -> Element {
     // "Run report" POSTs a query spec (a read that computes a report, not a
     // create/update/delete), so it is intentionally left enabled like a
     // refresh control rather than gated on `can_mutate`.
+    // SPEC-14.5.5: the whitelisted source/dimension/measure catalog.
     let schema_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<Vec<SourceSchema>>("/reports/custom/schema").await
@@ -739,6 +762,8 @@ fn CustomReportBuilder() -> Element {
     let loading = schema_state.is_none();
     let current = sources.iter().find(|s| s.key == source()).cloned();
 
+    // SPEC-14.5.5: POSTs a spec capped at 500 rows; requires a source and at
+    // least one measure, dimensions and date range are optional.
     let run = move |_| {
         let src = source();
         let d = dims();
@@ -770,6 +795,7 @@ fn CustomReportBuilder() -> Element {
 
     rsx! {
         if load_err {
+            // SPEC-14.5.11: this exact message on a schema fetch failure.
             Card {
                 ErrorBanner {
                     "Could not load the report catalog. The reports service may be unavailable."
@@ -789,6 +815,8 @@ fn CustomReportBuilder() -> Element {
                             }
                             select {
                                 class: "w-full rounded-md border border-line bg-surface px-3 py-2 text-sm",
+                                // SPEC-14.5.15: changing the source clears
+                                // dimensions, measures and any prior result.
                                 onchange: move |e| {
                                     source.set(e.value());
                                     dims.set(Vec::new());
@@ -912,6 +940,7 @@ fn CustomReportBuilder() -> Element {
                                     "Configure the report on the left and run it to see results."
                                 }
                             },
+                            // SPEC-14.5.12: a failed run renders "Report failed: {e}".
                             Some(Err(e)) => rsx! {
                                 p { class: "text-sm text-red-600 dark:text-red-400", "Report failed: {e}" }
                             },

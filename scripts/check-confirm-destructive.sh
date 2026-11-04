@@ -18,11 +18,13 @@
 # out of reach here; a file that cannot be parsed fails loudly rather than
 # reporting clean.
 #
+# SPEC-2.1.1: invocable with no arguments, scanning the default root.
 # Usage: check-confirm-destructive.sh [ROOT | --self-test]
 #   ROOT defaults to `src`. `--self-test` re-runs the guard over generated
 #   fixtures to prove it still catches a bare-onclick DELETE, still parses a
 #   raw string containing quotes, and still refuses to report clean when it has
 #   lost track of the source (MAPPS-555).
+#   SPEC-2.1.3: this is that --self-test mode.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -208,6 +210,8 @@ report=$(
     }
     function process(   i, j, name, txt, sym, pass, t, lhs, rhs) {
       if (n_lines == 0) return
+      # SPEC-2.4.4: fail loudly, not silently pass, when the brace/string parse
+      # of a file cannot close, rather than reporting that file clean.
       if (depth != 0) {
         printf "%s: guard cannot parse this file (brace depth ended at %d)\n", file, depth
         bad = 1
@@ -254,6 +258,8 @@ report=$(
           if (rhs in deleters) deleters[lhs] = 1
         }
       }
+      # SPEC-2.4.4: fail any onclick: handler issuing a delete (directly or
+      # through a traced local alias) without a confirmation step first.
       for (i = 1; i <= n_lines; i++) {
         if (clean_line[i] !~ /onclick:/) continue
         j = region_end(i)

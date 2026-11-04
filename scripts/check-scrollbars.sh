@@ -19,10 +19,14 @@
 #     with `thin` and an alpha thumb; `scrollbar-gutter: stable` is forbidden (MAPPS-981).
 # And in the behavior script: exactly one `SCROLLBAR_IDLE_MS`, within 5000-7000.
 #
+# SPEC-2.1.1: invocable with no arguments, scanning the default targets.
 # Usage: check-scrollbars.sh [--self-test]
 #   Checks input.css and assets/scrollbar-autohide.js always. Also checks
 #   assets/styles.css when the Tailwind build has produced it; CI stubs it as
 #   an empty file, so an empty or absent build is not a failure.
+#   SPEC-2.1.3: --self-test is the self_test function below.
+#   SPEC-2.5.23: an empty or absent built assets/styles.css must NOT be
+#   treated as a failure.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -84,19 +88,26 @@ END {
     for (d = 1; d <= nd; d++) {
       decl = flat(decls[d])
       if (decl == "") continue
+      # SPEC-2.5.23: scrollbar-width:none or a hidden ::-webkit-scrollbar* rule.
       if (decl ~ ("^scrollbar-width" S ":" S "none"))
         report(rline[r], "\047" decl "\047 - hides the Firefox bar.")
       if (sel ~ /::-webkit-scrollbar/ && decl ~ ("^display" S ":" S "none"))
         report(rline[r], "\047" sel " { " decl " }\047 - hides the WebKit / Chromium bar.")
+      # SPEC-2.5.23: scrollbar-width/color declared outside the Firefox
+      # @supports block.
       if (!rff[r] && decl ~ ("^scrollbar-(width|color)" S ":"))
         report(rline[r], "\047" decl "\047 outside the `@supports not selector(::-webkit-scrollbar)` block - Chromium then drops the webkit styling (YOTUN-208).")
+      # SPEC-2.5.23: --sb-alpha referenced inside the Firefox block.
       if (rff[r] && decl ~ /--sb-alpha/)
         report(rline[r], "\047" decl "\047 - Firefox does not repaint `scrollbar-color` when only `--sb-alpha` changes; the Firefox block must switch the color literally.")
+      # SPEC-2.5.23: a non-transparent background painted on anything but the
+      # webkit thumb.
       if (sel ~ /::-webkit-scrollbar(-track|-track-piece|-corner)?([^a-z-]|$)/ && decl ~ ("^background(-color|-image)?" S ":")) {
         v = decl; sub(/^[^:]*:[[:space:]]*/, "", v)
         if (v !~ ("^(" CLEAR "|none)$"))
           report(rline[r], "\047" sel " { " decl " }\047 paints a scrollbar background - only the thumb may be painted.")
       }
+      # SPEC-2.5.23: scrollbar-gutter:stable.
       if (decl ~ ("^scrollbar-gutter" S ":" S "stable"))
         report(rline[r], "\047" decl "\047 reserves an empty strip on containers that never scroll (MAPPS-981).")
       if (sel ~ ("::-webkit-scrollbar" S "(,|$)")) {
@@ -117,6 +128,9 @@ END {
     }
     if (rown[r] == "@property --sb-alpha" && b ~ ("syntax" S ":" S "\"<number>\"") && b ~ ("inherits" S ":" S "true") && b ~ ("initial-value" S ":" S "1" S "(;|$)")) prop = 1
   }
+  # SPEC-2.5.23: the required declarations - 14px webkit scrollbar, transparent
+  # webkit track, alpha-mixed thumb colour, @property --sb-alpha, the Firefox
+  # block plus its color states, and html/body height:100%+overflow:hidden.
   if (!bar_w) report(0, "missing a 14px `::-webkit-scrollbar` width, the grab zone.")
   if (!bar_h) report(0, "missing a 14px `::-webkit-scrollbar` height, the horizontal grab zone.")
   if (!track) report(0, "missing a transparent `::-webkit-scrollbar-track`.")
@@ -137,6 +151,8 @@ css_problems() {
 }
 
 # The idle hold lives in the behavior script alone: declared once, in the agreed 5-7 s range.
+# SPEC-2.5.23: SCROLLBAR_IDLE_MS declared other than once, or outside
+# 5000-7000ms.
 js_problems() {
   local decls count ms
   if [ ! -r "$1" ]; then

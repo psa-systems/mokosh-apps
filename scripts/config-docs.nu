@@ -46,6 +46,8 @@ def is-version [v: any] {
     ($v | describe) == "string" and ($v =~ '^v\d+\.\d+\.\d+$')
 }
 
+# SPEC-2.7.5: integrates this repo's git tags with variables.toml/entrypoint
+# facts to decide unreleased-vs-tagged releases and to form release-notes' links.
 def release-tags [] {
     ^git tag --list "v*" | lines | where {|t| is-version $t }
 }
@@ -62,6 +64,8 @@ def release-anchor [v: string] {
 
 # Build the full catalog from variables.toml. Unlike mokosh-server, mokosh-apps
 # has no Rust registry, so the TOML is the full source of truth.
+# SPEC-2.2.1: reads [[variable]] and [[removed]] records (name, since,
+# required, required_since, deprecated / removed fields) into the catalog.
 def build-catalog [meta: record] {
     let vars = ($meta.variable? | default [] | each {|v|
         {
@@ -88,18 +92,23 @@ def build-catalog [meta: record] {
     $vars | append $removed
 }
 
+# SPEC-2.5.27 / SPEC-2.5.28: these are the catalog/change-record rules both
+# `check` and (pre-write) `generate` apply to the facts.
 def catalog-errors [catalog: list] {
     mut errors = []
+    # SPEC-2.5.27: a catalog name declared more than once.
     let dupes = ($catalog | group-by name | items {|k, v| { name: $k, n: ($v | length) } } | where n > 1)
     for d in $dupes {
         $errors = ($errors | append $"($d.name) is declared ($d.n) times in ($VARIABLES_FILE)")
     }
     for v in $catalog {
+        # SPEC-2.5.27: a release field not shaped vX.Y.Z.
         for field in [$v.since $v.required_since ($v.deprecated?.release?) ($v.removed?.release?)] {
             if $field != null and not (is-version $field) {
                 $errors = ($errors | append $"($v.name): '($field)' is not a vX.Y.Z release")
             }
         }
+        # SPEC-2.5.27: required_since set without required, or not later than since.
         if $v.required_since != null and (is-version $v.required_since) and (is-version $v.since) {
             if not $v.required or (vnum $v.required_since) <= (vnum $v.since) {
                 $errors = ($errors | append $"($v.name): required_since needs `required` and a release after since")
@@ -116,6 +125,9 @@ def default-action [e: record] {
     if $e.required { "Required: set it before the container starts." } else { "Optional. Leave it unset to keep the default." }
 }
 
+# SPEC-2.2.1: derives the flat (release, group, variable) changelog entry
+# list, each carrying required-as-of-release and a breaking level of "",
+# "wont-start", or "feature-off".
 def build-entries [catalog: list, meta: record] {
     mut auto = []
     for v in $catalog {
@@ -139,22 +151,26 @@ def build-entries [catalog: list, meta: record] {
     mut explicit = []
     let names = ($catalog | get name)
     for c in ($meta.change? | default []) {
+        # SPEC-2.5.27: a [[change]] record naming an unknown group.
         if not ($c.group in $GROUPS) {
             $errors = ($errors | append $"change record for ($c.release): group '($c.group)' is not one of ($GROUPS | str join ', ')")
             continue
         }
+        # SPEC-2.5.27: a [[change]] record with an unrecognized breaking level.
         let level = ($c.breaking? | default "")
         if not ($level in ["" "wont-start" "feature-off"]) {
             $errors = ($errors | append $"change record ($c.release) ($c.group): breaking '($level)' is not wont-start or feature-off")
             continue
         }
         for var in ($c.variables? | default []) {
+            # SPEC-2.5.27: a [[change]] record naming a variable not in the catalog.
             if not ($var in $names) {
                 $errors = ($errors | append $"change record ($c.release) ($c.group) names ($var), which is not in ($VARIABLES_FILE)")
                 continue
             }
             let hit = ($auto | enumerate | where {|e| $e.item.release == $c.release and $e.item.group == $c.group and $e.item.var == $var })
             if ($hit | is-empty) {
+                # SPEC-2.5.27: for a non-Changed group, a [[change]] record with no matching derived fact.
                 if $c.group != "Changed" {
                     $errors = ($errors | append $"change record ($c.release) ($c.group) ($var) does not match the facts: check its since / deprecated / removed release")
                     continue
@@ -179,9 +195,11 @@ def build-entries [catalog: list, meta: record] {
         if ($e.action | is-empty) { $e | update action (default-action $e) } else { $e }
     })
     for e in $all {
+        # SPEC-2.5.27: a breaking entry missing its required action text or issue id.
         if ($e.level | is-not-empty) and (($e.action | is-empty) or not ($e.issue =~ '^[A-Z]+-\d+$')) {
             $errors = ($errors | append $"($LEVELS | get $e.level) ($e.group) ($e.var) in ($e.release) needs a [[change]] record in ($VARIABLES_FILE) with the operator action and the issue that introduced it")
         }
+        # SPEC-2.5.27: a feature-off breaking entry missing its feature name.
         if $e.level == "feature-off" and ($e.feature | str trim | is-empty) {
             $errors = ($errors | append $"Breaking: feature off ($e.group) ($e.var) in ($e.release) needs `feature` naming what stops working")
         }
@@ -272,6 +290,8 @@ def recent-bounds [lines: list] {
 
 # -- Check ----------------------------------------------------------------------
 
+# SPEC-2.5.27: malformed, missing, duplicated, or extra "All variables" rows,
+# or rows whose anchor, Required, or Added-in column disagrees with the facts.
 def check-list [lines: list, catalog: list] {
     let bounds = (list-bounds $lines)
     if $bounds == null { return [$"($DOC_FILE): no '($LIST_HEADING)' section"] }
@@ -313,6 +333,9 @@ def check-list [lines: list, catalog: list] {
 
 const ENTRY_RE = r#'^- (?:\*\*Breaking: (?<b>won't start|feature off):\*\* )?\[`(?<var>[A-Z][A-Z0-9_]*)`\]\(#(?<anchor>[a-z0-9-]+)\) \(Required: (?<req>yes|no)\) - (?<text>.+)$'#
 
+# SPEC-2.5.27: malformed "Recently added" entries, entries naming a change
+# the facts do not record, or whose Required/Breaking-mark/issue/feature/
+# anchor text disagrees with the facts, plus a current-window fact missing an entry.
 def check-recent [lines: list, entries: list, tags: list] {
     let bounds = (recent-bounds $lines)
     if $bounds == null { return [$"($DOC_FILE): the Recently added markers are missing or out of order; run `just config-docs`"] }
@@ -376,6 +399,8 @@ def check-recent [lines: list, entries: list, tags: list] {
 
 # -- Guard: entrypoint reads vs variables.toml -----------------------------------
 
+# SPEC-2.7.5: reads the actual ${MOKOSH_...} reads in oci-build/entrypoint.sh
+# to integrate against the variables.toml catalog.
 def discover-entrypoint [text: string] {
     # `${MOKOSH_FOO}`, `${MOKOSH_FOO:-}`, `${MOKOSH_FOO:-default}`. The
     # entrypoint's `window.__MOKOSH_CONFIG__ = { ... }` writes the field
@@ -388,15 +413,18 @@ def discover-entrypoint [text: string] {
         | sort
 }
 
+# SPEC-2.5.27: entrypoint-vs-catalog name mismatches, both directions.
 def guard-errors [discovered: list, catalog: list] {
     let listed = ($catalog | where source == "variables.toml" | get name)
     let removed = ($catalog | where source == "removed" | get name)
     mut errors = []
     for n in $discovered {
+        # a name read by the entrypoint but absent from the catalog.
         if ($n in $listed) or ($n in $removed) or ($n in ($NOT_OPERATOR_CONFIG | columns)) { continue }
         $errors = ($errors | append $"($n) is read in ($ENTRYPOINT_FILE) but is not in ($VARIABLES_FILE); add a [[variable]] with since and required, or a NOT_OPERATOR_CONFIG reason in scripts/config-docs.nu")
     }
     for n in $listed {
+        # a catalog name the entrypoint no longer reads.
         if not ($n in $discovered) {
             $errors = ($errors | append $"($VARIABLES_FILE): ($n) is listed but ($ENTRYPOINT_FILE) does not read it; move it to [[removed]] or drop it")
         }
@@ -420,10 +448,12 @@ def not-operator-config-dead [discovered: list] {
 
 # -- Generate -------------------------------------------------------------------
 
+# SPEC-2.2.2: maintains exactly two generated regions of docs/configuration.md.
 def generate-doc [doc: string, catalog: list, entries: list, tags: list] {
     mut lines = ($doc | lines)
     let rb = (recent-bounds $lines)
     if $rb == null { error make { msg: $"($DOC_FILE): add the two marker lines under '## Recently added' first:\n($BEGIN)\n($END)" } }
+    # SPEC-2.2.2: region 1, the BEGIN/END GENERATED block under "Recently added".
     let recent = (render-recent $entries $tags | lines)
     $lines = ($lines | first $rb.start | append $recent | append ($lines | skip ($rb.stop + 1)))
 
@@ -431,6 +461,8 @@ def generate-doc [doc: string, catalog: list, entries: list, tags: list] {
     if $lb == null { error make { msg: $"($DOC_FILE): no '($LIST_HEADING)' section" } }
     mut seen = []
     mut last_row: any = null
+    # SPEC-2.2.2: region 2, only the Required/Added-in columns of each All
+    # variables row; every other column and the rest of the file is left untouched.
     for i in ($lb.start + 1)..<($lb.stop) {
         let line = ($lines | get $i)
         let row = ($line | parse --regex $ROW_RE)
@@ -463,6 +495,7 @@ def load-repo [] {
     { catalog: $catalog, entries: $built.entries, errors: ((catalog-errors $catalog) | append $built.errors), tags: (release-tags) }
 }
 
+# SPEC-2.7.5: reads oci-build/entrypoint.sh for integration with variables.toml.
 def entrypoint-text [] {
     open --raw $ENTRYPOINT_FILE | decode utf-8
 }
@@ -474,16 +507,23 @@ def fail-on [errors: list, what: string] {
     exit 1
 }
 
+# SPEC-2.1.7: exactly five subcommands (generate, check, since, release-notes,
+# self-test) are exposed via the `main`/`main <name>` defs below; no
+# subcommand falls through to this usage line and exits 0.
 def main [] {
     print "usage: nu scripts/config-docs.nu <generate|check|since <version>|release-notes <version>|self-test>"
 }
 
 def "main generate" [] {
     let repo = (load-repo)
+    # SPEC-2.5.28: generate fails before writing anything if the facts are inconsistent.
     fail-on $repo.errors "the configuration facts are inconsistent"
     let doc = (open --raw $DOC_FILE | decode utf-8)
     let next = (generate-doc $doc $repo.catalog $repo.entries $repo.tags)
+    # SPEC-2.5.28: leaves the file unmodified and prints "is current" when
+    # regeneration is byte-identical.
     if $next == $doc { print $"($DOC_FILE) is current"; return }
+    # SPEC-2.8.4: the only write to a version-controlled file in this section.
     $next | save --force $DOC_FILE
     print $"rewrote the generated parts of ($DOC_FILE)"
 }
@@ -503,6 +543,7 @@ def "main check" [] {
     print $"config docs OK: ($repo.catalog | length) variables, ($repo.entries | length) changelog entries"
 }
 
+# SPEC-2.5.29: rejects a <version> not shaped vX.Y.Z (vnum errors on it).
 def "main since" [
     version: string
     --json
@@ -532,6 +573,10 @@ def "main since" [
     print $"($rows | length) changes after ($version): ($wont) WON'T START \(apply before restarting), ($off) FEATURE OFF \(review and acknowledge before restarting)."
 }
 
+# SPEC-2.5.29: performs no vX.Y.Z validation on <version>; an unmatched
+# version falls through below and is reported the same as a real release
+# with zero changes. This is release-notes' stated behavior, not a defect.
+# SPEC-2.7.5: forms the repo link from `ref` (tag vs branch) for release-notes.
 def "main release-notes" [
     version: string
     --ref: string
