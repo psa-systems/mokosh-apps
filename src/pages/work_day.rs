@@ -487,7 +487,7 @@ pub fn WorkDayStrip() -> Element {
         #[cfg(not(feature = "app"))]
         {
             let _ = path;
-            None::<DayLoad>
+            Some(DayLoad::ModulesOff)
         }
     });
     // SPEC-9.6.14: restarts the day fetch every 60 seconds.
@@ -795,6 +795,19 @@ pub fn WorkDayStrip() -> Element {
                                     }
                                 }
                             }
+                        }
+                    }
+                    // MAPPS-1206: the picker above also carries the "My day"
+                    // reset. If the roster resolves empty (transient failure
+                    // or a race) while an admin already has `picked_user` set,
+                    // the whole `<select>` goes away and there is no way back
+                    // to one's own day. Keep a reset affordance reachable in
+                    // that case, independent of roster state.
+                    if is_admin && picked_user().is_some() && users.is_empty() {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| picked_user.set(None),
+                            "Back to my day"
                         }
                     }
                 }
