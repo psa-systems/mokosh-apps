@@ -471,7 +471,7 @@ pub fn WorkDayStrip() -> Element {
         #[cfg(not(feature = "app"))]
         {
             let _ = path;
-            None::<DayLoad>
+            Some(DayLoad::ModulesOff)
         }
     });
     use_future(move || async move {
