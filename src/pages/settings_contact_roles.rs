@@ -22,6 +22,12 @@
 //!   - `DELETE /api/v1/portal-roles/{id}`
 //!   - `GET  /api/v1/portal-roles/capabilities`  -> `ListCapabilitiesResponse`
 //!
+//! Both pages are admin only (MAPPS-1211). The server's own admin check on
+//! `/portal-roles` is the authorization boundary; the in-page gate is what
+//! keeps a non-admin who reaches either URL directly from being shown an
+//! editor they cannot save from, and it is what every sibling settings page
+//! already did.
+//!
 //! Every mutation runs `use_can_mutate` so the write buttons flip off
 //! when the server flag is down (same posture as the rest of Settings).
 //! Non-web builds compile: every `web_sys` and `hooks::fetch::api::*`
@@ -35,6 +41,7 @@ use crate::components::{
     ErrorBanner, IconSize, Input, PageHeader, PlusIcon, Table, TableBody, TableCell, TableEmpty,
     TableHead, TableHeader, TableLoading, TableRow,
 };
+use crate::pages::settings::AdminOnlyNotice;
 use crate::Route;
 
 /// Comma-list of a role's capability keys, ellipsized past this many
@@ -143,10 +150,30 @@ fn truncate_capability_list(caps: &[String]) -> String {
 // ============================================================================
 
 /// `/settings/contact-roles` - list every portal role in the tenant.
+///
+/// MAPPS-1211: admin only in the page, not only in the Settings hub. The
+/// surface registration's `StaffAdmin` visibility hides the tile; it cannot
+/// stop a bookmark, a back button or a pasted link, and this page's own
+/// module doc has always described an MSP-admin editor.
+///
+/// Split into a gate and a body for the reason every sibling page is
+/// (MAPPS-602): the early return has to sit where the hook count cannot
+/// change across renders. `use_is_admin` reads the auth context, so it
+/// answers false until `/me` resolves and true after. With the body's hooks
+/// in the same component, the render before `/me` lands would run four hooks
+/// fewer than the render after it, and dioxus panics on the hook index. WASM
+/// does not unwind that panic, so the page stops responding entirely.
 #[component]
 pub fn ContactRolesListPage() -> Element {
     use_page_title("Contact Roles");
+    if !crate::pages::settings::use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Contact Roles" } };
+    }
+    rsx! { ContactRolesListBody {} }
+}
 
+#[component]
+fn ContactRolesListBody() -> Element {
     let mut resource = use_resource(|| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // Match the rest of Settings: auto-refetch the instant the
@@ -448,15 +475,32 @@ enum RoleLoad {
 /// `/settings/contact-roles/{id}` - create (id == "new") or edit a
 /// portal role. Loads the capability descriptor list on mount so the
 /// checkboxes carry human-friendly labels + tooltips grouped by domain.
+///
+/// MAPPS-1211: admin only, the same gate and the same split as the list page.
+/// The deep link this one answers is the more reachable of the two: an edit
+/// URL carries a role id, so it is the one that lands in a browser history
+/// and in a pasted link.
 #[component]
 pub fn ContactRoleEditPage(id: String) -> Element {
-    let is_new = id == "new";
-    let title = if is_new {
+    let title = if id == "new" {
         "New Portal Role"
     } else {
         "Edit Portal Role"
     };
     use_page_title(title.to_string());
+    if !crate::pages::settings::use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: title.to_string() } };
+    }
+    rsx! { ContactRoleEditBody { id } }
+}
+
+#[component]
+fn ContactRoleEditBody(id: String) -> Element {
+    let title = if id == "new" {
+        "New Portal Role"
+    } else {
+        "Edit Portal Role"
+    };
 
     // Existing-role fetch: skipped when `id == "new"` (short-circuits
     // to `RoleLoad::New`). A network/HTTP failure lands as
@@ -922,6 +966,96 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
 // ============================================================================
 // Tests
 // ============================================================================
+
+/// MAPPS-1211: both pages refuse a non-admin before they render anything.
+///
+/// `scripts/check-admin-gate.sh` covers the list page, because that one has a
+/// `SETTINGS_SURFACES` entry for the script to start from. The edit page has
+/// none: it is a child route reached from the list, so nothing in the registry
+/// names it and no repository-wide scan can find it. It is also the more
+/// reachable of the two by deep link, since an edit URL carries a role id.
+/// That asymmetry is why this guard is here as well as there.
+///
+/// Scanned as source rather than asserted through a render because what it
+/// defends is an ORDER: the refusal has to come before the body, and a render
+/// test that mounted the gated page would prove only that the gate answers,
+/// not that nothing ran ahead of it.
+#[cfg(test)]
+mod mapps1211_admin_gate_tests {
+    /// The body of `fn <name>(` in this file, by brace depth.
+    fn body_of<'a>(src: &'a str, name: &str) -> &'a str {
+        let at = src
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("{name} is not defined in this file"));
+        let open = src[at..].find('{').expect("a body") + at;
+        let mut depth = 0usize;
+        for (i, c) in src[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &src[open..=open + i];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("{name}'s body does not close");
+    }
+
+    fn head() -> &'static str {
+        let src = include_str!("settings_contact_roles.rs");
+        &src[..src.find("/// MAPPS-1211: both pages").expect("this module")]
+    }
+
+    /// The refusal sits above the body, in both pages.
+    #[test]
+    fn both_pages_refuse_a_non_admin_before_rendering_a_body() {
+        for (page, body) in [
+            ("ContactRolesListPage", "ContactRolesListBody"),
+            ("ContactRoleEditPage", "ContactRoleEditBody"),
+        ] {
+            let src = body_of(head(), page);
+            let gate = src
+                .find("if !crate::pages::settings::use_is_admin() {")
+                .unwrap_or_else(|| panic!("{page} renders its body to a non-admin: {src}"));
+            assert!(
+                src.contains("AdminOnlyNotice {"),
+                "{page} refuses without saying why: {src}"
+            );
+            let renders = src
+                .find(&format!("{body} {{"))
+                .unwrap_or_else(|| panic!("{page} does not delegate to {body}: {src}"));
+            assert!(gate < renders, "{page} renders {body} first: {src}");
+        }
+    }
+
+    /// And the split is real: the work moved into the body rather than the
+    /// gate being parked in front of a shell that still does the work itself.
+    /// A non-admin must not cause a `/portal-roles` request, which is both a
+    /// guaranteed 403 in the log and a hook the gate would then sit below.
+    #[test]
+    fn neither_page_fetches_before_the_gate() {
+        for (page, body) in [
+            ("ContactRolesListPage", "ContactRolesListBody"),
+            ("ContactRoleEditPage", "ContactRoleEditBody"),
+        ] {
+            let gate_src = body_of(head(), page);
+            for forbidden in ["use_resource", "portal-roles", "use_server_reachable"] {
+                assert!(
+                    !gate_src.contains(forbidden),
+                    "{page} does {forbidden} ahead of its own gate: {gate_src}"
+                );
+            }
+            let body_src = body_of(head(), body);
+            assert!(
+                body_src.contains("use_resource"),
+                "{body} holds no loads, so the split moved nothing"
+            );
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

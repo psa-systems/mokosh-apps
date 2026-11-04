@@ -36,6 +36,11 @@
 #   ROOT defaults to `src`. `--self-test` (MAPPS-437) re-runs the guard over
 #   generated fixtures to prove it still rejects an undefined name and still
 #   accepts the defined ones, so a future edit cannot quietly neuter it.
+#
+# SPEC-2.1.1: invocable with no arguments, scanning the default root (src)
+# and exiting with a `guard: clean`/`guard: FAIL (<reason>)` line.
+# SPEC-2.1.3: --self-test proves the detection logic against generated
+# fixtures covering both the violation and the corrected shape.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -101,6 +106,9 @@ prefixes='bg|text|border|ring|divide|fill|stroke|outline|placeholder|caret|decor
 # offset, so those come off before the name is judged.
 sides='offset|l|t|r|b|x|y|s|e'
 
+# SPEC-2.5.9: detect any colour-shaped Tailwind utility whose bare colour
+# name is neither an input.css --color-* token nor a recognized non-colour
+# keyword, because Tailwind v4 emits no CSS at all for an unresolvable name.
 hits=$(grep -rnE "($prefixes)-[a-z]" "$root" --include='*.rs' \
   | awk -v pat="($prefixes)-[a-z][a-z0-9-]*" \
         -v defined="^($defined_pattern)$" \
@@ -112,6 +120,7 @@ hits=$(grep -rnE "($prefixes)-[a-z]" "$root" --include='*.rs' \
         loc = substr($0, 1, RLENGTH - 1)
         rest = substr($0, RLENGTH + 1)
         if (rest ~ /^[[:space:]]*\/\//) next
+        # SPEC-2.3.1: skip the violation on any line carrying theme-guard-allow.
         if (index($0, "theme-guard-allow")) next
 
         while (match(rest, pat)) {

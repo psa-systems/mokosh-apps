@@ -15,6 +15,9 @@
 # (the original bug was a bare `localStorage.theme` property read, not a
 # mismatched constant).
 #
+# SPEC-2.1.1: no-argument invocation, default root, and the clean/FAIL stdout
+# line contract.
+#
 # Usage: check-theme-storage-key.sh [--self-test | --compare RUST_FILE JS_FILE]
 #   No argument checks this repository's own pair.
 #   `--compare` is the pure comparison, split out so `--self-test` can prove
@@ -59,6 +62,8 @@ compare() {
   rkey=$(rust_key "$rust")
   jkey=$(js_key "$js")
 
+  # SPEC-2.5.17 (check 1 of 3): THEME_KEY must be declared exactly once in
+  # each file.
   if [ -z "$rkey" ] || [ "$(printf '%s\n' "$rkey" | wc -l)" -ne 1 ]; then
     echo "theme-storage-key guard: FAIL ($rust does not declare exactly one THEME_KEY constant)"
     echo "  The guard could not read what it is meant to compare, which is not a pass."
@@ -71,6 +76,7 @@ compare() {
     return 2
   fi
 
+  # SPEC-2.5.17 (check 2 of 3): the two declared values must match.
   if [ "$rkey" != "$jkey" ]; then
     echo "theme-storage-key guard: FAIL (the two sides name different localStorage keys)"
     echo "  $rust: \"$rkey\""
@@ -80,6 +86,9 @@ compare() {
     fail=1
   fi
 
+  # SPEC-2.5.17 (check 3 of 3): the JS applier must read/write localStorage
+  # only via THEME_KEY, not a bare property, an in-check, or a literal-string
+  # getItem/setItem/removeItem call.
   strays=$(stray_reads "$js")
   if [ -n "$strays" ]; then
     echo "theme-storage-key guard: FAIL ($js reads localStorage outside THEME_KEY)"
@@ -95,6 +104,10 @@ compare() {
   return "$fail"
 }
 
+# SPEC-2.1.5: --compare RUST_FILE JS_FILE overrides the repo's own
+# src/hooks/theme.rs / assets/theme-init.js pair with an explicit file pair;
+# any other unrecognized first argument is rejected with exit 2 (the `*`
+# branch below).
 case "${1:-}" in
   --compare)
     if [ $# -ne 3 ]; then
@@ -104,6 +117,9 @@ case "${1:-}" in
     compare "$2" "$3"
     exit $?
     ;;
+  # SPEC-2.1.3: self-test mode runs detection against generated fixtures
+  # only, proving each violation shape still fails and the corrected shape
+  # still passes.
   --self-test)
     tmp=$(mktemp -d) || exit 2
     trap 'rm -r "$tmp"' EXIT

@@ -249,6 +249,18 @@ fn ICloudContactsSettingsBody() -> Element {
     let mut app_password = use_signal(String::new);
     let mut confirm_disconnect = use_signal(|| false);
     let mut confirm_off = use_signal(|| false);
+    // MAPPS-1212: what the user's last click asked for, until the server's
+    // answer catches up. `None` renders what the server says.
+    //
+    // A checkbox is not a controlled input: the click toggles the DOM node
+    // itself, so between an unticking click and the confirmation the browser
+    // shows off while the server still says on. Putting it back takes a
+    // RENDERED value that differs from the last rendered one, because dioxus
+    // does not mark `checked` volatile and so writes nothing when a re-render
+    // computes the same value (`components::form::mapps1212_checkbox_resync_tests`
+    // measures both halves). Rendering the intent is what gives the cancel
+    // path that difference to carry.
+    let mut wanted = use_signal(|| None::<bool>);
     let navigator = use_navigator();
     let can_mutate = crate::hooks::use_can_mutate();
 
@@ -357,7 +369,13 @@ fn ICloudContactsSettingsBody() -> Element {
                     Ok(_) => overview.restart(),
                     // SPEC-8.5.5: same shape as SPEC-8.5.4's enable/disable
                     // failure message.
-                    Err(e) => error.set(format!("Could not change the setting: {e}")),
+                    Err(e) => {
+                        error.set(format!("Could not change the setting: {e}"));
+                        // The save did not happen, so the box goes back to
+                        // what the server still says rather than sitting on
+                        // an intent nothing honoured.
+                        wanted.set(None);
+                    }
                 }
             }
             // SPEC-8.3.6: no-op on a build without the `app` feature.
@@ -550,12 +568,13 @@ fn ICloudContactsSettingsBody() -> Element {
                         Checkbox {
                             name: "icloud_contacts_enabled",
                             label: "Allow iCloud Contacts for this organization",
-                            checked: enabled,
+                            checked: wanted().unwrap_or(enabled),
                             disabled,
                             // SPEC-8.1.17: turning on writes immediately with
                             // no confirmation; turning off confirms first.
                             onchange: move |e: FormEvent| {
-                                if e.value() == "true" {
+                                wanted.set(Some(e.checked()));
+                                if e.checked() {
                                     write_enabled(true);
                                 } else {
                                     confirm_off.set(true);
@@ -595,12 +614,62 @@ fn ICloudContactsSettingsBody() -> Element {
                                 confirm_off.set(false);
                                 write_enabled(false);
                             },
-                            oncancel: move |_| confirm_off.set(false),
+                            oncancel: move |_| {
+                                confirm_off.set(false);
+                                // Dropping the intent renders the server's
+                                // value again, which differs from the unticked
+                                // value the last render carried, so the box is
+                                // written back on.
+                                wanted.set(None);
+                            },
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1212: the enable checkbox renders the user's intent, not only the
+/// server's answer.
+///
+/// A scan rather than a render, because what has to hold is that four places
+/// agree: the `checked` binding reads the intent, the change handler records
+/// it, the cancel path drops it, and a failed save drops it too. Any one of
+/// them reverted leaves a box that shows off while the server says on, and the
+/// page looks correct in every other condition.
+///
+/// `components::form::mapps1212_checkbox_resync_tests` is the behaviour half:
+/// it measures that an unchanged `checked` reaches no DOM node, which is why
+/// re-reading the server cannot stand in for this.
+#[cfg(test)]
+mod mapps1212_enable_intent_tests {
+    #[test]
+    fn the_enable_checkbox_renders_the_intent_and_every_path_clears_it() {
+        let src = include_str!("settings_contact_sync_icloud.rs");
+        let head = &src[..src
+            .find("mod mapps1212_enable_intent_tests")
+            .expect("this module")];
+
+        assert!(
+            head.contains("let mut wanted = use_signal(|| None::<bool>);"),
+            "iCloud Contacts keeps no record of what the click asked for"
+        );
+        assert!(
+            head.contains("checked: wanted().unwrap_or(enabled)"),
+            "iCloud Contacts's checkbox is bound to the server's answer alone, so a \
+             cancelled turn-off leaves it unticked"
+        );
+        assert!(
+            head.contains("wanted.set(Some(e.checked()));"),
+            "iCloud Contacts does not record the click, so there is no intent to drop"
+        );
+        assert_eq!(
+            head.matches("wanted.set(None);").count(),
+            2,
+            "iCloud Contacts must drop the intent on BOTH the cancel path and the \
+             failed-save path"
+        );
     }
 }
 

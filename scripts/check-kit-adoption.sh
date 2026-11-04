@@ -21,11 +21,14 @@
 #    here (MAPPS-793). A handful of pre-existing, not-yet-migrated copies
 #    are allow-listed below; that debt is tracked as a subtask of MAPPS-793.
 #
+# SPEC-2.1.1: invocable with no arguments, scanning the default root and
+# printing a `clean`/`FAIL` line.
 # Usage: check-kit-adoption.sh [ROOT | --self-test]
 #   ROOT defaults to `src`. `--self-test` re-runs the guard over generated
 #   fixtures to prove it still rejects a hand-rolled dropdown surface and an
 #   untokenized black ring, and still accepts the shared class, so a future
 #   edit cannot quietly neuter it.
+#   SPEC-2.1.3: this is that --self-test mode.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -107,6 +110,7 @@ root="${1:-src}"
 status=0
 
 # --- 1. DaisyUI input classes -------------------------------------------
+# SPEC-2.5.20: DaisyUI `input-bordered` class anywhere under src.
 if hits=$(grep -rnE '\binput-bordered\b' "$root" --include='*.rs'); then
   echo "kit-input guard: FAIL (DaisyUI class the build has no plugin for)"
   echo "It emits no CSS, so the field renders unstyled. Use \`Input\` from components/form.rs."
@@ -115,6 +119,8 @@ if hits=$(grep -rnE '\binput-bordered\b' "$root" --include='*.rs'); then
 fi
 
 # --- 2. auth shell -------------------------------------------------------
+# SPEC-2.5.20: the set of pages using `min-h-screen` must be exactly
+# {home.rs, not_found.rs, auth_callback.rs}.
 # Pages allowed to own a full-screen shell: marketing, 404 and the OIDC
 # callback. Every other full-screen surface goes through AuthLayout.
 shell_allowed="$root/pages/home.rs $root/pages/not_found.rs $root/pages/auth_callback.rs"
@@ -132,6 +138,7 @@ fi
 # above pass while the pages it points at lost the branding anyway. MAPPS-509:
 # the wordmark is the deployment's brand from runtime config, so the needle is
 # the helper call, not the product name it defaults to.
+# SPEC-2.5.20: AuthLayout must render the product-name helper and VersionFooter.
 for needle in 'branding::product_name()' 'VersionFooter'; do
   if ! grep -q "$needle" "$root/components/layout.rs"; then
     echo "auth-shell guard: FAIL (AuthLayout no longer renders \`$needle\`)"
@@ -142,6 +149,7 @@ done
 # mokosh-contact-login: /portal/* pages (portal_login.rs, portal_set_password.rs)
 # retired with the customer-portal route family. Contact-plane pages under
 # src/pages/contact_portal/ carry their own layout and are not on this list.
+# SPEC-2.5.20: login.rs, onboarding.rs, request_form.rs must render AuthLayout.
 auth_pages="$root/pages/login.rs $root/pages/onboarding.rs $root/pages/request_form.rs"
 for page in $auth_pages; do
   if ! grep -q 'AuthLayout {' "$page"; then
@@ -151,6 +159,7 @@ for page in $auth_pages; do
 done
 
 # --- 3. file input recipe ------------------------------------------------
+# SPEC-2.5.20: hand-copied file-input class recipe outside components/form.rs.
 if hits=$(grep -rn 'file:mr-3' "$root/pages" --include='*.rs'); then
   echo "file-field guard: FAIL (file-input class recipe copied into a page)"
   echo "Use \`FileField\` from components/form.rs, which owns the recipe."
@@ -158,12 +167,15 @@ if hits=$(grep -rn 'file:mr-3' "$root/pages" --include='*.rs'); then
   status=1
 fi
 
+# SPEC-2.5.20: that recipe present in components/form.rs other than exactly
+# once.
 recipe=$(grep -c 'file:mr-3' "$root/components/form.rs" || true)
 if [ "$recipe" -ne 1 ]; then
   echo "file-field guard: FAIL (components/form.rs carries the file: recipe $recipe times, expected 1)"
   status=1
 fi
 
+# SPEC-2.5.20: raw `r#type: "file"` outside components/form.rs's own two.
 file_sites=$(grep -rc 'r#type: "file"' "$root" --include='*.rs' | grep -v ':0$' || true)
 # `FileField` renders the raw input in two shapes: the visible field and the
 # hidden-picker mode (MAPPS-607, one <input> for a caller that opens the
@@ -179,6 +191,8 @@ fi
 # --- 4. dropdown panel recipe --------------------------------------------
 # The surface lives once, in input.css. A class string pairing `bg-raised`
 # with `shadow-lg` and no `dropdown-panel` is a hand-rolled copy of it.
+# SPEC-2.5.20: input.css's `.dropdown-panel` rule declared other than exactly
+# once.
 panel=$(grep -c '^[[:space:]]*\.dropdown-panel[[:space:]]*{' input.css || true)
 if [ "$panel" -ne 1 ]; then
   echo "dropdown-panel guard: FAIL (input.css declares .dropdown-panel $panel times, expected 1)"
@@ -186,6 +200,8 @@ if [ "$panel" -ne 1 ]; then
   status=1
 fi
 
+# SPEC-2.5.20: hand-copied floating-panel recipe (bg-raised with shadow-lg
+# and no dropdown-panel class).
 hits=$(grep -rn 'bg-raised' "$root" --include='*.rs' \
   | grep -F 'shadow-lg' \
   | grep -vF 'dropdown-panel' \
@@ -201,6 +217,7 @@ fi
 
 # `ring-black/5` is a black ring at 5% opacity: a faint edge on the light
 # surface and no edge at all on the dark one. Edges come from `border-line`.
+# SPEC-2.5.20: any untokenized ring-black.
 hits=$(grep -rn 'ring-black' "$root" --include='*.rs' \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
 if [ -n "$hits" ]; then
@@ -221,6 +238,9 @@ fi
 # unavailable control rather than "you are here"). A shared `Indicator`
 # component that reuses Button's Primary class would remove the last copy;
 # tracked as a follow-up of MAPPS-805.
+# SPEC-2.5.20: hand-copied accent-button recipe (bg-accent with
+# text-on-accent) outside components/button.rs and the documented
+# components/table.rs exception.
 accent_allowed="$root/components/table.rs"
 accent_hits=$(grep -rn 'bg-accent' "$root" --include='*.rs' | grep -F 'text-on-accent' || true)
 if [ -n "$accent_hits" ]; then

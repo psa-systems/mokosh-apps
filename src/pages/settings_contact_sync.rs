@@ -729,6 +729,18 @@ fn GoogleContactsSettingsBody() -> Element {
     let mut confirm_disconnect = use_signal(|| false);
     let mut confirm_off = use_signal(|| false);
     let mut confirm_connect = use_signal(|| false);
+    // MAPPS-1212: what the user's last click asked for, until the server's
+    // answer catches up. `None` renders what the server says.
+    //
+    // A checkbox is not a controlled input: the click toggles the DOM node
+    // itself, so between an unticking click and the confirmation the browser
+    // shows off while the server still says on. Putting it back takes a
+    // RENDERED value that differs from the last rendered one, because dioxus
+    // does not mark `checked` volatile and so writes nothing when a re-render
+    // computes the same value (`components::form::mapps1212_checkbox_resync_tests`
+    // measures both halves). Rendering the intent is what gives the cancel
+    // path that difference to carry.
+    let mut wanted = use_signal(|| None::<bool>);
     let navigator = use_navigator();
     let can_mutate = crate::hooks::use_can_mutate();
 
@@ -838,7 +850,13 @@ fn GoogleContactsSettingsBody() -> Element {
                 {
                     Ok(_) => overview.restart(),
                     // SPEC-8.5.4: failed enable/disable write.
-                    Err(e) => error.set(format!("Could not change the setting: {e}")),
+                    Err(e) => {
+                        error.set(format!("Could not change the setting: {e}"));
+                        // The save did not happen, so the box goes back to
+                        // what the server still says rather than sitting on
+                        // an intent nothing honoured.
+                        wanted.set(None);
+                    }
                 }
             }
             // SPEC-8.3.6: no-op on a build without the `app` feature.
@@ -1010,10 +1028,11 @@ fn GoogleContactsSettingsBody() -> Element {
                             Checkbox {
                                 name: "google_contacts_enabled",
                                 label: "Allow Google Contacts for this organization",
-                                checked: data.enabled,
+                                checked: wanted().unwrap_or(data.enabled),
                                 disabled,
                                 help: "Off stops every sync and hides Connect for everyone. The connection and imported contacts are kept.",
                                 onchange: move |e: FormEvent| {
+                                    wanted.set(Some(e.checked()));
                                     if e.checked() {
                                         write_enabled(true);
                                     } else {
@@ -1074,12 +1093,15 @@ fn GoogleContactsSettingsBody() -> Element {
                         },
                         oncancel: move |_| {
                             confirm_off.set(false);
-                            // SPEC-8.1.17/SPEC-8.6.6: re-syncs from the server
-                            // rather than leaving the checkbox in its
-                            // optimistic unticked state.
-                            // The checkbox already unticked itself; re-read so
-                            // it shows what the server still says.
-                            overview.restart();
+                            // SPEC-8.1.17/SPEC-8.6.6: restore the checkbox to
+                            // the server's value rather than leaving it in the
+                            // optimistic unticked state. Dropping the intent
+                            // renders the server's value again, which differs
+                            // from the unticked value the last render carried,
+                            // so the box is written back on. A re-read here
+                            // would have computed the same value it just
+                            // rendered and written nothing.
+                            wanted.set(None);
                         },
                     }
                 }
@@ -1290,6 +1312,83 @@ fn ConnectionFacts(connection: Connection) -> Element {
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1212: the enable checkbox renders the user's intent, not only the
+/// server's answer.
+///
+/// A scan rather than a render, because what has to hold is that four places
+/// agree: the `checked` binding reads the intent, the change handler records
+/// it, the cancel path drops it, and a failed save drops it too. Any one of
+/// them reverted leaves a box that shows off while the server says on, and the
+/// page looks correct in every other condition.
+///
+/// `components::form::mapps1212_checkbox_resync_tests` is the behaviour half:
+/// it measures that an unchanged `checked` reaches no DOM node, which is why
+/// re-reading the server cannot stand in for this.
+#[cfg(test)]
+mod mapps1212_enable_intent_tests {
+    #[test]
+    fn the_enable_checkbox_renders_the_intent_and_every_path_clears_it() {
+        let src = include_str!("settings_contact_sync.rs");
+        let head = &src[..src
+            .find("mod mapps1212_enable_intent_tests")
+            .expect("this module")];
+
+        assert!(
+            head.contains("let mut wanted = use_signal(|| None::<bool>);"),
+            "Google Contacts keeps no record of what the click asked for"
+        );
+        assert!(
+            head.contains("checked: wanted().unwrap_or(data.enabled)"),
+            "Google Contacts's checkbox is bound to the server's answer alone, so a \
+             cancelled turn-off leaves it unticked"
+        );
+        assert!(
+            head.contains("wanted.set(Some(e.checked()));"),
+            "Google Contacts does not record the click, so there is no intent to drop"
+        );
+        assert_eq!(
+            head.matches("wanted.set(None);").count(),
+            2,
+            "Google Contacts must drop the intent on BOTH the cancel path and the \
+             failed-save path"
+        );
+    }
+
+    /// The cancel path no longer re-reads the server to fix the box. That call
+    /// computed the same `checked` it had just rendered and so wrote nothing;
+    /// keeping it would spend a request per cancel and still imply it was the
+    /// fix.
+    #[test]
+    fn cancelling_does_not_re_read_the_server() {
+        let src = include_str!("settings_contact_sync.rs");
+        let head = &src[..src
+            .find("mod mapps1212_enable_intent_tests")
+            .expect("this module")];
+        // Delimited by the handler's own braces rather than a character
+        // window: the explanation inside it is longer than any window worth
+        // guessing, and a window is what MAPPS-1209's first guard got wrong.
+        let at = head
+            .find("oncancel: move |_| {")
+            .expect("a cancel handler with a body");
+        let end = head[at..]
+            .find("\n                        },")
+            .expect("the handler closes");
+        let cancel = &head[at..at + end];
+        assert!(
+            cancel.contains("confirm_off.set(false);"),
+            "this is some other dialog's cancel handler, not the turn-off one: {cancel}"
+        );
+        assert!(
+            cancel.contains("wanted.set(None);"),
+            "the cancel path does not drop the intent: {cancel}"
+        );
+        assert!(
+            !cancel.contains("overview.restart()"),
+            "the cancel path re-reads the server, which cannot move the box: {cancel}"
+        );
     }
 }
 

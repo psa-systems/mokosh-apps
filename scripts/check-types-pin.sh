@@ -42,6 +42,12 @@
 # green check, and this file exists because a guard that quietly stops guarding
 # reports clean forever.
 #
+# SPEC-2.1.1: invocable with no arguments, running the real check against
+# Cargo.lock.
+# SPEC-2.1.4: --strict must be accepted before --self-test or the real run,
+# selecting the unnarrowed pre-MAPPS-537 rule; the explicit two/three-argument
+# `--compare OLD NEW [STATE]` form drives the comparison off two lock-file
+# snapshots instead of running cargo update itself.
 # Usage: check-types-pin.sh [--strict | --self-test | --compare OLD NEW [STATE]]
 #   No argument runs the real check against Cargo.lock (needs network).
 #   `--strict` restores the pre-MAPPS-537 rule: any lock move fails. The weekly
@@ -51,6 +57,7 @@
 #   accepts a catch-up-only move, and still refuses to guess. STATE is
 #   `changed`, `unchanged` or `unknown` (default `unknown`), which is what the
 #   real run reads off the cargo git mirror.
+#   SPEC-2.1.3: this is that --self-test mode.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -76,6 +83,8 @@ pinned_rev() {
   ' "$1"
 }
 
+# SPEC-2.7.3: integrates with the local Cargo git mirror of mokosh-server
+# (under ~/.cargo/git/db/) to decide whether crates/mokosh-types changed.
 # The bare mirror cargo already fetched, or empty when there is none.
 mirror_db() {
   ls -d "${CARGO_HOME:-$HOME/.cargo}"/git/db/mokosh-server-* 2>/dev/null | head -1
@@ -86,6 +95,9 @@ mirror_db() {
 # answer. `unknown` is a failure upstream, never a pass: the whole point of the
 # narrowed rule is that it can tell the two cases apart, so it has to admit
 # when it cannot.
+# SPEC-2.4.7: must fail, never silently pass, when it cannot determine
+# whether the crate changed (no local mirror, revision absent, git diff
+# erroring), so every such case here returns `unknown` rather than guessing.
 crate_state() {
   local old="$1" new="$2" db rc
   db=$(mirror_db)
@@ -160,6 +172,8 @@ compare() {
     return 0
   fi
 
+  # SPEC-2.4.7: fail if cargo update moves Cargo.lock while the mokosh-types
+  # revision is unchanged from the pinned one - something else moved.
   if [ "$old_rev" = "$new_rev" ]; then
     echo "$crate pin guard: FAIL (cargo update --package $crate moved Cargo.lock)"
     echo "  pinned revision: $old_rev"
@@ -174,6 +188,8 @@ compare() {
   # MAPPS-537: the pin is behind, but only on commits that cannot reach this
   # build. Say so and pass. The weekly types-pin-drift.yml run is what stops
   # the distance below from growing back into the 214 commits MAPPS-525 found.
+  # SPEC-2.4.7: under the default (non-strict) mode, a catch-up-only move is
+  # clean; under --strict that same move must still fail (falls through below).
   if [ "$state" = "unchanged" ] && [ "$strict" -eq 0 ]; then
     echo "$crate pin guard: clean (catch-up only, crates/$crate is unchanged)"
     echo "  pinned revision: $old_rev"
@@ -209,12 +225,14 @@ compare() {
   return 1
 }
 
+# SPEC-2.1.4: --strict must be accepted before --self-test or the real run.
 if [ "${1:-}" = "--strict" ]; then
   strict=1
   shift
 fi
 
 case "${1:-}" in
+  # SPEC-2.1.4: the explicit two/three-argument --compare form.
   --compare)
     if [ $# -lt 3 ] || [ $# -gt 4 ]; then
       echo "$crate pin guard: FAIL (--compare needs OLD_LOCK NEW_LOCK [STATE])"
@@ -336,6 +354,11 @@ if [ ! -f Cargo.lock ]; then
   exit 2
 fi
 
+# SPEC-2.8.3: restores the working tree's original Cargo.lock on every exit
+# path (success, failure, or a parse/strict failure); a failure to restore it
+# must itself be reported as a guard failure (exit 2) naming the risk.
+# SPEC-2.9.3: this is also the cleanup that discards the candidate Cargo.lock;
+# no retained artifact may persist outside the restored Cargo.lock itself.
 restore() {
   # Always put the committed lock back: this guard reports, it never bumps.
   # A failed restore leaves a bumped lock in the tree, so it is loud.
@@ -348,10 +371,15 @@ restore() {
   rm -rf "${work:?}"
 }
 
+# SPEC-2.8.3: cargo update runs only inside this temporary copy of Cargo.lock,
+# never against the working tree's own file directly.
 work=$(mktemp -d) || exit 2
 trap restore EXIT
 cp Cargo.lock "$work/Cargo.lock.orig" || exit 2
 
+# SPEC-2.7.3: integrates with the network (cargo update) to produce the
+# candidate new lock in the default (non-compare) mode; its unavailability
+# must surface as `unknown` via crate_state above, not as a crash.
 if ! cargo update --package "$crate" > "$work/update.log" 2>&1; then
   echo "$crate pin guard: FAIL (cargo update --package $crate errored)"
   sed 's/^/  /' "$work/update.log"

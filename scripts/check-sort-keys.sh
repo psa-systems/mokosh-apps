@@ -23,6 +23,8 @@
 #   fixtures to prove it still rejects a hardcoded key and still accepts the
 #   interpolated form, a comment and the allow marker, so a future edit cannot
 #   quietly neuter it.
+# SPEC-2.1.1: no-arg invocation, exit 0 / nonzero FAIL contract.
+# SPEC-2.1.3: --self-test runs the detection logic against generated fixtures.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -87,6 +89,8 @@ fi
 # shellcheck disable=SC2086
 hits=$(
   awk '
+    # SPEC-2.3.1: skip the violation on any line carrying the
+    # sort-key-guard-allow opt-out marker.
     /sort-key-guard-allow/ { next }
     {
       # Drop the comment tail so prose naming an old key is not a value.
