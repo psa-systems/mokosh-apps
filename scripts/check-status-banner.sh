@@ -28,6 +28,11 @@
 #   generated fixtures to prove it still rejects a hand-rolled banner, a copied
 #   recipe and a dropped tone, and still accepts the migrated form, so a future
 #   edit cannot quietly neuter it.
+#
+# SPEC-2.1.1: invocable with no arguments, scanning the default root (src)
+# and exiting with a `guard: clean`/`guard: FAIL (<reason>)` line.
+# SPEC-2.1.3: --self-test proves the detection logic against generated
+# fixtures covering each violation shape and the migrated shape.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -106,6 +111,8 @@ root="${1:-src}"
 component="$root/components/error_banner.rs"
 status=0
 
+# SPEC-2.5.8: fail any page that hand-rolls a state-hue banner fill instead
+# of rendering StatusBanner.
 # --- Pass 1: no hand-rolled banner fill in a page ------------------------
 hits=$(grep -rnE 'bg-(red|green|amber|blue)-50\b' "$root/pages" --include='*.rs' \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
@@ -121,6 +128,8 @@ if [ -n "$hits" ]; then
   status=1
 fi
 
+# SPEC-2.5.8: fail independently if error_banner.rs is missing, or if any of
+# the four BannerTone recipes is not present in it exactly once.
 # --- Pass 2: the four recipes live once each, in error_banner.rs ---------
 if [ ! -f "$component" ]; then
   echo "status-banner guard: FAIL ($component is missing)"
@@ -136,6 +145,8 @@ for hue in $hues; do
     status=1
   fi
 
+  # SPEC-2.5.8: fail independently if a recipe is copied verbatim into
+  # another component file.
   elsewhere=$(grep -rlF "$want" "$root" --include='*.rs' | grep -vF "$component" || true)
   if [ -n "$elsewhere" ]; then
     echo "status-banner guard: FAIL (the $hue recipe is copied outside $component)"
