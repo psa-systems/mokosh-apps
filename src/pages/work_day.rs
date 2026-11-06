@@ -168,6 +168,11 @@ struct RemoteWorkDay {
     breakdown: RemoteBreakdown,
 }
 
+/// MAPPS-1205: the viewing context the `last_day` fallback was captured for.
+/// A refetch under the same key reuses the held day (that is the whole point
+/// of the fallback), but a user, tenant or date switch invalidates it.
+type LastDayKey = (u64, Option<uuid::Uuid>, Option<NaiveDate>);
+
 /// What the strip loaded: the day, or nothing because the modules are off.
 #[derive(Clone, Debug, PartialEq)]
 enum DayLoad {
@@ -424,8 +429,11 @@ pub fn WorkDayStrip() -> Element {
     let mut clock_tick = use_signal(|| 0u32);
     // The last day this client actually received. Rendered while the next
     // load is in flight so a refetch does not blank the card; see the module
-    // docs.
-    let mut last_day = use_signal(|| None::<(Box<RemoteWorkDay>, DateTime<Utc>)>);
+    // docs. Keyed on `(tenant_generation, picked_user, picked_date)` so a
+    // switch of whose day (or which tenant's day) is being read falls back to
+    // the first-load silent state instead of flashing the previous selection's
+    // segments under the new label.
+    let mut last_day = use_signal(|| None::<(LastDayKey, Box<RemoteWorkDay>, DateTime<Utc>)>);
     // MAPPS-754: which segment's correction form is open, and what is typed
     // in it. One at a time: two open forms on a strip this size is a way to
     // save the wrong one.
@@ -543,21 +551,31 @@ pub fn WorkDayStrip() -> Element {
     // MAPPS-753: hold the day the last load produced. A resource that has
     // been restarted reads `None` again, so without this the card vanished
     // and the page jumped every time the refetch tick fired.
+    let current_key: LastDayKey = (
+        crate::hooks::fetch::active_tenant_generation(),
+        user_for_resource,
+        date_for_resource,
+    );
     if let Some(Some(DayLoad::Day(fresh, at))) = &snap {
-        let incoming = Some((fresh.clone(), *at));
-        if *last_day.peek() != incoming {
+        let incoming = Some((current_key, fresh.clone(), *at));
+        if last_day.peek().as_ref().map(|(k, d, a)| (k, d, a))
+            != incoming.as_ref().map(|(k, d, a)| (k, d, a))
+        {
             last_day.set(incoming);
         }
     }
     let (day, fetched_at) = match snap {
         // Loading. A placeholder here would move the page twice on every load
         // for a strip that is usually small, so the FIRST load stays silent
-        // (MAPPS-746); a later one re-renders what it already had.
+        // (MAPPS-746); a later one re-renders what it already had. MAPPS-1205:
+        // only reuse the held day when its key matches the current viewing
+        // context; a user or tenant switch has to re-render as the first-load
+        // silent state, not flash the previous selection.
         // SPEC-9.1.26: only the first, still-loading fetch renders nothing;
         // a later refetch keeps showing the last loaded day.
         None => match last_day() {
-            Some((prev, at)) => (*prev, at),
-            None => return rsx! {},
+            Some((key, prev, at)) if key == current_key => (*prev, at),
+            _ => return rsx! {},
         },
         // MAPPS-746: the two states this used to hide. Both hid the clock
         // with nothing on the page to say why, and the nav's Timesheets
@@ -1634,18 +1652,20 @@ mod mapps746_strip_says_why_tests {
         let head = &src[..src
             .find("mod mapps746_strip_says_why_tests")
             .expect("this module")];
-        assert!(
-            head.contains("None => return rsx! {},"),
-            "the FIRST load stays silent"
-        );
-        // MAPPS-753: and only the first. A restarted resource reads `None`
-        // again, so a bare `None => rsx! {}` made the whole card disappear
-        // every time the refetch tick fired. The cached day is what keeps it
-        // on the page; losing this arm brings the blink back and nothing
-        // fails.
+        // MAPPS-753 / MAPPS-1205: the FIRST load stays silent when nothing
+        // matches `last_day`. A restarted resource reads `None` again, so a
+        // bare `None => rsx! {}` made the whole card disappear on every
+        // refetch tick; the match arm above routes through `last_day()` and
+        // falls through to `_ => return rsx! {},` when the cached day is
+        // missing or its key does not match the current viewing context
+        // (MAPPS-1205), which is still the first-load silent state.
         assert!(
             head.contains("None => match last_day() {"),
             "a refetch re-renders the last day rather than blanking the card"
+        );
+        assert!(
+            head.contains("_ => return rsx! {},"),
+            "the FIRST load (no matching cached day) stays silent"
         );
         assert!(
             !head

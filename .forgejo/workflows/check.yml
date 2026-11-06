@@ -62,8 +62,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # MAPPS-1221/PC-134/STD-3.1: classify the PR diff with the shared `common`
+  # action instead of a repo-local classifier, so the skip rule stays in one
+  # place across the fleet. `result` is one of `code`, `comments-only` or
+  # `non-code` (always `code` outside a pull_request event); the `cargo` job
+  # below gates its compile-dependent steps on `result == 'code'` and
+  # `cargo fmt` on `result != 'non-code'`. The guards and secrets jobs stay
+  # unconditional: guards check source-file shape and secrets scans every
+  # commit.
+  classify:
+    name: classify changed files
+    # Only diffs file paths and greps `+`/`-` lines, compiles nothing.
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_MEDIUM }}
+    outputs:
+      result: ${{ steps.classify-diff.outputs.result }}
+    steps:
+      - name: Clone the repository
+        # Shallow is fine: classify-diff deepens the clone itself when it
+        # needs HEAD^1.
+        uses: https://code.forgejo.org/actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Classify diff
+        id: classify-diff
+        uses: https://dev.a8n.run/psa-systems/common/.forgejo/actions/classify-diff@74a301aac0f88bd4d9ade20787da56493f254db3 # main
+
   cargo:
     name: fmt + clippy + wasm + desktop + tests + audit
+    # MAPPS-1221: the compile-dependent steps below are individually gated on
+    # `classify`'s result (fmt on `result != 'non-code'`, the rest on
+    # `result == 'code'`), so the job itself stays unconditional. The guards
+    # and secrets jobs still run and cover docs-only / comment-only PRs on
+    # their own.
+    needs: classify
     # Heavy label: compiles and links Rust (clippy, wasm, desktop, tests) on the
     # runner, which needs the dev image's C toolchain.
     runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_HEAVY }}
@@ -106,13 +136,20 @@ jobs:
         run: mkdir -p assets && touch assets/styles.css
 
       # SPEC-1.8.7: formatting, lint, and the wasm/desktop build/test matrix, all in this one job.
+      # MAPPS-1221/STD-3.1: fmt still runs on a comments-only diff; only a
+      # non-code (docs-only) diff skips it too.
       - name: Check formatting
+        if: needs.classify.outputs.result != 'non-code'
         run: cargo fmt --all --check
 
+      # MAPPS-1221/STD-3.1: skipped on a comments-only or non-code diff.
       - name: Clippy
+        if: needs.classify.outputs.result == 'code'
         run: cargo clippy --locked --all-targets -- -D warnings
 
+      # MAPPS-1221/STD-3.1: skipped on a comments-only or non-code diff.
       - name: Check web/WASM build
+        if: needs.classify.outputs.result == 'code'
         run: cargo clippy --locked --all-targets --target wasm32-unknown-unknown -- -D warnings
 
       # MAPPS-534: CI had never compiled this feature combination. The steps
@@ -120,10 +157,14 @@ jobs:
       # `#[cfg(feature = "desktop")]` arm, or a web-only import the desktop
       # feature set does not satisfy - merged green and surfaced to whoever
       # next built the desktop app.
+      # MAPPS-1221/STD-3.1: skipped on a comments-only or non-code diff.
       - name: Check desktop build
+        if: needs.classify.outputs.result == 'code'
         run: cargo check --locked --no-default-features --features desktop,multi-tenant
 
+      # MAPPS-1221/STD-3.1: skipped on a comments-only or non-code diff.
       - name: Unit tests
+        if: needs.classify.outputs.result == 'code'
         run: cargo test --locked --lib
 
       # MAPPS-975: the CI image ships no cargo-audit, so the audit below was a
