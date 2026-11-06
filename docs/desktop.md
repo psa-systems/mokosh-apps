@@ -77,9 +77,9 @@ the container-side half of that document (Caddy, `entrypoint.sh`,
 mokosh-server has to accept the desktop client's requests through CORS.
 `mokosh-server`'s CORS allowlist is exact-match and credentialed (no wildcard
 with credentials on), so `CORS_ORIGIN` needs the desktop webview's document
-origin verbatim, not the browser SPA's origin. `dioxus-desktop` 0.7.7 (see
-`Cargo.lock`) fixes that origin per OS at compile time
-(`dioxus-desktop-0.7.7/src/protocol.rs:15-22`, mirrored in
+origin verbatim, not the browser SPA's origin. `dioxus-desktop` (see
+`Cargo.lock` for the pinned version) fixes that origin per OS at compile time
+(`protocol.rs`'s per-OS `BASE_URI` constants, mirrored in
 `src/platform/desktop_origin.rs`), so add the origin for the OS the desktop
 build targets:
 

@@ -187,7 +187,7 @@ EOF
 # SPEC-2.1.3: --self-test entry point.
 if [ "${1:-}" = "--self-test" ]; then
     self_test
-    exit 0
+    exit $?
 fi
 
 if scan src; then

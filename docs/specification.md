@@ -2242,6 +2242,375 @@ pattern cited at SPEC-6.3.6 and restated as SPEC-8.3.6 for this scope.
   server contract this page cites in its own help text, not a requirement
   this client enforces.
 
+## 12. Knowledge base
+
+Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
+`src/pages/kb_inline.rs`.
+
+### 12.1 Interfaces
+
+- **SPEC-12.1.1**: `KBHomePage` must render a search box, a "Browse by
+  company" picker, a category grid (loading skeleton, empty state, or
+  populated), a "Top ticket-driving articles" widget, and a "Recent
+  Articles" list capped at `RECENT_LIMIT = 5` articles
+  (`knowledge_base.rs:47,55,540-782`); submitting the search box must
+  navigate to `KBArticleListPage` with `?q=` set to the trimmed text
+  and no tag/category filter (`knowledge_base.rs:631-639`).
+- **SPEC-12.1.2**: `KBArticleListPage` must render a server-paginated
+  (`PER_PAGE = 25`), searchable, category-filterable article table
+  with a left `KbTreeNav` rail; its `initial_q`/`initial_tag`/
+  `initial_category` route props seed the search/tag/category state
+  and are kept in sync on prop change via `use_reactive!` effects, so
+  navigating from one tag or category link to another re-filters
+  without remounting (`knowledge_base.rs:981-1017`).
+- **SPEC-12.1.3**: With a tag filter active, the list page must fetch
+  the entire article corpus (`get_all_with_auth`, the server cannot
+  narrow on tags) and filter and paginate client-side; with no tag
+  filter, it must use the server's paginated `GET /kb/articles`
+  (`knowledge_base.rs:1083-1155`).
+- **SPEC-12.1.4**: `KBCompanyPage` (`/kb/companies/{id}`) must render
+  the company's name, falling back to "Company" with an inline error
+  banner when the name lookup fails or returns a blank name, and that
+  company's articles via `GET /kb/articles?company_id={id}`
+  (`knowledge_base.rs:1355-1505`).
+- **SPEC-12.1.5**: `KBArticleDetailPage` must render the article body
+  (Markdown, with interactive task-list toggles gated on
+  `can_mutate`), breadcrumbs, a parent-version back-link for a company
+  version, tags, attribution, a rating bar (shown only once the tenant
+  has at least 2 users), inline comments (staff sessions only), and a
+  right rail with a template-variable picker, actions, measured
+  duration, linked tickets, company versions, a table of contents, and
+  version history (`knowledge_base.rs:1591-2335`).
+- **SPEC-12.1.6**: `KBArticleNewPage`/`KBArticleEditPage` must render
+  the shared `ArticleForm` in Create/Edit mode; `KBArticleNewPage`
+  accepts `parent_article_id` and `visibility` query-string prefills
+  from the "Create a company version" link, defaulting visibility to
+  `internal` when the query string leaves it blank
+  (`knowledge_base.rs:3022-3047`); `KBArticleEditPage` must resolve the
+  article's scoped company names in the same fetch pass that loads the
+  article (`knowledge_base.rs:3060-3083`).
+- **SPEC-12.1.7**: `ArticleActions` must render exactly three controls
+  in a fixed order: Edit, "Open ticket about this article" (carrying
+  `from_kb_article`/`from_kb_title`/`from_kb_url` query params), and
+  Delete (behind a `ConfirmDialog`); `ArticleActionsMenu` must expose
+  the same controls through a header overflow popover, shown whenever
+  the right rail is collapsed and always below the `sm` breakpoint
+  (`knowledge_base.rs:4940-5052`).
+- **SPEC-12.1.8**: `RatingBar` must POST to
+  `/kb/articles/{id}/helpful` or `/kb/articles/{id}/not_helpful` and
+  update its counts and `my_vote` from the response; both buttons must
+  be disabled while a vote is in flight or `can_mutate` is false
+  (`knowledge_base.rs:5054-5150`).
+- **SPEC-12.1.9**: `ArticleToc` must render nothing for an article
+  with no headings, and otherwise a nested "On this page" list whose
+  links intercept the click (no router hash navigation), scroll the
+  target heading into view, and mark the active section via
+  `aria-current` plus a border/weight change, never color alone
+  (`knowledge_base.rs:2431-2493`).
+- **SPEC-12.1.10**: `VersionHistoryCard` must list every prior version
+  with per-row "Compare" (diff against the live article) and "Restore"
+  (confirm dialog showing the diff, taking an optional `change_note`)
+  actions, both disabled while `!can_mutate`; the live version's row
+  is marked "Current" and carries neither action
+  (`knowledge_base.rs:2749-2976`).
+- **SPEC-12.1.11**: `ArticleActivity` must render a three-tab
+  (`All activity`/`Comments`/`History`) `tablist` whose selected tab
+  is persisted under the `kb_activity_tab` preference key and restored
+  on mount, defaulting to `All activity` for an unrecognized stored
+  value; `ArrowRight`/`ArrowLeft` on the tablist must step to the
+  next/previous tab, wrapping at both ends, and move focus to the
+  newly selected tab button (`kb_activity.rs:57-76,130,147,191-203`).
+- **SPEC-12.1.12**: `build_stream` must merge the article's comments
+  and version events into one time-ordered (oldest first) list, must
+  include comments only when the active tab is not `History` and
+  versions only when it is not `Comments`, and must omit a resolved
+  comment whenever the `kb_activity_show_resolved` preference is off
+  (`kb_activity.rs:103-128,131,148,246-251`).
+- **SPEC-12.1.13**: `CommentThread` must fold a resolved root comment
+  to one line (author, struck-through body, resolver name, reply
+  count, an "Unresolve" action) and must otherwise render the full
+  comment, its replies, a "Reply"/"Resolve" action pair, and, once
+  "Reply" is clicked, a nested composer; editing a comment swaps its
+  body for a `MarkdownEditor` whose Save is disabled while the trimmed
+  draft is empty; deleting a comment goes through a `ConfirmDialog`
+  before any request fires, and a deleted comment renders only
+  "Comment deleted" in place of its body and author actions
+  (`kb_activity.rs:392-655`).
+- **SPEC-12.1.14**: `InlineComments` must render one left-gutter
+  marker per resolved passage ("1 inline comment" / "{n} inline
+  comments"); activating a marker or its mark must open a dialog
+  listing every comment anchored there (body truncated to 120
+  characters) with an "Open thread" action that focuses the matching
+  row (`kb-comment-{id}`) in the foot-of-article stream
+  (`kb_inline.rs:128,143-243`).
+- **SPEC-12.1.15**: "Comment on selection" must be disabled while
+  `!can_mutate`; with no live text selection, or a selection that
+  cannot be anchored, it must set the hint "Select some of the article
+  text first, then press this." and must not open the composer; a
+  successfully captured selection must open a composer showing the
+  captured quote and posting it with `parent_id: None` and the
+  captured anchor (`kb_inline.rs:172-199,247-270`).
+
+### 12.2 Data model
+
+- **SPEC-12.2.1**: `CompanyNameRow` and `CompanyNameOnly`
+  (`knowledge_base.rs:399-404,1364-1368`) must default `name` on
+  absence, so a server response missing the field still decodes.
+- **SPEC-12.2.2**: `TreeNode`/`build_kb_tree` must bucket any article
+  whose `category_id` is absent or references an unknown category id
+  into a separate "uncategorized" list rather than dropping it
+  (`knowledge_base.rs:221-278`); `resolve_category_path` must walk
+  `parent_id` from a category to the root, returning `[]` for no
+  category or a dangling id, and must guard against a cycle with a
+  visited-id set rather than looping forever
+  (`knowledge_base.rs:199-216`).
+- **SPEC-12.2.3**: `Entry` (`kb_activity.rs:81-98`) is a client-only
+  union of an already-fetched `KbComment` or a `KbArticleVersion`
+  paired with its predecessor; this scope persists no server schema
+  of its own, only wire DTOs already owned by `crate::modules::kb`.
+- **SPEC-12.2.4**: `place` (`kb_inline.rs:28-50`) must consider only
+  root, non-deleted comments as anchor owners, must silently skip a
+  root comment with no anchor or an unparsable anchor, and must
+  classify an anchor that fails to resolve against the current
+  rendered text as an orphan (its comment id collected) distinct from
+  one that resolves; resolved ranges must be sorted by start offset
+  before overlaps are split, and the resulting fragments converted
+  1:1 to `MarkSpec { start, end, ids }` in document order.
+- **SPEC-12.2.5**: `orphaned_by_edit` (`kb_inline.rs:56-68`) must
+  report exactly the quoted text of a root, non-deleted, anchored
+  comment whose anchor resolved against the rendered text before an
+  edit but does not resolve against the rendered text after it; a
+  comment already unresolvable before the edit must never appear in
+  the result, since the edit did not cause that loss.
+
+### 12.3 Configuration
+
+- **SPEC-12.3.1**: The article list must page the server list at
+  `PER_PAGE = 25` rows; the home page's recent-articles list is capped
+  at `RECENT_LIMIT = 5` (`knowledge_base.rs:47,55`). Client-side
+  `maxlength` caps mirror server column limits: `TITLE_MAX = 255`,
+  `SLUG_MAX = 255`, `SUMMARY_MAX = 255`, `BODY_MAX = 100_000`, and
+  `TAG_MAX = 50` characters per tag (`knowledge_base.rs:63-71`).
+- **SPEC-12.3.2**: `sanitize_tags` must split a tag string on `,`,
+  strip markup (`<`/`>`) and control characters via `clean_strict`,
+  trim, cap each tag at `TAG_MAX`, and drop empties
+  (`knowledge_base.rs:82-99`). `slugify` must lowercase, collapse every
+  run of non-alphanumerics to a single hyphen, trim leading/trailing
+  hyphens, run `clean_strict` first so an invisible character cannot
+  produce an unaccounted-for hyphen, and fall back to `"article"` for
+  empty input (`knowledge_base.rs:109-128`).
+- **SPEC-12.3.3**: `next_slug` must derive the slug from the title via
+  `slugify` until the slug field is manually touched, after which it
+  must leave the slug alone; the category form's slug follows the
+  same rule against the category name
+  (`knowledge_base.rs:133-139,4551-4569,4757-4760`).
+- **SPEC-12.3.4**: The article-list search input must debounce 300ms
+  before refetching (`knowledge_base.rs:1061`); the template-variable
+  render picker debounces its edits the same 300ms
+  (`knowledge_base.rs:1827`).
+- **SPEC-12.3.5**: `meta_must_be_open` must report the article
+  metadata panel as forced open whenever Title or Slug is empty; once
+  both are non-empty, the panel's open/closed state becomes a
+  user-toggled signal that is never auto-closed again
+  (`knowledge_base.rs:181-190,3386-3395`).
+- **SPEC-12.3.6**: The active activity tab and the resolved-thread
+  visibility are the only pieces of this scope's state persisted
+  across sessions, under the `kb_activity_tab` and
+  `kb_activity_show_resolved` preference keys respectively
+  (`kb_activity.rs:130-131`); every other control (edit drafts,
+  reply-open state, settings-menu open state) is render-local state
+  that resets on remount.
+
+### 12.4 Security
+
+- **SPEC-12.4.1**: Every mutating control in this scope (category
+  create/edit/delete, article create/edit/delete, vote, task-list
+  toggle, version restore, comment resolve/edit/delete/post, comment
+  on selection) must read `crate::hooks::use_can_mutate()` and disable
+  itself while `!can_mutate`, with a `title` attribute naming the
+  server as unreachable (`knowledge_base.rs:621,652,833-848,907-910`;
+  `kb_activity.rs:428,506,525,532,672,720,733,770,835`;
+  `kb_inline.rs:172,176-177`).
+- **SPEC-12.4.2**: `company_scope_error` must block submitting a
+  `client_specific` article with an empty company scope client-side,
+  mirroring the server's 422 (`knowledge_base.rs:370-376,3621-3634`);
+  the save handler must reject any scoped-company id that fails
+  `uuid::Uuid` parsing rather than silently dropping it, since a
+  dropped id would revoke that client's portal access without telling
+  the author (`knowledge_base.rs:3636-3657`).
+- **SPEC-12.4.3**: `KBArticleDetailPage`'s inline comments and
+  `LinkedTicketsCard` must not render, and their resources must not
+  fetch, for a contact (customer) session, consistent with the server
+  refusing a contact bearer on those routes
+  (`knowledge_base.rs:1627-1645,2218-2227,2249-2257,2294-2328`).
+- **SPEC-12.4.4**: `ArticleToc`'s click handler must call
+  `e.prevent_default()` before scrolling, so a heading jump never
+  becomes a router navigation that could be hijacked
+  (`knowledge_base.rs:2476-2481`).
+- **SPEC-12.4.5**: Edit and Delete on a comment must render only when
+  the signed-in user is the comment's author or an admin; the
+  resolve/unresolve action carries no such author restriction, since
+  resolving a thread requires only `can_mutate`, not authorship
+  (`kb_activity.rs:503-509,522-535,604,716-740`).
+- **SPEC-12.4.6**: The span wrapping "Comment on selection" must call
+  `prevent_default` on `mousedown`, so the button click does not first
+  collapse the text selection it is about to capture
+  (`kb_inline.rs:172`).
+
+### 12.5 Error handling and observability
+
+- **SPEC-12.5.1**: `KBHomePage`'s category grid is the primary
+  resource; a failed load while the server is unreachable must render
+  `ContentUnavailable`, while the recent-articles and
+  top-ticket-driving widgets are secondary and degrade to their own
+  inline "Could not load…" text (`knowledge_base.rs:612-626,755-757`).
+  `KBArticleListPage`, `KBCompanyPage`, `KBArticleDetailPage`, and
+  `KBArticleEditPage` must render `ContentUnavailable` only when their
+  primary fetch failed AND the server is unreachable; a 4xx while
+  reachable keeps an inline `ErrorBanner` plus the ordinary empty or
+  "Could not load" state
+  (`knowledge_base.rs:1129-1134,1403-1411,1904-1913,1983-1994,3092-3098,3138-3149`).
+- **SPEC-12.5.2**: The task-list toggle PUT must, on failure, toast
+  "Could not save that change: {message}" and re-fetch the article to
+  put the checkbox back, because the DOM has already flipped the box
+  before the request resolves (`knowledge_base.rs:2196-2209`).
+- **SPEC-12.5.3**: A 422 on article save whose field name matches
+  `template_variables[N]`/`template_variables.N` (`parse_tplvar_index`,
+  `knowledge_base.rs:507-519`) must route to that row's inline error
+  slot; any remaining `template_variables` field error must route to
+  the template-variables banner, and any other error to the form's top
+  banner (`knowledge_base.rs:3822-3853`). `ArticleForm`'s submit guard
+  must validate Title and Body via `FormGuard` in one pass, not
+  stopping at the first invalid field (`knowledge_base.rs:3609-3661`).
+- **SPEC-12.5.4**: `MeasuredDurationCard` must distinguish "Loading…",
+  "Could not load the measured duration." (fetch failed), "No time
+  measured yet." (fetch succeeded, no sample), and the populated
+  average/total/period display; a failed fetch must never be presented
+  as "no data" (`knowledge_base.rs:2367-2411`).
+- **SPEC-12.5.5**: Canceling the article form after an image upload
+  has auto-created the draft article must attempt to `DELETE` that
+  article; a failed delete must not block navigation away but must
+  toast a warning naming the article so the author knows an unintended
+  draft remains (`knowledge_base.rs:4394-4431`).
+- **SPEC-12.5.6**: A failed comments fetch must render "Could not load
+  the comments." alongside, not instead of, the version-history half
+  of the stream, which continues to render from whatever versions did
+  load (`kb_activity.rs:176,263-265`). Resolve/unresolve failure must
+  render "Could not {verb} the thread: {message}"; comment edit
+  failure must render "Could not save the comment: {e}"; comment
+  delete failure must render inside the confirm dialog itself, not the
+  page-level error slot; a new comment or reply post failure must
+  render "Could not post: {message}"
+  (`kb_activity.rs:445,626,631,685,792`).
+- **SPEC-12.5.7**: If the inline-comment dialog's `open_at` ids no
+  longer match any loaded comment, it must render "These comments are
+  no longer in the list ({n})." instead of an empty list
+  (`kb_inline.rs:214-216`). If `anchor_dom::text_of` resolves to
+  `None` (the body element is not yet in the DOM), both the placement
+  effect and the selection-capture handler must return without
+  marking, logging, or showing an error
+  (`kb_inline.rs:117-119,184-186`).
+
+### 12.6 Concurrency and ordering
+
+- **SPEC-12.6.1**: Every list/detail page's resources must read
+  `active_tenant_generation()` inside the `use_resource` closure so an
+  org switch or token swap re-fetches (`knowledge_base.rs:564,580,
+  1038,1068,1371,1385,1601,1612,1635,1658,1732,2354,2519,3063`).
+  `use_reactive!` must bind the route `id` prop into
+  `KBArticleDetailPage`'s article, versions, and comments resources,
+  so an in-app article-to-article navigation restarts the fetch rather
+  than keeping the previous article's data
+  (`knowledge_base.rs:1600,1611,1634`).
+- **SPEC-12.6.2**: The template-render resource must bail out with no
+  request when `tpl_variables` is empty, so a non-templated article
+  issues no render call (`knowledge_base.rs:1833-1836`).
+  `VersionHistoryCard.on_restored` must restart both the article and
+  the versions resources on a successful restore, so the live article
+  and the history list both reflect the restore without a manual
+  reload (`knowledge_base.rs:2320-2328`).
+- **SPEC-12.6.3**: The category-delete, article-delete, vote, resolve,
+  unresolve, comment edit, and comment delete handlers must each
+  ignore a second concurrent invocation of the same control via a
+  `busy`/`delete_busy` guard before spawning a request
+  (`knowledge_base.rs:827-830,1950-1951,5091,5122`;
+  `kb_activity.rs:428-430,619-621,672`).
+- **SPEC-12.6.4**: `build_stream` must pair each version with the
+  version immediately after it in the newest-first input slice as its
+  "previous" diff baseline, so the oldest version in the list is
+  paired with `None` and renders no diff toggle
+  (`kb_activity.rs:119-124`). A successful resolve, unresolve, edit,
+  delete, or post must restart the shared comments resource rather
+  than mutating local state, so every consumer (this component and the
+  inline-mark layer) observes the change (`kb_activity.rs:178`).
+- **SPEC-12.6.5**: The inline-comment placement effect must re-run
+  exactly when the hash of the body content plus each comment's id,
+  `deleted` flag, and anchor changes (`placement_key`,
+  `kb_inline.rs:72-82`); a change to a comment's own body text alone
+  must not retrigger it. On each run it must clear prior highlights
+  before computing and applying new ones, then re-measure gutter
+  markers from the now-current DOM, in that order
+  (`kb_inline.rs:109-129`).
+
+### 12.7 Integrations
+
+- **SPEC-12.7.1**: The pages in this scope must call
+  `GET/POST /kb/categories`, `PUT/DELETE /kb/categories/{id}`,
+  `GET/POST /kb/articles` (filters `page`, `per_page`, `q`,
+  `category_id`, `company_id`), `GET/PUT/DELETE /kb/articles/{id}`,
+  `GET /kb/articles/{id}/versions`,
+  `POST /kb/articles/{id}/versions/{n}/restore`,
+  `GET /kb/articles/{id}/vote`, `POST /kb/articles/{id}/helpful`,
+  `POST /kb/articles/{id}/not_helpful`, `POST /kb/articles/{id}/render`,
+  `GET /kb/articles/{id}/measured-duration`,
+  `GET /kb/articles/{id}/tickets`, `GET /kb/articles/{id}/comments`,
+  `POST /kb/articles/{id}/attachments`,
+  `GET /kb/top-ticket-driving-articles?limit=10`,
+  `GET /contacts/companies`, `GET /contacts/companies/{id}`, and
+  `GET /auth/users?page=1&per_page=1`.
+- **SPEC-12.7.2**: `kb_activity.rs` must call
+  `POST /kb/comments/{id}/resolve`, `POST /kb/comments/{id}/unresolve`,
+  `PUT /kb/comments/{id}`, `DELETE /kb/comments/{id}`, and
+  `POST /kb/articles/{id}/comments`; it issues no `GET` of its own,
+  since the comments and versions it renders are fetched by the
+  calling page and passed in.
+- **SPEC-12.7.3**: `kb_inline.rs` calls no HTTP endpoint directly; it
+  drives the DOM layer (`platform::anchor_dom`,
+  `platform::dom::scroll_into_view`) and composes
+  `kb_activity::CommentComposer`, which owns the actual comment POST.
+
+### 12.8 Build and deployment
+
+None of the files in this section's scope add a build or packaging
+step of their own; they compile under the same `app`/`web` feature
+gating `src/main.rs` and `Cargo.toml` define (SPEC-1.3.1), with every
+network call individually gated behind `#[cfg(feature = "app")]`
+(`knowledge_base.rs:833,1831,1868,1955,2185,2211,3475,3583,3757,4673,
+4716`; `kb_activity.rs:433,624,677,778`; `kb_inline.rs:109-129`).
+
+### 12.9 Retention and cleanup
+
+- **SPEC-12.9.1**: Deleting a category must not delete the articles
+  filed under it; they become uncategorized (consistent with
+  SPEC-12.2.2's uncategorized bucket, `knowledge_base.rs:807-810`).
+  Deleting an article is permanent ("This cannot be undone.",
+  `knowledge_base.rs:1930-1937`).
+- **SPEC-12.9.2**: Restoring a version must create a new version
+  (`current_version + 1`), never truncate or delete history
+  (`knowledge_base.rs:2910-2911`).
+- **SPEC-12.9.3**: Canceling a create flow after an image upload
+  auto-created the article must `DELETE` that article, cascading its
+  attachments (`knowledge_base.rs:4394-4431`).
+- **SPEC-12.9.4**: Deleting a comment must not remove its position in
+  the thread: the body is replaced with "Comment deleted" and the row
+  stays in place so sibling replies keep their on-screen order
+  (`kb_activity.rs:613,654-655`). Resolving a thread must not delete or
+  hide it from the data model, only fold its on-screen presentation
+  until the `kb_activity_show_resolved` preference is toggled back on.
+- **SPEC-12.9.5**: "Comment on selection" cancel leaves no server-side
+  trace of an uncommitted comment; only the local pending-composer
+  signal is cleared (`kb_inline.rs:266`).
+
 ## 14. Time, calendar, forms, dashboards, reports and audit
 
 Scope: `src/pages/time.rs`, `src/pages/calendar.rs`, `src/pages/forms.rs`,
