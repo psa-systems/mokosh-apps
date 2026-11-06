@@ -2132,6 +2132,522 @@ network call individually gated behind `#[cfg(feature = "app")]`
   trace of an uncommitted comment; only the local pending-composer
   signal is cleared (`kb_inline.rs:266`).
 
+## 13. Assets, contracts, quotes and projects
+
+Scope: `src/pages/assets.rs`, `src/pages/asset_catalog_ui.rs`,
+`src/pages/asset_drawer.rs`, `src/pages/contracts.rs`,
+`src/pages/quotes.rs`, `src/pages/projects.rs`.
+
+All six files implement behavior and carry at least one `SPEC-13.`
+citation.
+
+### 13.1 Interfaces
+
+- **SPEC-13.1.1**: `AssetListPage` (`src/pages/assets.rs`) must list
+  assets via a structured `POST /assets/search` query (free text plus
+  parsed filter tokens), falling back automatically to the legacy
+  `GET /assets` query-string form on a 404 from the structured
+  endpoint, and must render a facet sidebar from `POST /assets/search/facets`
+  that fails silently (no banner) on any error.
+- **SPEC-13.1.2**: `AssetListPage` must render a free-text search box
+  that accepts the DSL described in SPEC-13.2.2, a company/status/type
+  filter bar, a column-visibility control persisted per SPEC-13.3.3,
+  row selection with bulk edit and bulk delete, and, when the
+  `assets:catalog` capability is on, a "Bulk create" action opening
+  `AssetBulkCreateModal` and a dismissible `SignatureBanner` above the
+  list.
+- **SPEC-13.1.3**: `AssetListPage` must open `AssetDrawer`
+  (`src/pages/asset_drawer.rs`) for a row click when the
+  `assets:inline_edit` capability is on, and must navigate to
+  `Route::AssetDetail` for that same click otherwise.
+- **SPEC-13.1.4**: `AssetDetailPage` (`src/pages/assets.rs`) must render
+  an editable field panel, a Relationships panel (list, add, remove), a
+  Credentials panel (list, add, audited reveal, delete), a Configuration
+  Items panel (list, audited reveal, delete), a Change History panel, a
+  Related Tickets panel from `GET /tickets?asset_id={id}`, and, when the
+  `assets:report_issue` capability is on, a "Report an issue" action
+  that creates a linked ticket via `POST /assets/{id}/report-issue` and
+  navigates to it.
+- **SPEC-13.1.5**: `AssetDrawer` must render a right-side panel with one
+  `InlineFieldEditor` per field in the Identity, Hardware, Dates,
+  Lifecycle and Notes groups, must close on an Escape keypress, on a
+  backdrop click, and on its own Close button, and must link to the
+  full `Route::AssetDetail` page for the destructive actions (delete,
+  retire) it does not itself expose.
+- **SPEC-13.1.6**: `SignatureBanner` (`src/pages/asset_catalog_ui.rs`)
+  must render a "Save as template" prompt above the asset list whenever
+  `GET /asset-models/signature-detector` returns a candidate with a
+  recent-count of at least 1, and must render nothing while dismissed,
+  while loading, or when the lookup fails or 404s.
+- **SPEC-13.1.7**: `AssetBulkCreateModal` (`src/pages/asset_catalog_ui.rs`)
+  must render a model typeahead against `GET /asset-models?q=`, a
+  company select, and a serials textarea, and must submit the batch via
+  a single `POST /assets/bulk-create` once a model, a company and at
+  least one serial to create are present.
+- **SPEC-13.1.8**: `ContractListPage` (`src/pages/contracts.rs`) must
+  list contracts from `GET /contracts` with company, status and type
+  filters, and `ContractNewPage`/`ContractEditPage` must render the same
+  create/edit form (name, company, type, status, value, dates, contract
+  number, notes, and, on create only, initial line items).
+- **SPEC-13.1.9**: `ContractDetailPage` (`src/pages/contracts.rs`) must
+  render a Summary card, an editable hour-balance allotment, a Line
+  Items card (list, add, edit, delete) backed by `GET /contracts/{id}/items`,
+  an hour-balance card backed by `GET /contracts/{id}/hour-balance`, and
+  a Change History panel.
+- **SPEC-13.1.10**: `RateCardListPage` and `RateCardDetailPage`
+  (`src/pages/contracts.rs`) must list, create, edit and delete rate
+  cards and, within a card's detail, list, add, edit and delete its
+  per-work-type rates.
+- **SPEC-13.1.11**: `QuoteListPage` (`src/pages/quotes.rs`) must list
+  quotes from `GET /quotes` with company, status and free-text filters,
+  and `QuoteDetailPage` must render either the staff lifecycle view or,
+  for a contact session, `CustomerQuoteView`, chosen per SPEC-13.4.2.
+- **SPEC-13.1.12**: The staff quote lifecycle view (`QuoteDetailPage`,
+  `src/pages/quotes.rs`) must render an Actions card offering only the
+  subset of Submit, Approve, Reject, Send, Convert and Cancel that
+  `crate::modules::quotes::status` currently allows, and must render a
+  send dialog, a convert-to-project dialog, and an embedded
+  `ApprovalsSection` for internal sign-off.
+- **SPEC-13.1.13**: `CustomerQuoteView` (`src/pages/quotes.rs`) must
+  render Accept and Decline actions only while the quote's status is
+  one `crate::modules::quotes::status::awaiting_client` accepts and the
+  `quotes:accept` capability is on, and must render a PDF preview or
+  download action gated on the `quotes:download_pdf` capability.
+- **SPEC-13.1.14**: The quote create/edit form (`src/pages/quotes.rs`)
+  must render company (locked once created), title, summary,
+  description, valid-until date, tax amount, and a repeating line-item
+  editor (type, description, quantity, unit price), and must disable
+  content editing entirely once the quote's status leaves the set
+  `crate::modules::quotes::status::allows_content_edit` accepts.
+- **SPEC-13.1.15**: `ProjectListPage` (`src/pages/projects.rs`) must
+  list projects from `GET /projects` with company, status and free-text
+  filters and must render status-count and total-budget stat cards from
+  `GET /projects/summary`.
+- **SPEC-13.1.16**: `ProjectDetailPage` (`src/pages/projects.rs`) must
+  render an Overview card (description, budget, hours, progress), a
+  checklist-item toggle inside a rendered Markdown description that
+  calls back to the server, Edit and Delete actions, and a Change
+  History panel.
+- **SPEC-13.1.17**: `ProjectTasksPage` (`src/pages/projects.rs`) must
+  render a task table with create, edit and delete affordances, each
+  task's own change-history modal, and must disable "Add Task" whenever
+  the owning project's status is `"cancelled"`.
+
+### 13.2 Data model
+
+This scope owns no persisted application schema; it defines the wire
+DTOs these pages exchange with the API server and the client-side
+status/type vocabularies below.
+
+- **SPEC-13.2.1**: `assets.rs`'s `RemoteAsset` must decode every
+  optional CMDB field (company, asset type, assigned user, contact,
+  network identity, lifecycle dates) with `#[serde(default)]`, so a
+  server response omitting any of them still decodes, and must render
+  the asset-status options `active`, `in_stock`, `in_repair`, `retired`
+  and `inactive` on both the list and the edit form.
+- **SPEC-13.2.2**: `AssetListPage`'s search box must parse the tokens
+  `status:`, `tag:`, `warranty:<days>`, `eol:expired`, `dept:`/`department:`,
+  `manuf:`/`make:`/`manufacturer:`, `model:` and `company:"<name>"`
+  (case-insensitive, double-quoted for a multi-word company name), and
+  must treat an unrecognized key or an unparseable value as free text
+  rather than rejecting the query.
+- **SPEC-13.2.3**: `contracts.rs` must render the contract-type options
+  `managed_services`, `block_hours`, `time_and_materials`, `fixed_price`
+  and `warranty`, the contract-status options `draft`, `active`,
+  `expired` and `cancelled` with no client-side transition restriction
+  among them, the billing-cycle options `monthly`, `quarterly`,
+  `annually`, `one_time`, `weekly` and `bi_weekly`, and the line-item-type
+  options `recurring_service`, `block_hours`, `retainer`, `product` and
+  `one_time`, each matching the server's corresponding CHECK constraint.
+- **SPEC-13.2.4**: `contracts.rs`'s `ContractItemFormState` must retain
+  the original `ContractItemResponse` alongside the edited fields and
+  must send it back merged into the `PUT /contract-items/{id}` body, so
+  a field this form does not expose (description, billing frequency,
+  work type, included hours, overage rate, rollover settings, sort
+  order, product id) is never wiped by an edit.
+- **SPEC-13.2.5**: `quotes.rs` must render the quote-status vocabulary
+  `draft`, `submitted`, `approved`, `rejected`, `sent`, `accepted`,
+  `declined`, `expired`, `converted` and `cancelled`, and the line-type
+  options `service`, `product`, `labour`, `expense`, `adjustment` and
+  `discount`, and must derive every status-gated affordance from
+  `crate::modules::quotes::status`, never from a locally re-derived
+  rule.
+- **SPEC-13.2.6**: `projects.rs`'s `RemoteProject` and `RemoteTask` must
+  decode every money and hours field with a number-or-string tolerant
+  reader (`de_flex_f64`), and must render the project-status options
+  `planning` (default), `active`, `on_hold`, `completed` and
+  `cancelled`, and the task-priority options `low`, `medium` (default),
+  `high` and `critical`.
+- **SPEC-13.2.7**: `projects.rs`'s `RemoteTask` must distinguish
+  `actual_hours` (approved logged time only) from `logged_hours` (all
+  non-rejected logged time) as two separate fields, and must not use
+  either in place of the other.
+
+### 13.3 Configuration
+
+- **SPEC-13.3.1**: `AssetListPage`, `QuoteListPage`'s and
+  `ProjectListPage`'s list fetch must each request 25 rows per page.
+- **SPEC-13.3.2**: `AssetBulkCreateModal` must cap a single batch at
+  500 serials, applied after both exact-match deduplication and the
+  already-exists trim, rejecting a submit over that count with
+  "Up to 500 serials per batch; split into two." rather than truncating
+  the batch silently.
+- **SPEC-13.3.3**: `AssetListPage`'s optional-column visibility must
+  persist under the preference key `mokosh:assets:columns:v1`,
+  independent of the active tenant, defaulting to every optional column
+  visible.
+- **SPEC-13.3.4**: `AssetBulkCreateModal`'s model typeahead and
+  `SignatureBanner`'s detector call must both treat a 404 from their
+  respective endpoint as the `assets_catalog` server toggle being off,
+  and `AssetBulkCreateModal` must render
+  "Asset catalog is not enabled on this deployment. Ask an admin to flip the `assets_catalog` toggle."
+  in that case rather than an error.
+- **SPEC-13.3.5**: `SignatureBanner`'s dismiss action must persist under
+  the preference key `mokosh:assets:signature_dismissed:v1` for 30
+  days from the click, independent of the active tenant.
+- **SPEC-13.3.6**: Every network-call site in this scope that depends
+  on the `app` feature (every create/edit/delete/send/convert/accept/decline
+  mutation, and `projects.rs`'s task creation) must compile to a no-op,
+  not a compile error, on a build that does not enable that feature,
+  consistent with the gating pattern cited at SPEC-1.3.1.
+
+### 13.4 Security
+
+- **SPEC-13.4.1**: `ContractListPage` and `QuoteListPage` must render
+  the lifecycle view only for a session with `use_can_manage_billing()`
+  true or, for a contact session, the `contracts:read`/`quotes:read`
+  capability; a contact session lacking that capability must see
+  `PortalAccessRequired`, and a non-contact session lacking it must see
+  `PermissionRequired` with the text
+  "Contracts are restricted to administrator and finance roles. Ask an administrator to grant you access."
+  (quotes: the same sentence with "Quotes").
+- **SPEC-13.4.2**: `QuoteDetailPage` must render `CustomerQuoteView` for
+  a contact session carrying the `quotes:read` capability,
+  `PortalAccessRequired` for a contact session lacking it, the staff
+  lifecycle view for a non-contact session with `use_can_manage_billing()`
+  true or the `quotes:read` capability, and `PermissionRequired`
+  otherwise.
+- **SPEC-13.4.3**: `RateCardListPage` must render its list only for a
+  session with `use_can_manage_billing()` true, denying every other
+  session with `PermissionRequired` and the text
+  "Rate cards are restricted to administrator and finance roles. Ask an administrator to grant you access."
+- **SPEC-13.4.4**: `RateCardDetailPage`'s Edit Card, Add Rate and
+  per-rate edit affordances must each be gated on `use_can_manage_billing()`,
+  independent of the page's own (unrestricted) read access.
+- **SPEC-13.4.5**: `AssetListPage`'s "Bulk create" action and
+  `AssetDrawer`'s inline-edit opening must each be gated on their own
+  capability (`assets:catalog`, `assets:inline_edit`); neither capability
+  gates read access to the asset list or detail page itself.
+- **SPEC-13.4.6**: `AssetDetailPage`'s "Report an issue" action must be
+  gated on the `assets:report_issue` capability, bypassed unconditionally
+  for a staff or platform session.
+- **SPEC-13.4.7**: `AssetDetailPage`'s credential and configuration-item
+  reveal actions must each fetch the decrypted value only on an explicit
+  reveal click, through a dedicated, audited endpoint
+  (`GET /credentials/{id}`, `GET /configuration-items/{id}`), never
+  alongside the secret-free summary list fetch.
+- **SPEC-13.4.8**: `quotes.rs`'s customer-decision actions (Accept,
+  Decline) must be gated on the `quotes:accept` capability in addition
+  to the status check in SPEC-13.1.13; a quote's PDF preview/download
+  must be gated on the `quotes:download_pdf` capability, bypassed
+  unconditionally for a staff or platform session.
+- **SPEC-13.4.9**: Every mutating control in this scope (create, edit,
+  delete, bulk edit, bulk delete, send, convert, accept, decline,
+  checklist toggle) must be disabled whenever `crate::hooks::use_can_mutate()`
+  reports the server unreachable, so a write is never silently queued
+  or lost; `CustomerQuoteView`'s Accept/Decline controls and the staff
+  lifecycle action buttons must additionally show the tooltip
+  "Can't {verb} while the server is unreachable" while disabled for
+  that reason.
+- **SPEC-13.4.10**: `projects.rs`'s project and task list/detail fetches
+  must select a contact bearer ahead of a staff bearer when both are
+  present, so a signed-in contact's request is scoped server-side to
+  their own company's projects.
+
+### 13.5 Error handling and observability
+
+- **SPEC-13.5.1**: `AssetListPage`'s list, facets and company-filter
+  fetches must each log their own failure
+  (`tracing::error!("asset list load failed: {e}")`,
+  `tracing::warn!("asset facets load failed: {e}")`), and the list
+  fetch failure must render an inline `ErrorBanner` while the server is
+  reachable and a full-page unavailable state otherwise; the facets and
+  company-filter failures must render no banner at all.
+- **SPEC-13.5.2**: `AssetDetailPage` must log
+  `tracing::error!("asset detail load failed for {id}: {e}")` on load
+  failure and must distinguish "still loading" from "failed to load" in
+  its rendered state; its audit-log panel must independently track
+  Loading, Ready and Failed states rather than collapsing a failure
+  into an empty history.
+- **SPEC-13.5.3**: The asset new/edit form must require a name (capped
+  at 255 characters, message "Please enter an asset name." when blank
+  and "Name must be {max} characters or fewer." when over), must cap
+  manufacturer, model and serial number at 255 characters and a
+  credential name at 100 characters with the same over-length message
+  pattern, and must require a type ("Please pick an asset type.") and a
+  company ("Please pick a company.") on create.
+- **SPEC-13.5.4**: `AssetListPage`'s bulk edit and bulk delete must each
+  report a full-success count ("Updated {n} asset(s)." /
+  "Deleted {n} asset(s).") or a partial-failure count
+  ("Updated {done} of {total}; {failures} failed." /
+  "Deleted {done} of {total}; {failures} failed.") rather than failing
+  the whole batch on one row's error.
+- **SPEC-13.5.5**: `AssetDetailPage`'s delete, credential-delete and
+  relationship-delete confirmations must surface the server's own
+  refusal reason when the delete is rejected, rather than closing the
+  dialog silently.
+- **SPEC-13.5.6**: `AssetBulkCreateModal` must report, distinctly, the
+  count of duplicate serials dropped (with a five-item preview and an
+  "and N more" suffix), the count already belonging to an asset at the
+  selected company, and the final count to be created, updating all
+  three as the operator types.
+- **SPEC-13.5.7**: `ContractListPage`'s list fetch must log
+  `tracing::error!("contract list load failed: {e}")` and render
+  "Could not load contracts. Refresh the page to retry." while
+  reachable, or a full-page unavailable state otherwise; its company
+  filter must log its own failure separately and degrade to an empty
+  dropdown with no banner.
+- **SPEC-13.5.8**: The contract create/edit form must collect every
+  field error before blocking submit (not fail on the first): name
+  required and capped at 200 characters, value optional but non-negative,
+  at most two decimal places and at most 10,000,000,000, start date
+  required and valid, end date optional but, when set, not before the
+  start date ("End date must be on or after the start date."), contract
+  number optional and capped at 100 characters, notes optional and
+  capped at 2000 characters; on a failed submit it must focus the first
+  invalid field in the fixed order name, company, value, start date,
+  end date, contract number, notes.
+- **SPEC-13.5.9**: If a contract's creation succeeds but an initial line
+  item's creation fails, `ContractNewPage` must not roll back the
+  contract; it must show
+  "Contract saved, but an item failed: {err}" and still navigate to the
+  new contract's detail page.
+- **SPEC-13.5.10**: `contracts.rs`'s line item, allotment, rate card and
+  rate add/edit/delete actions must each report their own failure with
+  a verb-specific message ("Could not save line item: {err}", "Could
+  not delete line item: {err}", "Could not save allotment: {err}",
+  "Could not save rate card: {err}", "Could not delete rate card: {err}",
+  "Could not save rate: {err}", "Could not delete rate: {err}") inside
+  the acting modal, without navigating away.
+- **SPEC-13.5.11**: The rate-card item form must require a work type,
+  require the hourly rate as a number, accept the after-hours and
+  emergency rates as optional numbers, and must reject a negative value
+  on any of the three explicitly, because the input's `min="0"` is
+  advisory only and does not block a pasted or programmatic negative
+  value.
+- **SPEC-13.5.12**: `contracts.rs`'s per-line-item parse step at submit
+  time (quantity, unit price, included hours) must log a warning and
+  report a row-numbered error ("Item {n} quantity is not a number", and
+  the equivalent for unit price and included hours) if it disagrees
+  with the form's own prior validation of that row, since the two are
+  expected to always agree.
+- **SPEC-13.5.13**: `QuoteListPage`'s list fetch must log
+  `tracing::error!("quote list load failed: {e}")` and render
+  "Could not load quotes. Refresh the page to retry." while reachable,
+  or a full-page unavailable state otherwise.
+- **SPEC-13.5.14**: `CustomerQuoteView` must log
+  `tracing::warn!("customer quote load failed for {qid}: {e}")` on load
+  failure and must render
+  "This quote could not be loaded. It may not be available to your account."
+  for every failure cause (not found, not yours, network error) alike,
+  and must report a failed decision as
+  "Your decision was not sent: {err}" without changing the quote's
+  rendered status.
+- **SPEC-13.5.15**: The staff quote lifecycle actions must each report
+  their own failure ("Could not update the quote: {e}",
+  "Could not send the quote: {e}", "Could not cancel the quote: {e}",
+  "Could not convert the quote: {e}") and their own success toast
+  ("Quote updated", a send-method-specific sent message, "Quote
+  cancelled", "Quote converted to a project").
+- **SPEC-13.5.16**: The quote create/edit form must require a company
+  and a title ("Company is required.", "Title is required."), must
+  require a description on any line that has a quantity or unit price
+  filled in ("Line {n} description is required."), must silently drop
+  any line left entirely blank from the submitted payload, and must
+  reject a convert-to-project end date before its start date with
+  "Target end date cannot be before the start date."
+- **SPEC-13.5.17**: `ProjectListPage`'s list and summary fetches must
+  each log their own failure
+  (`tracing::error!("project list load failed: {e}")`,
+  `tracing::error!("project summary load failed: {e}")`), and the list
+  fetch failure must drive a full-page unavailable state when the
+  server is unreachable.
+- **SPEC-13.5.18**: The project create/edit form must collect every
+  field error before blocking submit: name required and capped at 80
+  characters, budget amount optional but non-negative, at most two
+  decimal places and at most 999,999,999,999.99, budget hours either
+  blank or a positive number/`H:MM` duration (a negative value reported
+  distinctly as "must be greater than 0" rather than "must be a
+  number").
+- **SPEC-13.5.19**: `ProjectDetailPage`'s delete action must surface the
+  server's own refusal reason on failure rather than a generic message,
+  and its checklist-item toggle must show
+  "Could not update checklist: {e}" on failure while still restarting
+  the project resource to reconcile with the server's actual state.
+- **SPEC-13.5.20**: The Add Task and task-edit forms (`ProjectTasksPage`)
+  must each require a title, must validate an optional due date against
+  the range 2000-01-01 to 2100-12-31 with
+  "{label} must be a valid date." / "{label} must be between 2000 and 2100.",
+  and must validate an optional estimated-hours value as a number or an
+  `H:MM` duration with "Estimated hours must be a number (2.5) or H:MM (1:30)."
+- **SPEC-13.5.21**: `projects.rs`'s project-manager fallback at
+  `ProjectDetailPage` (`src/pages/projects.rs:1538-1548`) must resolve
+  an id-only project manager against the loaded user roster, the same
+  way the task-assignee fallback at `src/pages/projects.rs:2242-2247`
+  does; the code instead passes an empty roster to that lookup, so a
+  project manager who has no server-sent name but whose id the roster
+  can resolve is shown "Unknown" instead of their name. The code is
+  wrong here; this requirement states the intended behavior, and the
+  gap is tracked as a separate defect (see the PR body), not fixed in
+  this change.
+
+### 13.6 Concurrency and ordering
+
+- **SPEC-13.6.1**: Every list page in this scope (`AssetListPage`,
+  `ContractListPage`, `RateCardListPage`, `QuoteListPage`,
+  `ProjectListPage`) must debounce its free-text search 300 milliseconds
+  after the last keystroke before refetching, and must reset the
+  current page to 1 on any change to a filter (company, status, type)
+  or to the search text.
+- **SPEC-13.6.2**: `AssetBulkCreateModal`'s pasted-serials collision
+  lookup (`POST /assets/exists`) must debounce 400 milliseconds after
+  the last keystroke or company change before firing.
+- **SPEC-13.6.3**: Every data-fetching resource in this scope must read
+  `active_tenant_generation()` inside its own async closure (not
+  outside it), so a tenant switch invalidates and reruns every
+  in-flight fetch rather than returning stale-tenant data.
+- **SPEC-13.6.4**: `AssetListPage`'s, `ContractListPage`'s,
+  `QuoteListPage`'s and `ProjectListPage`'s primary list/detail
+  resources must also track `use_server_reachable()`, so each refetches
+  automatically on reconnect rather than requiring a manual refresh.
+- **SPEC-13.6.5**: Every submit handler in this scope (asset, contract,
+  rate card, rate, quote, project, task forms) must ignore a second
+  submit while its own prior submit is still in flight, guarded by a
+  dedicated `is_submitting`/`saving`/`deleting`-style signal checked
+  before the request is sent.
+- **SPEC-13.6.6**: After a successful contract line-item or allotment
+  save, both the items resource and the hour-balance resource (and, on
+  the detail page, the contract resource) must be restarted so the
+  dependent totals are not left stale.
+- **SPEC-13.6.7**: After a successful project edit or checklist toggle,
+  both the project resource and the project-history resource must be
+  restarted; after a successful task create, edit or delete, the tasks
+  resource must be restarted.
+- **SPEC-13.6.8**: `AssetBulkCreateModal`'s serial deduplication must be
+  exact-match (case- and whitespace-sensitive), must preserve first
+  occurrence order, and must report each duplicated value exactly once
+  regardless of how many times it repeats.
+- **SPEC-13.6.9**: The quote editor's `lines` and `line_errors` arrays
+  must be kept the same length on every add, remove and submit-time
+  resize, and the editor must seed its fields from the server exactly
+  once per mount (guarded by a `loaded` flag) so a background refetch
+  of the quote being edited never overwrites in-progress edits.
+- **SPEC-13.6.10**: `AssetDrawer`'s field editors must share one
+  `open_field` registry so opening one field's editor closes any other
+  field's editor already open in the same drawer.
+
+### 13.7 Integrations
+
+- **SPEC-13.7.1**: `AssetListPage` must call
+  `POST /assets/search`/`GET /assets` (with legacy fallback),
+  `POST /assets/search/facets` and `GET /contacts/companies`;
+  `AssetDetailPage` must call `GET /assets/{id}`, `PUT /assets/{id}`,
+  `DELETE /assets/{id}`, `GET /assets/{id}/relationships`,
+  `POST /assets/{id}/relationships`, `DELETE /asset-relationships/{id}`,
+  `GET /assets/{id}/credentials`, `POST /assets/{id}/credentials`,
+  `DELETE /credentials/{id}`, `GET /credentials/{id}`,
+  `GET /assets/{id}/configuration-items`, `GET /configuration-items/{id}`,
+  `GET /assets/{id}/audit-log`, `GET /tickets?asset_id={id}`,
+  `POST /assets/{id}/report-issue`, `GET /auth/users` and
+  `GET /asset-types`.
+- **SPEC-13.7.2**: `AssetBulkCreateModal` must call
+  `GET /asset-models?q=`, `POST /assets/exists` and
+  `POST /assets/bulk-create`; `SignatureBanner` must call
+  `GET /asset-models/signature-detector`.
+- **SPEC-13.7.3**: `AssetDrawer` must call `GET /assets/{id}` to load
+  its snapshot, and each field save goes through `InlineFieldEditor`'s
+  own `PATCH /assets/{id}` keyed by the field's `patch_field` name.
+- **SPEC-13.7.4**: `contracts.rs` must call `GET /contracts`,
+  `POST /contracts`, `GET /contracts/{id}`, `PUT /contracts/{id}`,
+  `DELETE /contracts/{id}`, `GET /contracts/{id}/items`,
+  `POST /contracts/{id}/items`, `PUT /contract-items/{id}`,
+  `DELETE /contract-items/{id}`, `GET /contracts/{id}/hour-balance`,
+  `GET /contacts/companies` and `GET /rate-cards` (used both paginated
+  for the list and unpaginated as the only way to look up one rate card
+  by id, since no `GET /rate-cards/{id}` exists).
+- **SPEC-13.7.5**: `contracts.rs` must call `GET /rate-cards/{id}/items`,
+  `POST /rate-cards`, `PUT /rate-cards/{id}`, `DELETE /rate-cards/{id}`,
+  `POST /rate-cards/{id}/items` (upsert, keyed on `work_type_id`) and
+  `DELETE /rate-card-items/{id}`.
+- **SPEC-13.7.6**: `quotes.rs` must call `GET /quotes`, `GET /quotes/{id}`,
+  `POST /quotes`, `PUT /quotes/{id}`, `DELETE /quotes/{id}`,
+  `POST /quotes/{id}/accept`, `POST /quotes/{id}/decline`,
+  `POST /quotes/{id}/send`, `POST /quotes/{id}/convert`,
+  `GET /quotes/{id}/delivery-options`, `GET /quotes/{id}/pdf` and
+  `GET /contacts/companies`.
+- **SPEC-13.7.7**: `quotes.rs` must reuse `crate::pages::billing`'s sent-row
+  rendering, delivery-option lookup and sent-date formatting rather than
+  reimplementing them, and must embed `crate::pages::tickets::ApprovalsSection`
+  (scoped to the `"quotes"` entity segment) for internal sign-off.
+  A successful quote conversion must link to `Route::ProjectDetail` for
+  the resulting project.
+- **SPEC-13.7.8**: `projects.rs` must call `GET /projects`,
+  `GET /projects/summary`, `POST /projects`, `GET /projects/{id}`,
+  `PUT /projects/{id}`, `DELETE /projects/{id}`,
+  `GET /projects/{id}/tasks`, `POST /projects/{id}/tasks`,
+  `PUT /tasks/{id}`, `DELETE /tasks/{id}`,
+  `GET /audit-log/entity/projects/{id}` and
+  `GET /audit-log/entity/tasks/{id}`.
+- **SPEC-13.7.9**: `projects.rs` must resolve its company, project
+  manager, task assignee and task status options through the shared
+  `CompanyPicker`, `use_user_roster` and `use_task_statuses` hooks, and
+  must prefer each row's server-sent display name over a client-side
+  roster join wherever the server sends one (see SPEC-13.5.21 for the
+  one site that does not).
+
+### 13.8 Build and deployment
+
+- **SPEC-13.8.1**: None of the files in this section's scope add a
+  build or packaging step of their own; they compile under the same
+  `app`/`web`/`desktop` feature gating `src/main.rs` and `Cargo.toml`
+  define (see SPEC-1.3.1).
+- **SPEC-13.8.2**: `assets.rs`'s, `quotes.rs`'s and `projects.rs`'s
+  create-mutation bodies are wrapped in `#[cfg(feature = "app")]`;
+  `projects.rs`'s task-creation body is too, but its project-edit,
+  project-delete, checklist-toggle, task-edit and task-delete bodies are
+  not. Both facts are as the code stands: this section states the
+  asymmetry as observed behavior, not as a defect to fix.
+
+### 13.9 Retention and cleanup
+
+- **SPEC-13.9.1**: `AssetDetailPage`'s bulk-delete and single-delete
+  confirmations must state that the asset's credentials, configuration
+  items and relationships are also removed and that the action "cannot
+  be undone"; credential and relationship removal confirmations must
+  carry the same "cannot be undone" wording. None of the three has an
+  undo path; a retired or deleted asset is recreated, not restored.
+- **SPEC-13.9.2**: `ContractDetailPage`'s delete, line-item delete,
+  `RateCardDetailPage`'s delete, and rate delete confirmations must each
+  state "This cannot be undone." before the request is sent; none has
+  an undo path.
+- **SPEC-13.9.3**: `CustomerQuoteView`'s cancel confirmation must state
+  that the customer can no longer accept the quote and that the action
+  "cannot be undone"; a cancelled quote is terminal (no undo, no
+  reopen).
+- **SPEC-13.9.4**: The quote editor must never allow removing a line
+  down to zero: the Remove-line control must stay disabled once exactly
+  one line remains.
+- **SPEC-13.9.5**: `ProjectDetailPage`'s delete and `ProjectTasksPage`'s
+  task-delete confirmations must each state "This cannot be undone.";
+  neither has an undo path.
+- **SPEC-13.9.6**: `AssetBulkCreateModal` must reset its model, company
+  and serials fields after a successful bulk-create, so the next open
+  starts from a clean state.
+- **SPEC-13.9.7**: `AssetListPage` must restart its list resource after
+  a drawer close, a bulk edit, a bulk delete, or a catalog bulk-create,
+  so the list reflects the just-completed change without a manual
+  refresh.
+
 ## 14. Time, calendar, forms, dashboards, reports and audit
 
 Scope: `src/pages/time.rs`, `src/pages/calendar.rs`, `src/pages/forms.rs`,

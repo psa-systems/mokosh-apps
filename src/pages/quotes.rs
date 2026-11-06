@@ -4,6 +4,9 @@
 //! `serde`-typed request bodies, the minimal query-string encoder)
 //! mirror `src/pages/contracts.rs`.
 //!
+//! SPEC-13.2.5: every status-gated affordance in this file derives from
+//! `crate::modules::quotes::status`, never a locally re-derived rule.
+//!
 //! Two server rules shape the whole UI, and both are mirrored in
 //! `modules::quotes::status` rather than re-derived here:
 //!
@@ -17,6 +20,12 @@
 //!
 //! Finance-gated to match the server's `RequireBilling` + `RequireFinance`
 //! pair, the same gate `contracts` and `billing` use.
+//!
+//! SPEC-13.7.6: calls `GET /quotes`, `GET /quotes/{id}`, `POST /quotes`,
+//! `PUT /quotes/{id}`, `DELETE /quotes/{id}`, `POST /quotes/{id}/accept`,
+//! `POST /quotes/{id}/decline`, `POST /quotes/{id}/send`,
+//! `POST /quotes/{id}/convert`, `GET /quotes/{id}/delivery-options`,
+//! `GET /quotes/{id}/pdf` and `GET /contacts/companies`.
 
 use dioxus::prelude::*;
 use rust_decimal::Decimal;
@@ -56,6 +65,7 @@ fn use_can_manage_billing() -> bool {
         .unwrap_or(false)
 }
 
+// SPEC-13.2.5: the quote-status vocabulary's badge variants.
 /// Colour for a status tag. The split is deliberate: internal workflow
 /// states are neutral/blue, the client's own decisions are green / red,
 /// and `converted` is purple because it is the end of the quote's life
@@ -103,6 +113,8 @@ struct CompanyOption {
     name: String,
 }
 
+// SPEC-13.4.2: the body text a non-contact session lacking billing
+// access or `quotes:read` sees.
 /// The finance gate, rendered as the same `PermissionRequired` empty
 /// state every other billing surface uses. The server's quote routes are
 /// `RequireBilling` + `RequireFinance`, so without this a non-finance
@@ -171,9 +183,12 @@ fn QuoteListBody() -> Element {
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke, matching the pattern on every other list page (e.g.
     // `tickets.rs`).
+    // SPEC-13.6.1: debounce the free-text search 300ms after the last
+    // keystroke before refetching.
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let mut page = use_signal(|| 1usize);
 
+    // SPEC-13.2.5: the quote-status vocabulary.
     let status_options = vec![
         SelectOption::new("", "All Statuses"),
         SelectOption::new("draft", "Draft"),
@@ -191,6 +206,8 @@ fn QuoteListBody() -> Element {
     // MAPPS-575: NOT narrowed to active. This is the quotes LIST filter; an
     // archived company's quotes still exist, and being able to look at them is
     // what archiving-instead-of-deleting is for.
+    // SPEC-13.6.3: read inside the async closure so a tenant switch
+    // invalidates and reruns this fetch.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // The dropdown shows its placeholder alone for a tenant with no
@@ -234,6 +251,9 @@ fn QuoteListBody() -> Element {
     let company_for_resource = company_text.clone();
     let status_for_resource = status_text.clone();
     let search_for_resource = search_debounced.read().trim().to_string();
+    // SPEC-13.1.11: lists quotes from `GET /quotes` with company, status
+    // and free-text filters. SPEC-13.6.3: `active_tenant_generation()` is
+    // read inside the async closure, not outside it.
     let quotes_resource = use_resource(move || {
         let company = company_for_resource.clone();
         let status = status_for_resource.clone();
@@ -258,6 +278,7 @@ fn QuoteListBody() -> Element {
             if !q.is_empty() {
                 path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
             }
+            // SPEC-13.5.13: log the list fetch's own failure.
             crate::hooks::fetch::api::get_authed_any::<Paginated<QuoteResponse>>(&path)
                 .await
                 .inspect_err(|e| tracing::error!("quote list load failed: {e}"))
@@ -275,6 +296,8 @@ fn QuoteListBody() -> Element {
     let has_filters =
         !company_text.is_empty() || !status_text.is_empty() || !search_text.is_empty();
 
+    // SPEC-13.5.13: a full-page unavailable state when the list fetch
+    // fails and the server is unreachable.
     let reachable = crate::hooks::use_server_reachable();
     if fetch_failed && !reachable {
         return rsx! {
@@ -303,6 +326,8 @@ fn QuoteListBody() -> Element {
         Card { class: "mb-6",
             div { class: "flex flex-col sm:flex-row gap-4",
                 div { class: "flex-1",
+                    // SPEC-13.6.1: reset the current page to 1 on any
+                    // change to the search text (and, below, to a filter).
                     SearchInput {
                         value: search.read().clone(),
                         placeholder: "Search quotes…",
@@ -335,6 +360,8 @@ fn QuoteListBody() -> Element {
             }
         }
 
+        // SPEC-13.5.13: the list fetch's failure banner while the server
+        // is still reachable.
         if fetch_failed {
             ErrorBanner { class: "mb-3", "Could not load quotes. Refresh the page to retry." }
         }
@@ -510,6 +537,9 @@ fn QuoteRow(props: QuoteRowProps) -> Element {
 /// and finance roles" - untrue of them, and a hard stop on the sign-off flow
 /// the server implements and the quote email advertises. `QuoteListBody` said
 /// "Contact-facing accept/decline lives in the detail body"; nothing did.
+// SPEC-13.1.11, SPEC-13.4.2: chooses the staff lifecycle view,
+// `CustomerQuoteView` or `PortalAccessRequired`/`PermissionRequired` per
+// session type and capability.
 #[component]
 pub fn QuoteDetailPage(id: String) -> Element {
     use_page_title("Quote");
@@ -598,6 +628,7 @@ fn CustomerQuoteView(id: String) -> Element {
     let can_mutate = use_can_mutate();
     let mut version = use_signal(|| 0u32);
     let id_for_fetch = id.clone();
+    // SPEC-13.5.14: log the customer quote load's own failure.
     let quote_resource = use_resource(move || {
         let qid = id_for_fetch.clone();
         async move {
@@ -626,6 +657,8 @@ fn CustomerQuoteView(id: String) -> Element {
         // The server answers a quote from another company, and one not yet
         // sent, with the same 404 so the portal never confirms it exists, and
         // this client cannot tell that apart from a failed request.
+        // SPEC-13.5.14: the same message for every failure cause (not
+        // found, not yours, network error) alike.
         return rsx! {
             PageHeader { title: "Quote" }
             Card {
@@ -646,6 +679,9 @@ fn CustomerQuoteView(id: String) -> Element {
     let tax = format_money(quote.tax_amount);
     let valid_until = quote.valid_until.map(|d| d.to_string());
     let status_line = customer_quote_status_line(&quote.status, valid_until.as_deref());
+    // SPEC-13.1.13, SPEC-13.4.8: Accept/Decline render only while the
+    // status allows a client decision AND the `quotes:accept` capability
+    // is on.
     let awaiting = status::awaiting_client(&quote.status) && can_decide;
     let lines = quote.lines.clone().unwrap_or_default();
     let quote_id = quote.id;
@@ -653,6 +689,8 @@ fn CustomerQuoteView(id: String) -> Element {
     let accept_prompt = customer_decision_prompt(true, &number, &total);
     let decline_prompt = customer_decision_prompt(false, &number, &total);
 
+    // SPEC-13.6.5: ignore a second submit while a prior decision is still
+    // in flight.
     let mut decide = move |accept: bool| {
         if *deciding.read() {
             return;
@@ -665,6 +703,8 @@ fn CustomerQuoteView(id: String) -> Element {
             Some(decline_reason.read().trim().to_string()).filter(|n| !n.is_empty())
         };
         spawn(async move {
+            // SPEC-13.8.1: compiles to a no-op, not a compile error, on a
+            // build without the `app` feature.
             #[cfg(feature = "app")]
             {
                 let action = if accept { "accept" } else { "decline" };
@@ -678,6 +718,8 @@ fn CustomerQuoteView(id: String) -> Element {
                         confirming.set(None);
                         version.with_mut(|v| *v += 1);
                     }
+                    // SPEC-13.5.14: report a failed decision without
+                    // changing the quote's rendered status.
                     Err(err) => decision_error.set(format!(
                         "Your decision was not sent: {}",
                         err.user_message()
@@ -734,6 +776,9 @@ fn CustomerQuoteView(id: String) -> Element {
                 }
                 if awaiting {
                     div { class: "flex flex-wrap gap-2 border-t border-line pt-4",
+                        // SPEC-13.4.9: disabled, with the unreachable-server
+                        // tooltip, whenever `use_can_mutate()` reports the
+                        // server unreachable.
                         Button {
                             variant: ButtonVariant::Primary,
                             disabled: !can_mutate || *deciding.read(),
@@ -801,6 +846,8 @@ fn QuoteDetailBody(id: String) -> Element {
     // MAPPS-607: PMS-936 exposes `GET /quotes/{id}/pdf` behind the
     // `quotes:download_pdf` cap. Staff / platform bypass unconditionally
     // through `use_capability`.
+    // SPEC-13.1.13, SPEC-13.4.8: gates the PDF preview/download action,
+    // bypassed unconditionally for a staff or platform session.
     let can_download_pdf = crate::hooks::capabilities::use_capability("quotes:download_pdf");
     let mut version = use_signal(|| 0u32);
     // Not `mut` locally: these are handed by value to the action helpers,
@@ -818,6 +865,8 @@ fn QuoteDetailBody(id: String) -> Element {
     let mut send_method = use_signal(|| "email".to_string());
     let mut send_note = use_signal(String::new);
 
+    // SPEC-13.6.3: `active_tenant_generation()` read inside the async
+    // closure so a tenant switch invalidates and reruns this fetch.
     let id_for_fetch = id.clone();
     let quote_resource = use_resource(move || {
         let qid = id_for_fetch.clone();
@@ -881,6 +930,8 @@ fn QuoteDetailBody(id: String) -> Element {
                 // Every control is gated on the same predicate the
                 // server enforces, so a disabled button means "not in
                 // this state" rather than "this might 409".
+                // SPEC-13.1.14: content editing is offered only while the
+                // status is one `status::allows_content_edit` accepts.
                 let can_edit = status::allows_content_edit(&st) && can_mutate;
                 // MAPPS-1005: a quote still open for content edits renders
                 // live, like a draft invoice, so its PDF previews rather
@@ -905,6 +956,7 @@ fn QuoteDetailBody(id: String) -> Element {
                             }
                         },
                         actions: rsx! {
+                            // SPEC-13.1.13: the PDF preview/download action.
                             if can_download_pdf {
                                 crate::components::DownloadButton {
                                     path: format!("/quotes/{}/pdf", q.id),
@@ -986,6 +1038,8 @@ fn QuoteDetailBody(id: String) -> Element {
                             // polymorphic approvals surface; this is the
                             // same component the ticket detail uses,
                             // pointed at the quote target.
+                            // SPEC-13.1.12, SPEC-13.7.7: the embedded
+                            // `ApprovalsSection` for internal sign-off.
                             crate::pages::tickets::ApprovalsSection {
                                 entity_id: quote_id.clone(),
                                 entity_segment: "quotes".to_string(),
@@ -1048,6 +1102,8 @@ fn QuoteDetailBody(id: String) -> Element {
                                     if let Some(notes) = q.decision_notes.clone().filter(|s| !s.is_empty()) {
                                         div { dt { class: "text-subtle", "Client notes" } dd { "{notes}" } }
                                     }
+                                    // SPEC-13.7.7: a converted quote links
+                                    // to the resulting project.
                                     if let Some(project_id) = q.converted_project_id {
                                         div {
                                             dt { class: "text-subtle", "Project" }
@@ -1064,8 +1120,15 @@ fn QuoteDetailBody(id: String) -> Element {
                             }
 
                             if staff_only {
+                            // SPEC-13.1.12: offers only the subset of
+                            // Submit, Approve, Reject, Send, Convert and
+                            // Cancel that `status` currently allows.
                             Card { title: "Actions",
                                 div { class: "flex flex-col gap-2",
+                                    // SPEC-13.4.9: every lifecycle button
+                                    // below is disabled whenever
+                                    // `use_can_mutate()` reports the server
+                                    // unreachable.
                                     if status::can_submit(&st) {
                                         Button {
                                             variant: ButtonVariant::Secondary,
@@ -1172,6 +1235,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                             let other_invalid = method == "other" && note.is_empty();
                                             let pdf_path = format!("/api/v1/quotes/{}/pdf", q.id);
                                             let qid = quote_id.clone();
+                                            // SPEC-13.1.12: the send dialog.
                                             rsx! {
                                                 crate::components::ConfirmDialog {
                                                     open: confirming_send(),
@@ -1261,6 +1325,8 @@ fn QuoteDetailBody(id: String) -> Element {
                                                     },
                                                     onconfirm: {
                                                         let qid = qid.clone();
+                                                        // SPEC-13.6.5: ignore a second submit
+                                                        // while a prior send is in flight.
                                                         move |_| {
                                                             if *busy.read() {
                                                                 return;
@@ -1306,6 +1372,9 @@ fn QuoteDetailBody(id: String) -> Element {
                                             "Cancel quote"
                                         }
                                         // MAPPS-436: the DELETE fires from `onconfirm` only.
+                                        // SPEC-13.9.3: states that the customer can no
+                                        // longer accept the quote and that cancelling
+                                        // cannot be undone.
                                         crate::components::ConfirmDialog {
                                             open: confirming_cancel(),
                                             title: "Cancel quote".to_string(),
@@ -1316,6 +1385,8 @@ fn QuoteDetailBody(id: String) -> Element {
                                             loading: *busy.read(),
                                             onconfirm: {
                                                 let qid = quote_id.clone();
+                                                // SPEC-13.6.5: ignore a second submit
+                                                // while a prior cancel is in flight.
                                                 move |_| {
                                                     if *busy.read() {
                                                         return;
@@ -1333,6 +1404,7 @@ fn QuoteDetailBody(id: String) -> Element {
                         }
                     }
 
+                    // SPEC-13.1.12: the convert-to-project dialog.
                     ConvertQuoteModal {
                         open: *show_convert.read(),
                         quote_id: quote_id.clone(),
@@ -1371,6 +1443,8 @@ fn set_status(
         )
         .await
         {
+            // SPEC-13.5.15: `set_status`'s own success toast and failure
+            // message.
             Ok(_) => {
                 crate::hooks::toast::push_toast(
                     crate::components::AlertType::Success,
@@ -1409,6 +1483,8 @@ fn send_quote(
         )
         .await
         {
+            // SPEC-13.5.15: `send_quote`'s own, send-method-specific
+            // success toast and failure message.
             Ok(_) => {
                 let msg = match method.as_str() {
                     "email" => "Quote emailed to the client",
@@ -1433,6 +1509,8 @@ fn cancel_quote(
     busy.set(true);
     action_error.set(String::new());
     spawn(async move {
+        // SPEC-13.5.15: `cancel_quote`'s own success toast and failure
+        // message.
         match crate::hooks::fetch::api::delete_authed(&format!("/quotes/{quote_id}")).await {
             Ok(_) => {
                 crate::hooks::toast::push_toast(
@@ -1483,6 +1561,8 @@ fn ConvertQuoteModal(props: ConvertQuoteModalProps) -> Element {
 
         // Mirror the server's schema validation so an obviously-inverted
         // range never costs a round trip.
+        // SPEC-13.5.16: reject a convert-to-project end date before its
+        // start date.
         let mut guard = FormGuard::new();
         if !start.is_empty() && !end.is_empty() && end < start {
             error.set("Target end date cannot be before the start date.".to_string());
@@ -1507,6 +1587,8 @@ fn ConvertQuoteModal(props: ConvertQuoteModalProps) -> Element {
             )
             .await
             {
+                // SPEC-13.5.15: `ConvertQuoteModal`'s own success toast and
+                // failure message.
                 Ok(_) => {
                     crate::hooks::toast::push_toast(
                         crate::components::AlertType::Success,
@@ -1666,6 +1748,8 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
     // `line_errors` is kept in lockstep with `lines` at every add/remove so
     // the index-to-slot mapping cannot drift.
     let mut title_error = use_signal(String::new);
+    // SPEC-13.6.9: `lines` and `line_errors` are kept the same length on
+    // every add, remove and submit-time resize.
     let mut line_errors = use_signal(|| vec![String::new()]);
     let mut submitting = use_signal(|| false);
     let mut loaded = use_signal(|| false);
@@ -1683,6 +1767,9 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
                 .ok()
         }
     });
+    // SPEC-13.6.9: seed from the server exactly once per mount, guarded
+    // by `loaded`, so a background refetch never overwrites in-progress
+    // edits.
     if let Some(Some(q)) = &*existing.read_unchecked() {
         if !*loaded.read() {
             company_id.set(q.company_id.to_string());
@@ -1719,6 +1806,7 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
         }
     }
 
+    // SPEC-13.2.5: the line-type vocabulary.
     let line_type_options = vec![
         SelectOption::new("service", "Service"),
         SelectOption::new("product", "Product"),
@@ -1751,6 +1839,8 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
         line_errors.set(vec![String::new(); draft_lines.len()]);
         error.set(String::new());
 
+        // SPEC-13.5.16: collect every field error (company, title, each
+        // line's description) before blocking submit.
         let mut missing: Vec<String> = Vec::new();
 
         if company.is_empty() {
@@ -1788,6 +1878,8 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
             return;
         }
 
+        // SPEC-13.5.16: silently drop any line left entirely blank from
+        // the submitted payload.
         let payload_lines: Vec<QuoteLineRequest> = draft_lines
             .iter()
             .enumerate()
@@ -1902,6 +1994,8 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
             ErrorBanner { class: "mb-3", "{error}" }
         }
 
+        // SPEC-13.1.14: company (locked once created), title, summary,
+        // description and valid-until date.
         Card { class: "mb-6", title: "Details",
             div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                 div {
@@ -1978,6 +2072,8 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
             }
         }
 
+        // SPEC-13.1.14: the repeating line-item editor (type,
+        // description, quantity, unit price) and the tax amount field.
         Card { class: "mb-6", title: "Line items",
             div { class: "space-y-3",
                 for (idx, line) in lines.read().clone().into_iter().enumerate() {
@@ -2066,6 +2162,9 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
                             }
                         }
                         div { class: "md:col-span-1",
+                            // SPEC-13.9.4: never allow removing a line
+                            // down to zero; the guard below keeps exactly
+                            // one line un-removable.
                             Button {
                                 variant: ButtonVariant::Secondary,
                                 onclick: move |_| {
@@ -2077,6 +2176,8 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
                                         // error vector sized to the
                                         // lines vector so the submit
                                         // guard can index straight in.
+                                        // SPEC-13.6.9: resize `line_errors`
+                                        // in lockstep with `lines`.
                                         let mut errs = line_errors.read().clone();
                                         if idx < errs.len() {
                                             errs.remove(idx);
@@ -2100,6 +2201,8 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
                         // MAPPS-1017: match the new line with an empty
                         // error slot so an inline error later indexes
                         // against a slot that exists.
+                        // SPEC-13.6.9: resize `line_errors` in lockstep
+                        // with `lines`.
                         let mut errs = line_errors.read().clone();
                         errs.push(String::new());
                         line_errors.set(errs);
@@ -2135,6 +2238,9 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
                 to: cancel_route.clone(),
                 Button { variant: ButtonVariant::Secondary, "Cancel" }
             }
+            // SPEC-13.6.5: disabled while `submitting` is set, so a
+            // second submit while the prior one is still in flight is
+            // ignored.
             Button {
                 variant: ButtonVariant::Primary,
                 disabled: *submitting.read(),

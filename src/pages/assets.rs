@@ -1,4 +1,9 @@
 //! Asset management pages (CMDB), wired to the assets API (PMS-71).
+//!
+//! SPEC-13.7.1: this file is the implementing site for the asset list,
+//! detail, relationships, credentials, configuration-items, audit-log,
+//! related-tickets and report-issue endpoint calls cited at their own
+//! call sites below.
 
 use std::collections::HashMap;
 
@@ -52,6 +57,8 @@ fn asset_type_label(surface: &str, name: Option<&str>, id: Option<uuid::Uuid>) -
 }
 
 /// An asset (`GET /api/v1/assets`).
+// SPEC-13.2.1: every optional CMDB field below decodes with
+// `#[serde(default)]` so a response omitting one still decodes.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteAsset {
     id: uuid::Uuid,
@@ -239,6 +246,8 @@ struct AuditEntry {
 /// "fetch failed" - previously every fetch outcome collapsed into a
 /// silent empty list that rendered "No history yet" even on permission
 /// or network failures.
+// SPEC-13.5.2: independently tracks Loading, Ready and Failed rather than
+// collapsing a failure into an empty history.
 #[derive(Clone, Debug)]
 enum AuditPanelState {
     Loading,
@@ -390,6 +399,7 @@ const WARRANTY_REFRESH_THRESHOLD_DAYS: i64 = 30;
 
 /// MAPPS-546: rows per page on the asset list, sent to the server rather than
 /// applied to what came back.
+// SPEC-13.3.1: the asset list fetch requests 25 rows per page.
 const PER_PAGE: usize = 25;
 
 /// Compute the refresh-status bucket from a server-formatted (`YYYY-MM-DD`)
@@ -444,6 +454,10 @@ fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
 /// than a silent empty; the typed value is also returned in
 /// `unresolved_companies` so the page can surface a quiet "no company
 /// named <x>" hint next to the search box.
+// SPEC-13.2.2: parses the `status:`, `tag:`, `warranty:<days>`, `eol:expired`,
+// `dept:`/`department:`, `manuf:`/`make:`/`manufacturer:`, `model:` and
+// `company:"<name>"` tokens; an unrecognised key or unparseable value falls
+// through to free text below rather than rejecting the query.
 fn parse_asset_dsl_with_companies(
     input: &str,
     companies: &[(String, uuid::Uuid)],
@@ -740,6 +754,8 @@ struct FacetValueCountWire {
 /// own. The key is deliberately per-tenant-blind: operators who switch
 /// tenants keep their column layout, since it is a layout preference,
 /// not a tenant decision.
+// SPEC-13.3.3: persists under this key, independent of the active tenant,
+// defaulting to every optional column visible.
 const COLUMN_PREFS_KEY: &str = "mokosh:assets:columns:v1";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -1039,10 +1055,14 @@ pub fn AssetListPage() -> Element {
     // Phase 2 asset inline edit: a row click opens the drawer over the
     // list when `assets:inline_edit` is on; otherwise the pre-phase-2
     // navigation to `AssetDetail` stays in place.
+    // SPEC-13.4.5: `assets:inline_edit` gates the drawer, not list/detail read
+    // access (see the row-click branch below for the drawer-vs-navigate split).
     let inline_edit_enabled = crate::hooks::capabilities::use_capability("assets:inline_edit");
     let mut open_drawer: Signal<Option<uuid::Uuid>> = use_signal(|| None);
     // Phase 3 asset catalog: "Bulk create" button + signature banner
     // on top of the list, both gated on `use_capability("assets:catalog")`.
+    // SPEC-13.1.2, SPEC-13.4.5: `assets:catalog` gates "Bulk create" / the
+    // SignatureBanner only, not read access to the list itself.
     let catalog_enabled = crate::hooks::capabilities::use_capability("assets:catalog");
     let mut bulk_catalog_open = use_signal(|| false);
     // MAPPS-303: page-scoped bulk selection (built on MAPPS-290's
@@ -1088,6 +1108,8 @@ pub fn AssetListPage() -> Element {
     // MAPPS-855: debounce the search dependency so a burst of keystrokes
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke.
+    // SPEC-13.6.1: debounce the free-text search 300ms after the last
+    // keystroke before refetching.
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     // Phase 1 asset search v2: structured filter pills. The dropdowns
     // below write into this vector; a chip in the bar removes an entry.
@@ -1102,13 +1124,18 @@ pub fn AssetListPage() -> Element {
     // resolver and the fallback's `company_id=` serialisation can read
     // the current set. Read inside each resource closure that depends
     // on it so Dioxus re-runs the fetch when companies land.
+    // SPEC-13.5.1: the company-filter fetch logs its own failure (via
+    // `list_or_empty`) and renders no banner, degrading to an empty list.
     let companies_resource = use_resource(|| async {
+        // SPEC-13.6.3: read inside the async closure.
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::list_or_empty(
             "asset company filter option",
             crate::hooks::fetch::api::get_all_authed::<CompanyOpt>("/contacts/companies").await,
         )
     });
+    // SPEC-13.1.1, SPEC-13.7.1: primary search resource, structured
+    // `POST /assets/search` with a legacy `GET /assets` fallback on 404.
     let mut assets_resource = use_resource(move || {
         let typed = search_debounced.read().trim().to_string();
         let current_page = (*page.read()).max(1);
@@ -1135,7 +1162,11 @@ pub fn AssetListPage() -> Element {
             }
         }
         async move {
+            // SPEC-13.6.3: read inside the async closure so a tenant switch
+            // invalidates and reruns this in-flight fetch.
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // SPEC-13.6.4: track reachability so the list auto-refetches on
+            // reconnect.
             let _reachable = crate::hooks::use_server_reachable();
             // Try the structured search first. The contact-plane bearer
             // selection stays implicit via `get_authed_any` / `post_authed_typed`.
@@ -1171,12 +1202,14 @@ pub fn AssetListPage() -> Element {
                         &filters,
                         &q,
                     );
+                    // SPEC-13.5.1: log the list fetch's own failure.
                     crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteAsset>>(&path)
                         .await
                         .inspect_err(|e| tracing::error!("asset list load failed: {e}"))
                         .ok()
                 }
                 Err(e) => {
+                    // SPEC-13.5.1: log the list fetch's own failure.
                     tracing::error!("asset list load failed: {e}");
                     None
                 }
@@ -1186,6 +1219,8 @@ pub fn AssetListPage() -> Element {
     // Phase 1 asset-search v2: facet counts rail. One POST per
     // (q, filters) change. Non-blocking: the list renders without
     // waiting on this; a 404 means the toggle is off and nothing shows.
+    // SPEC-13.1.1, SPEC-13.7.1: the separate facets resource
+    // (`POST /assets/search/facets`); SPEC-13.5.1: fails silently, no banner.
     let facets_resource = use_resource(move || {
         let typed = search_debounced.read().trim().to_string();
         let manual_pills: Vec<FilterPill> = pills.read().clone();
@@ -1205,6 +1240,7 @@ pub fn AssetListPage() -> Element {
             }
         }
         async move {
+            // SPEC-13.6.3: read inside the async closure.
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let body = serde_json::json!({
                 "q": if q.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(q) },
@@ -1261,6 +1297,8 @@ pub fn AssetListPage() -> Element {
     // keeps the nav + banner) instead of an empty assets table. A fetch that
     // fails while still reachable (a 4xx) keeps the inline "Could not load"
     // notice below. `can_mutate` disables the bulk write controls while down.
+    // SPEC-13.5.1: full-page unavailable state vs inline ErrorBanner below,
+    // keyed on reachability.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
     if load_failed && !reachable {
@@ -1273,6 +1311,9 @@ pub fn AssetListPage() -> Element {
     // matched, and `total` is its count of every match - not of this page.
     let filtered: Vec<&RemoteAsset> = assets.iter().collect();
 
+    // SPEC-13.1.2: this render composes the search box, filter bar,
+    // column-visibility control, row selection + bulk edit/delete, and
+    // (capability-gated) "Bulk create" + SignatureBanner together.
     rsx! {
         // Phase 2 asset inline edit: a right-side drawer slides over
         // the list when `assets:inline_edit` is on. Esc or backdrop
@@ -1283,6 +1324,7 @@ pub fn AssetListPage() -> Element {
                 asset_id: open_id,
                 onclose: move |_| {
                     open_drawer.set(None);
+                    // SPEC-13.9.7: refetch the list after the drawer closes.
                     assets_resource.restart();
                 },
             }
@@ -1311,6 +1353,8 @@ pub fn AssetListPage() -> Element {
             },
         }
 
+        // SPEC-13.1.2: "Bulk create" + SignatureBanner, gated on
+        // `assets:catalog` above.
         if catalog_enabled {
             crate::pages::asset_catalog_ui::SignatureBanner {
                 onsave: move |_cand: crate::pages::asset_catalog_ui::SignatureCandidate| {
@@ -1335,6 +1379,7 @@ pub fn AssetListPage() -> Element {
                     crate::components::AlertType::Success,
                     format!("Created {count} assets."),
                 );
+                // SPEC-13.9.7: refetch the list after a catalog create.
                 assets_resource.restart();
             },
         }
@@ -1357,6 +1402,8 @@ pub fn AssetListPage() -> Element {
                     SearchInput {
                         value: search.read().clone(),
                         placeholder: "Search by name, serial, hostname, IP, MAC…",
+                        // SPEC-13.6.1: reset the current page to 1 on a
+                        // search-text change.
                         oninput: move |e: FormEvent| {
                             search.set(e.value());
                             page.set(1);
@@ -1390,6 +1437,7 @@ pub fn AssetListPage() -> Element {
                             label: "Status".to_string(),
                             value: current_status,
                             placeholder: "Any status".to_string(),
+                            // SPEC-13.2.1: the five asset-status options.
                             options: vec![
                                 SelectOption::new("active", "Active"),
                                 SelectOption::new("in_stock", "In Stock"),
@@ -1518,6 +1566,8 @@ pub fn AssetListPage() -> Element {
             Button {
                 variant: ButtonVariant::Primary,
                 // MAPPS-357: block bulk edit while the server is down.
+                // SPEC-13.4.9: disable the mutating control while
+                // `use_can_mutate()` reports the server unreachable.
                 disabled: !can_mutate,
                 title: (!can_mutate).then(|| "Can't bulk edit while the server is unreachable".to_string()),
                 onclick: move |_| {
@@ -1549,6 +1599,9 @@ pub fn AssetListPage() -> Element {
         {
             let pending = bulk_delete_confirm.read().clone();
             let pending_count = pending.as_ref().map(|v| v.len()).unwrap_or(0);
+            // SPEC-13.9.1: states that credentials, configuration items and
+            // relationships are also removed and that the action cannot be
+            // undone.
             let dialog_message = format!(
                 "Delete {pending_count} selected asset(s)? Credentials, configuration items, and relationships on these assets are also removed. This cannot be undone."
             );
@@ -1578,6 +1631,9 @@ pub fn AssetListPage() -> Element {
                                 });
                                 let results = join_all(futs).await;
                                 let failures = results.iter().filter(|r| r.is_err()).count();
+                                // SPEC-13.5.4: full-success count or
+                                // partial-failure count, rather than failing
+                                // the whole batch on one row's error.
                                 if failures == 0 {
                                     crate::hooks::toast::push_toast(
                                         crate::components::AlertType::Success,
@@ -1591,6 +1647,7 @@ pub fn AssetListPage() -> Element {
                                 }
                             }
                             crate::components::clear_selection(&mut selection);
+                            // SPEC-13.9.7: refetch the list after bulk delete.
                             assets_resource.restart();
                             bulk_delete_confirm.set(None);
                             bulk_delete_running.set(false);
@@ -1729,6 +1786,9 @@ pub fn AssetListPage() -> Element {
                                         rsx! {
                                             TableRow { key: "{aid}",
                                                 clickable: true,
+                                                // SPEC-13.1.3, SPEC-13.4.5: opens AssetDrawer when
+                                                // `assets:inline_edit` is on, else navigates to
+                                                // Route::AssetDetail.
                                                 onclick: move |_| {
                                                     if inline_edit_enabled {
                                                         if let Ok(id) = row_id.parse::<uuid::Uuid>() {
@@ -1775,6 +1835,7 @@ pub fn AssetListPage() -> Element {
         // builds a minimal partial body and fires N parallel PUTs.
         if bulk_modal_open() {
             {
+                // SPEC-13.2.1: the five asset-status options, for bulk edit.
                 let status_opts = vec![
                     SelectOption::new("active", "Active"),
                     SelectOption::new("in_stock", "In Stock"),
@@ -1815,6 +1876,8 @@ pub fn AssetListPage() -> Element {
                             Button {
                                 variant: ButtonVariant::Primary,
                                 // MAPPS-357: block the bulk PUT while the server is down.
+                                // SPEC-13.4.9: disable while `use_can_mutate()` reports the
+                                // server unreachable.
                                 disabled: bulk_submitting() || !can_mutate,
                                 loading: bulk_submitting(),
                                 title: (!can_mutate).then(|| "Can't apply changes while the server is unreachable".to_string()),
@@ -1857,6 +1920,9 @@ pub fn AssetListPage() -> Element {
                                             });
                                             let results = join_all(futs).await;
                                             let failures = results.iter().filter(|r| r.is_err()).count();
+                                            // SPEC-13.5.4: full-success count or
+                                            // partial-failure count, rather than failing
+                                            // the whole batch on one row's error.
                                             if failures == 0 {
                                                 crate::hooks::toast::push_toast(
                                                     crate::components::AlertType::Success,
@@ -1872,6 +1938,7 @@ pub fn AssetListPage() -> Element {
                                         bulk_submitting.set(false);
                                         bulk_modal_open.set(false);
                                         crate::components::clear_selection(&mut selection);
+                                        // SPEC-13.9.7: refetch the list after bulk edit.
                                         assets_resource.restart();
                                     });
                                 },
@@ -1937,6 +2004,8 @@ pub fn AssetListPage() -> Element {
 // inline (and via `maxlength`) instead of failing later as an opaque 422.
 // Assumed to match the server's asset columns (VARCHAR(255)); revise if they
 // differ.
+// SPEC-13.5.3: name, manufacturer, model and serial number are each capped
+// at 255 characters.
 const ASSET_NAME_MAX: usize = 255;
 const ASSET_SERIAL_MAX: usize = 255;
 const ASSET_MANUFACTURER_MAX: usize = 255;
@@ -1946,10 +2015,12 @@ const ASSET_MODEL_MAX: usize = 255;
 // (`CreateCredentialRequest.name` is `length(min = 1, max = 100)` in
 // mokosh-server) so an over-long name is rejected inline instead of failing
 // as a 422.
+// SPEC-13.5.3: the credential name cap (100 characters).
 const CRED_NAME_MAX: usize = 100;
 
 /// Validate the credential Name field (MAPPS-231): present, trimmed, within
 /// the server's 100-char cap. Returns the trimmed value or an inline message.
+// SPEC-13.5.3: same over-length message pattern as the asset fields.
 fn validate_cred_name(raw: &str) -> Result<String, String> {
     let t = raw.trim();
     if t.is_empty() {
@@ -1963,6 +2034,7 @@ fn validate_cred_name(raw: &str) -> Result<String, String> {
 
 /// Validate the required Name field (MAPPS-216): present, trimmed, within the
 /// length cap. Returns the trimmed value or an inline message for the field.
+// SPEC-13.5.3: name required, capped at 255 characters.
 fn validate_asset_name(raw: &str) -> Result<String, String> {
     let t = raw.trim();
     if t.is_empty() {
@@ -2105,6 +2177,7 @@ pub fn AssetNewPage() -> Element {
                             String::new()
                         }
                     };
+                    // SPEC-13.5.3: type and company are required on create.
                     let type_id = asset_type.read().clone();
                     if type_id.is_empty() {
                         type_err.set("Please pick an asset type.".to_string());
@@ -2161,6 +2234,10 @@ pub fn AssetNewPage() -> Element {
 
                     is_submitting.set(true);
                     spawn(async move {
+                        // SPEC-13.3.6, SPEC-13.8.1, SPEC-13.8.2: the create
+                        // mutation body is wrapped in `#[cfg(feature = "app")]`
+                        // so it compiles to a no-op (not a compile error) on a
+                        // build without that feature.
                         #[cfg(feature = "app")]
                         {
                             let mut body = serde_json::json!({
@@ -2180,6 +2257,7 @@ pub fn AssetNewPage() -> Element {
                             if !warranty_v.is_empty() {
                                 body["warranty_expiry"] = serde_json::json!(warranty_v);
                             }
+                            // SPEC-13.7.1: POST /assets.
                             match crate::hooks::fetch::api::post_authed_typed::<
                                     serde_json::Value,
                                     _,
@@ -2347,6 +2425,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // pre-linked to this asset and returns it in the response. Staff and
     // platform sessions bypass unconditionally via `use_capability`, so
     // the button renders for them without a role grant.
+    // SPEC-13.1.4, SPEC-13.4.6: "Report an issue" is gated on
+    // `assets:report_issue`, bypassed unconditionally for a staff or
+    // platform session.
     let can_report_issue = crate::hooks::capabilities::use_capability("assets:report_issue");
     let mut show_report = use_signal(|| false);
     let mut report_summary = use_signal(String::new);
@@ -2363,22 +2444,32 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // (NOT a default) so a failed load stays distinguishable from a real asset,
     // letting the outage render ContentUnavailable below, and it subscribes to
     // reachability so the entity auto-refetches on reconnect.
+    // SPEC-13.1.4: `AssetDetailPage`'s primary resource; its panels
+    // (Relationships, Credentials, Configuration Items, Change History,
+    // Related Tickets, Report an issue) are composed below.
     let id_for_asset = props.id.clone();
     let asset_resource = use_resource(move || {
         let id = id_for_asset.clone();
         async move {
+            // SPEC-13.6.3: read inside the async closure.
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // SPEC-13.6.4: track reachability so the entity auto-refetches
+            // on reconnect.
             let _reachable = crate::hooks::use_server_reachable();
+            // SPEC-13.7.1: GET /assets/{id}.
+            // SPEC-13.5.2: log the detail load's own failure.
             crate::hooks::fetch::api::get_authed::<RemoteAsset>(&format!("/assets/{id}"))
                 .await
                 .inspect_err(|e| tracing::error!("asset detail load failed for {id}: {e}"))
                 .ok()
         }
     });
+    // SPEC-13.7.1: GET /assets/{id}/relationships.
     let id_for_rel = props.id.clone();
     let rel_resource = use_resource(move || {
         let id = id_for_rel.clone();
         async move {
+            // SPEC-13.6.3: read inside the async closure.
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::hooks::fetch::list_or_empty(
                 "asset relationship",
@@ -2389,6 +2480,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             )
         }
     });
+    // SPEC-13.7.1, SPEC-13.4.7: GET /assets/{id}/configuration-items, the
+    // secret-free summary list (distinct from the audited reveal below).
     let id_for_cfg = props.id.clone();
     let cfg_resource = use_resource(move || {
         let id = id_for_cfg.clone();
@@ -2403,6 +2496,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             )
         }
     });
+    // SPEC-13.7.1, SPEC-13.4.7: GET /assets/{id}/credentials, the
+    // secret-free summary list (distinct from the audited reveal below).
     let id_for_cred = props.id.clone();
     let cred_resource = use_resource(move || {
         let id = id_for_cred.clone();
@@ -2429,6 +2524,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // hitting that gate, but this distinguishes the remaining failure
     // cases (network drop, future role downgrade) from a genuinely-empty
     // audit log.
+    // SPEC-13.1.4, SPEC-13.7.1: GET /assets/{id}/audit-log.
+    // SPEC-13.5.2: the audit panel independently tracks Loading, Ready and
+    // Failed states rather than collapsing a failure into an empty history.
     let audit_resource: Resource<Result<Vec<AuditEntry>, String>> = use_resource(move || {
         let id = id_for_audit.clone();
         async move {
@@ -2443,6 +2541,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // `asset_id` was added in the same change; per_page=50 keeps the
     // payload one round trip without pagination UI since the typical
     // asset has only a handful of related tickets.
+    // SPEC-13.1.4, SPEC-13.7.1: the Related Tickets panel's GET
+    // /tickets?asset_id={id}.
     let id_for_tickets = props.id.clone();
     let tickets_resource = use_resource(move || {
         let id = id_for_tickets.clone();
@@ -2609,6 +2709,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // MAPPS-574: the server's reason for refusing this removal.
     let mut rel_delete_error = use_signal(String::new);
 
+    // SPEC-13.6.5: ignore a second submit while a prior delete is in flight.
     let on_confirm_delete = move |_: ()| {
         if *deleting.read() {
             return;
@@ -2624,6 +2725,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 // old `.is_ok()` closed the dialog on failure and said nothing,
                 // so a server that declined and a button that did nothing
                 // looked identical.
+                // SPEC-13.5.5, SPEC-13.7.1: DELETE /assets/{id}; surface the
+                // server's refusal reason rather than closing silently.
                 match crate::hooks::fetch::api::delete_authed(&path).await {
                     Ok(()) => {
                         crate::hooks::toast::push_toast(
@@ -2757,10 +2860,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 }
             },
             actions: rsx! {
+                // SPEC-13.1.4: the "Report an issue" action, gated on
+                // `assets:report_issue` above.
                 if can_report_issue {
                     Button {
                         variant: ButtonVariant::Secondary,
                         // MAPPS-357 parity: block issue reporting while the server is down.
+                        // SPEC-13.4.9: disable while the server is unreachable.
                         disabled: !can_mutate,
                         title: (!can_mutate).then(|| "Can't report an issue while the server is unreachable".to_string()),
                         onclick: move |_| {
@@ -2778,6 +2884,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     variant: ButtonVariant::Danger,
                     loading: *deleting.read(),
                     // MAPPS-357: block delete while the server is down.
+                    // SPEC-13.4.9: disable while the server is unreachable.
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                     onclick: move |_| {
@@ -3051,6 +3158,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                             Button {
                                                                 variant: ButtonVariant::Danger,
                                                                 // MAPPS-357 parity: block removal while the server is down.
+                                                                // SPEC-13.4.9: disable while the server is unreachable.
                                                                 disabled: !can_mutate,
                                                                 title: (!can_mutate).then(|| "Can't remove a relationship while the server is unreachable".to_string()),
                                                                 onclick: move |_| confirming_rel_delete.set(Some(rid)),
@@ -3127,6 +3235,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                 let cid = ci.id;
                                                 let category = ci.category.clone().unwrap_or_default();
                                                 let revealed = revealed_cfgs.read().get(&cid).cloned();
+                                                // SPEC-13.4.7, SPEC-13.7.1: the audited
+                                                // configuration-item reveal endpoint,
+                                                // fetched only on explicit reveal click.
                                                 let path = format!("/configuration-items/{cid}");
                                                 let mut store = revealed_cfgs;
                                                 rsx! {
@@ -3194,6 +3305,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                 let crid = cr.id;
                                                 let url = cr.url.clone().unwrap_or_default();
                                                 let revealed = revealed_creds.read().get(&crid).cloned();
+                                                // SPEC-13.4.7, SPEC-13.7.1: the audited
+                                                // credential reveal endpoint, fetched
+                                                // only on explicit reveal click.
                                                 let path = format!("/credentials/{crid}");
                                                 let mut store = revealed_creds;
                                                 rsx! {
@@ -3364,6 +3478,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         {
             let mut asset_res = asset_resource;
             let mut audit_res = audit_resource;
+            // SPEC-13.2.1: the five asset-status options, for the edit form.
             let status_opts = vec![
                 SelectOption::new("active", "Active"),
                 SelectOption::new("in_stock", "In Stock"),
@@ -3376,6 +3491,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 .map(|t| SelectOption::new(t.id.to_string(), t.name.clone()))
                 .collect();
             let save_id = id_for_save.clone();
+            // SPEC-13.6.5: ignore a second submit while a prior save is in flight.
             let on_save = move |_| {
                 if e_submitting() {
                     return;
@@ -3387,6 +3503,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     // fields before the PUT. PMS-518: validate all of them and
                     // report every failure at once in its own inline slot, then
                     // focus the first invalid field.
+                    // SPEC-13.5.3: name required+255 cap; manufacturer, model
+                    // and serial number each capped at 255.
                     e_name_err.set(String::new());
                     e_serial_err.set(String::new());
                     e_manufacturer_err.set(String::new());
@@ -3502,6 +3620,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     // the decoded body is unused anyway). Status /
                     // Network errors still surface inline so a
                     // genuine 4xx/5xx remains visible.
+                    // SPEC-13.7.1: PUT /assets/{id}.
                     let result = crate::hooks::fetch::api::put_authed_typed::<
                         serde_json::Value,
                         _,
@@ -3512,6 +3631,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         Ok(_) | Err(crate::hooks::fetch::api::ApiError::Decode(_)) => {
                             editing.set(false);
                             e_error.set(String::new());
+                            // SPEC-13.9.7: refetch after a successful edit.
                             asset_res.restart();
                             audit_res.restart();
                             crate::hooks::toast::push_toast(
@@ -3797,6 +3917,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             let mut cred_res = cred_resource;
             let mut audit_res = audit_resource;
             rsx! {
+                // SPEC-13.9.1: carries the same "cannot be undone" wording.
                 crate::components::ConfirmDialog {
                     open: confirming_cred_delete().is_some(),
                     title: "Remove credential".to_string(),
@@ -3823,8 +3944,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 // MAPPS-574: report the refusal rather than
                                 // closing on it. The old `.is_ok()` left the
                                 // dialog gone and the row still there.
+                                // SPEC-13.5.5, SPEC-13.7.1: DELETE /credentials/{id};
+                                // surface the server's refusal reason.
                                 match crate::hooks::fetch::api::delete_authed(&path).await {
                                     Ok(()) => {
+                                        // SPEC-13.9.7: refetch after a successful remove.
                                         cred_res.restart();
                                         audit_res.restart();
                                         confirming_cred_delete.set(None);
@@ -3851,6 +3975,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             let mut cred_res = cred_resource;
             let mut audit_res = audit_resource;
             let add_id = id_for_cred_add.clone();
+            // SPEC-13.6.5: ignore a second submit while a prior add is in flight.
             let on_add_cred = move |_| {
                 if nc_submitting() {
                     return;
@@ -3917,6 +4042,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         if let Some(n) = notes {
                             body["notes"] = serde_json::json!(n);
                         }
+                        // SPEC-13.7.1: POST /assets/{id}/credentials.
                         match crate::hooks::fetch::api::post_authed_typed::<
                                 serde_json::Value,
                                 _,
@@ -3925,6 +4051,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         {
                             Ok(_) => {
                                 cred_adding.set(false);
+                                // SPEC-13.9.7: refetch after a successful add.
                                 cred_res.restart();
                                 audit_res.restart();
                             }
@@ -4049,6 +4176,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             let mut rel_res = rel_resource;
             let mut audit_res = audit_resource;
             rsx! {
+                // SPEC-13.9.1: carries the same "cannot be undone" wording.
                 crate::components::ConfirmDialog {
                     open: confirming_rel_delete().is_some(),
                     title: "Remove relationship".to_string(),
@@ -4075,8 +4203,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 // MAPPS-574: report the refusal rather than
                                 // closing on it. The old `.is_ok()` left the
                                 // dialog gone and the row still there.
+                                // SPEC-13.5.5, SPEC-13.7.1: DELETE /asset-relationships/{id};
+                                // surface the server's refusal reason.
                                 match crate::hooks::fetch::api::delete_authed(&path).await {
                                     Ok(()) => {
+                                        // SPEC-13.9.7: refetch after a successful remove.
                                         rel_res.restart();
                                         audit_res.restart();
                                         confirming_rel_delete.set(None);
@@ -4113,6 +4244,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 SelectOption::new("connected_to", "Connected To"),
                 SelectOption::new("contains", "Contains"),
             ];
+            // SPEC-13.6.5: ignore a second submit while a prior add is in flight.
             let on_add_rel = move |_| {
                 if nr_submitting() {
                     return;
@@ -4143,6 +4275,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             "child_asset_id": child,
                             "relationship_type": rel_type,
                         });
+                        // SPEC-13.7.1: POST /assets/{id}/relationships.
                         match crate::hooks::fetch::api::post_authed_typed::<
                                 serde_json::Value,
                                 _,
@@ -4151,6 +4284,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         {
                             Ok(_) => {
                                 rel_adding.set(false);
+                                // SPEC-13.9.7: refetch after a successful add.
                                 rel_res.restart();
                                 audit_res.restart();
                             }
@@ -4252,6 +4386,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             let mut sum_err = report_summary_error;
             let mut desc_err = report_description_error;
             let report_id = id_for_report.clone();
+            // SPEC-13.6.5: ignore a second submit while the prior one is
+            // still in flight.
             let on_submit = move |_| {
                 if submitting() {
                     return;
@@ -4276,6 +4412,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     return;
                 }
                 submitting.set(true);
+                // SPEC-13.1.4, SPEC-13.7.1: POST /assets/{id}/report-issue,
+                // creating a linked ticket and navigating to it.
                 let path = format!("/assets/{report_id}/report-issue");
                 spawn(async move {
                     #[cfg(feature = "web")]
