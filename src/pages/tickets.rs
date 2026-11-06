@@ -178,6 +178,16 @@ struct RemoteTicketDetail {
     /// false and the button hides.
     #[serde(default)]
     contact_id: Option<uuid::Uuid>,
+    /// MAPPS-1222: the server joins the name but not the id (`TicketResponse`
+    /// has no `type_id` / `category_id`, only `*_name`), so the inline Type /
+    /// Category editors below resolve their current selection by matching
+    /// this name against the fetched `/tickets/types` / `/tickets/categories`
+    /// lookup rather than binding a `Select` to an id the response never
+    /// carries.
+    #[serde(default)]
+    type_name: Option<String>,
+    #[serde(default)]
+    category_name: Option<String>,
     #[serde(default)]
     queue_name: String,
     #[serde(default)]
@@ -287,6 +297,21 @@ struct RemoteTicketLookup {
     id: uuid::Uuid,
     #[serde(default)]
     name: String,
+}
+
+/// MAPPS-1222: a row from `GET /teams`, same shape `members.rs` /
+/// `invitations.rs` each already fetch independently (this page is a third
+/// private copy, matching the convention described in `UpdateTicketBody`'s
+/// own doc comment: no shared crate dependency between these DTOs). Carries
+/// `is_active` so a disabled team can be filtered out of the inline editor's
+/// options the same way the team-filter dropdowns do.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTeamOption {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    is_active: bool,
 }
 
 /// User option for resolving history actor ids to names (`/auth/users`).
@@ -414,6 +439,26 @@ struct UpdateTicketBody {
     /// the outer half means the same thing on both sides.
     #[serde(skip_serializing_if = "Option::is_none")]
     asset_id: Option<Option<uuid::Uuid>>,
+    /// MAPPS-1222: the remaining `UpdateTicketRequest` fields PMS-1565 made
+    /// mokosh-server actually persist. Each follows the same double-`Option`
+    /// clearable-FK convention as `asset_id` above, each gets its own inline
+    /// editor on the Details card below, and each editor's commit sends only
+    /// its own field, matching the single-field PUT every other editor here
+    /// already sends.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    type_id: Option<Option<uuid::Uuid>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    category_id: Option<Option<uuid::Uuid>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contact_id: Option<Option<uuid::Uuid>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    site_id: Option<Option<uuid::Uuid>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    team_id: Option<Option<uuid::Uuid>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contract_id: Option<Option<uuid::Uuid>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sla_id: Option<Option<uuid::Uuid>>,
 }
 
 /// `POST /api/v1/tickets/{id}/notes`, sent by the note composer.
@@ -3736,6 +3781,98 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
             .await,
         )
     });
+    // MAPPS-1222: tenant-wide lookups for the Type / Category / Team / SLA
+    // inline editors below, same shape and fetch pattern as the statuses /
+    // priorities lookups above.
+    let types_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::list_or_empty(
+            "ticket type editor option",
+            crate::hooks::fetch::api::get_all_authed_any::<RemoteTicketLookup>("/tickets/types")
+                .await,
+        )
+    });
+    let categories_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::list_or_empty(
+            "ticket category editor option",
+            crate::hooks::fetch::api::get_all_authed_any::<RemoteTicketLookup>(
+                "/tickets/categories",
+            )
+            .await,
+        )
+    });
+    let teams_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::list_or_empty(
+            "ticket team editor option",
+            crate::hooks::fetch::api::get_all_authed_any::<RemoteTeamOption>("/teams").await,
+        )
+    });
+    let sla_policies_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::list_or_empty(
+            "ticket sla policy editor option",
+            crate::hooks::fetch::api::get_all_authed_any::<RemoteTicketLookup>("/sla/policies")
+                .await,
+        )
+    });
+    // MAPPS-1222: Site and Contract are company-scoped, so these two track
+    // `ticket_resource` for the company id the same way `family_resource`
+    // above tracks it for `parent_ticket_id` - `None` (loading / no company
+    // yet) fetches nothing rather than hitting the unscoped list.
+    let sites_resource = use_resource(move || {
+        let company_id = ticket_resource
+            .read()
+            .as_ref()
+            .and_then(|t: &Option<RemoteTicketDetail>| t.as_ref())
+            .and_then(|t| t.company_id);
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            match company_id {
+                Some(id) => crate::hooks::fetch::list_or_empty(
+                    "ticket site editor option",
+                    crate::hooks::fetch::api::get_all_authed_any::<RemoteTicketLookup>(&format!(
+                        "/contacts/companies/{id}/sites"
+                    ))
+                    .await,
+                ),
+                None => Vec::new(),
+            }
+        }
+    });
+    let contracts_resource = use_resource(move || {
+        let company_id = ticket_resource
+            .read()
+            .as_ref()
+            .and_then(|t: &Option<RemoteTicketDetail>| t.as_ref())
+            .and_then(|t| t.company_id);
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            match company_id {
+                Some(id) => crate::hooks::fetch::list_or_empty(
+                    "ticket contract editor option",
+                    crate::hooks::fetch::api::get_all_authed_any::<RemoteTicketLookup>(&format!(
+                        "/contracts?company_id={id}"
+                    ))
+                    .await,
+                ),
+                None => Vec::new(),
+            }
+        }
+    });
+    // MAPPS-1222: `TicketResponse` carries no `site_id` / `team_id` /
+    // `contract_id` / `sla_id` (only the FK columns PMS-1565 now persists,
+    // none of the id/name pairs the Type/Category/Asset fields get), so
+    // unlike every other inline editor on this page these four cannot show
+    // what is already saved, only what was just picked. Each signal holds
+    // the `(id, name)` the operator last chose, set optimistically on a
+    // successful save; MAPPS-1222's follow-up tracks adding the read-side
+    // fields so these can show the saved value like the rest do.
+    let mut site_choice = use_signal::<Option<(String, String)>>(|| None);
+    let mut team_choice = use_signal::<Option<(String, String)>>(|| None);
+    let mut contract_choice = use_signal::<Option<(String, String)>>(|| None);
+    let mut sla_choice = use_signal::<Option<(String, String)>>(|| None);
     // PMS-359: per-field error message surfaced inline below the editor.
     // One signal is enough since at most one of the three editors fires
     // at a time and we always clear before the next attempt.
@@ -3937,6 +4074,27 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         .clone()
         .unwrap_or_default();
     let priorities = priorities_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let ticket_types = types_resource.read_unchecked().clone().unwrap_or_default();
+    let ticket_categories = categories_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let teams: Vec<RemoteTeamOption> = teams_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t.is_active)
+        .collect();
+    let sla_policies = sla_policies_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let sites = sites_resource.read_unchecked().clone().unwrap_or_default();
+    let contracts = contracts_resource
         .read_unchecked()
         .clone()
         .unwrap_or_default();
@@ -5627,6 +5785,571 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 onclear: move |_| {
                                                     put_asset_for_clear(None);
                                                 },
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                            // MAPPS-1222: Type / Category / Contact / Site /
+                            // Team / Contract / SLA inline editors. Each
+                            // sends a PUT /tickets/{id} with only its own
+                            // field, matching every editor above; PMS-1565
+                            // is what makes the server actually persist each
+                            // one instead of silently dropping it.
+                            {
+                                let current_type_id = t
+                                    .type_name
+                                    .as_deref()
+                                    .filter(|n| !n.is_empty())
+                                    .and_then(|name| {
+                                        ticket_types.iter().find(|o| o.name == name)
+                                    })
+                                    .map(|o| o.id.to_string())
+                                    .unwrap_or_default();
+                                let mut type_options: Vec<SelectOption> =
+                                    vec![SelectOption::new("", "None")];
+                                type_options.extend(
+                                    ticket_types
+                                        .iter()
+                                        .map(|o| SelectOption::new(o.id.to_string(), o.name.clone())),
+                                );
+                                let save_id = props.id.clone();
+                                let mut tr = ticket_resource;
+                                let mut hr = history_resource;
+                                let onchange = move |e: FormEvent| {
+                                    let raw = e.value();
+                                    let new_id: Option<uuid::Uuid> = if raw.is_empty() {
+                                        None
+                                    } else {
+                                        match uuid::Uuid::parse_str(&raw) {
+                                            Ok(u) => Some(u),
+                                            Err(_) => return,
+                                        }
+                                    };
+                                    let save_id = save_id.clone();
+                                    spawn(async move {
+                                        field_error.set(String::new());
+                                        let body = UpdateTicketBody {
+                                            type_id: Some(new_id),
+                                            ..Default::default()
+                                        };
+                                        match crate::hooks::fetch::api::put_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(
+                                            &format!("/tickets/{save_id}"), &body
+                                        )
+                                        .await
+                                        {
+                                            Ok(_) => {
+                                                tr.restart();
+                                                hr.restart();
+                                            }
+                                            Err(err) => {
+                                                field_error.set(format!(
+                                                    "Could not update type: {err}"
+                                                ));
+                                            }
+                                        }
+                                    });
+                                };
+                                rsx! {
+                                    DetailItem {
+                                        label: "Type",
+                                        value: rsx! {
+                                            Select {
+                                                name: "type_id",
+                                                label: "",
+                                                options: type_options,
+                                                value: current_type_id,
+                                                disabled: !can_mutate || !staff_only,
+                                                onchange,
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                            {
+                                let current_category_id = t
+                                    .category_name
+                                    .as_deref()
+                                    .filter(|n| !n.is_empty())
+                                    .and_then(|name| {
+                                        ticket_categories.iter().find(|o| o.name == name)
+                                    })
+                                    .map(|o| o.id.to_string())
+                                    .unwrap_or_default();
+                                let mut category_options: Vec<SelectOption> =
+                                    vec![SelectOption::new("", "None")];
+                                category_options.extend(
+                                    ticket_categories
+                                        .iter()
+                                        .map(|o| SelectOption::new(o.id.to_string(), o.name.clone())),
+                                );
+                                let save_id = props.id.clone();
+                                let mut tr = ticket_resource;
+                                let mut hr = history_resource;
+                                let onchange = move |e: FormEvent| {
+                                    let raw = e.value();
+                                    let new_id: Option<uuid::Uuid> = if raw.is_empty() {
+                                        None
+                                    } else {
+                                        match uuid::Uuid::parse_str(&raw) {
+                                            Ok(u) => Some(u),
+                                            Err(_) => return,
+                                        }
+                                    };
+                                    let save_id = save_id.clone();
+                                    spawn(async move {
+                                        field_error.set(String::new());
+                                        let body = UpdateTicketBody {
+                                            category_id: Some(new_id),
+                                            ..Default::default()
+                                        };
+                                        match crate::hooks::fetch::api::put_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(
+                                            &format!("/tickets/{save_id}"), &body
+                                        )
+                                        .await
+                                        {
+                                            Ok(_) => {
+                                                tr.restart();
+                                                hr.restart();
+                                            }
+                                            Err(err) => {
+                                                field_error.set(format!(
+                                                    "Could not update category: {err}"
+                                                ));
+                                            }
+                                        }
+                                    });
+                                };
+                                rsx! {
+                                    DetailItem {
+                                        label: "Category",
+                                        value: rsx! {
+                                            Select {
+                                                name: "category_id",
+                                                label: "",
+                                                options: category_options,
+                                                value: current_category_id,
+                                                disabled: !can_mutate || !staff_only,
+                                                onchange,
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                            // MAPPS-1222 / MAPPS-710: the contact the ticket is
+                            // linked to, same shape as the Asset row above -
+                            // `ContactPicker` scoped to the ticket's own
+                            // company. `t.contact_id` / `t.contact_name` are
+                            // already read for the Description-card ownership
+                            // gate, so unlike Site/Team/Contract/SLA below this
+                            // one shows the saved value on a fresh load.
+                            {
+                                let current_contact_id = t.contact_id.map(|u| u.to_string());
+                                let current_contact_name =
+                                    t.contact_name.clone().unwrap_or_default();
+                                let company_filter = t.company_id.map(|c| c.to_string());
+                                let save_id = props.id.clone();
+                                let mut tr = ticket_resource;
+                                let mut hr = history_resource;
+                                let put_contact = move |new_id: Option<uuid::Uuid>| {
+                                    let save_id = save_id.clone();
+                                    spawn(async move {
+                                        field_error.set(String::new());
+                                        let body = UpdateTicketBody {
+                                            contact_id: Some(new_id),
+                                            ..Default::default()
+                                        };
+                                        match crate::hooks::fetch::api::put_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(
+                                            &format!("/tickets/{save_id}"),
+                                            &body,
+                                        )
+                                        .await
+                                        {
+                                            Ok(_) => {
+                                                tr.restart();
+                                                hr.restart();
+                                            }
+                                            Err(err) => {
+                                                field_error.set(format!(
+                                                    "Could not update contact: {err}"
+                                                ));
+                                            }
+                                        }
+                                    });
+                                };
+                                let put_contact_for_select = put_contact.clone();
+                                let put_contact_for_clear = put_contact.clone();
+                                rsx! {
+                                    DetailItem {
+                                        label: "Contact",
+                                        value: rsx! {
+                                            // MAPPS-357: like AssetPicker, ContactPicker
+                                            // exposes no `disabled` prop, so it cannot be
+                                            // gated from this file; a write it fires while
+                                            // down surfaces the inline error below instead
+                                            // of silently succeeding.
+                                            crate::components::ContactPicker {
+                                                label: String::new(),
+                                                value: current_contact_name,
+                                                selected_id: current_contact_id,
+                                                company_filter,
+                                                onselect: move |(id, _name): (String, String)| {
+                                                    if let Ok(uid) = uuid::Uuid::parse_str(&id) {
+                                                        put_contact_for_select(Some(uid));
+                                                    }
+                                                },
+                                                onclear: move |_| {
+                                                    put_contact_for_clear(None);
+                                                },
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                            // MAPPS-1222: Site, Team, Contract and SLA. Unlike
+                            // every editor above, `TicketResponse` carries no
+                            // id or name for any of these four, so the Select
+                            // cannot be pre-selected to what is already saved
+                            // on load; each `*_choice` signal instead tracks
+                            // what THIS session last picked and shows that
+                            // once the PUT succeeds, which still satisfies
+                            // "reflects the new value without a full reload"
+                            // without inventing a value this page was never
+                            // told. See MAPPS-1222's filed follow-up for
+                            // adding the read-side fields that would let
+                            // these pre-select like Type/Category/Contact do.
+                            {
+                                let mut site_options: Vec<SelectOption> =
+                                    vec![SelectOption::new("", "Not set")];
+                                site_options.extend(
+                                    sites
+                                        .iter()
+                                        .map(|o| SelectOption::new(o.id.to_string(), o.name.clone())),
+                                );
+                                let current_site_value = site_choice
+                                    .read()
+                                    .as_ref()
+                                    .map(|(id, _)| id.clone())
+                                    .unwrap_or_default();
+                                let save_id = props.id.clone();
+                                let mut tr = ticket_resource;
+                                let mut hr = history_resource;
+                                let sites_for_lookup = sites.clone();
+                                let onchange = move |e: FormEvent| {
+                                    let raw = e.value();
+                                    let new_id: Option<uuid::Uuid> = if raw.is_empty() {
+                                        None
+                                    } else {
+                                        match uuid::Uuid::parse_str(&raw) {
+                                            Ok(u) => Some(u),
+                                            Err(_) => return,
+                                        }
+                                    };
+                                    let picked_name = sites_for_lookup
+                                        .iter()
+                                        .find(|o| o.id.to_string() == raw)
+                                        .map(|o| o.name.clone())
+                                        .unwrap_or_default();
+                                    let save_id = save_id.clone();
+                                    let raw_for_choice = raw.clone();
+                                    spawn(async move {
+                                        field_error.set(String::new());
+                                        let body = UpdateTicketBody {
+                                            site_id: Some(new_id),
+                                            ..Default::default()
+                                        };
+                                        match crate::hooks::fetch::api::put_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(
+                                            &format!("/tickets/{save_id}"), &body
+                                        )
+                                        .await
+                                        {
+                                            Ok(_) => {
+                                                if raw_for_choice.is_empty() {
+                                                    site_choice.set(None);
+                                                } else {
+                                                    site_choice
+                                                        .set(Some((raw_for_choice, picked_name)));
+                                                }
+                                                tr.restart();
+                                                hr.restart();
+                                            }
+                                            Err(err) => {
+                                                field_error.set(format!(
+                                                    "Could not update site: {err}"
+                                                ));
+                                            }
+                                        }
+                                    });
+                                };
+                                rsx! {
+                                    DetailItem {
+                                        label: "Site",
+                                        value: rsx! {
+                                            Select {
+                                                name: "site_id",
+                                                label: "",
+                                                options: site_options,
+                                                value: current_site_value,
+                                                disabled: !can_mutate || !staff_only,
+                                                onchange,
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                            {
+                                let mut team_options: Vec<SelectOption> =
+                                    vec![SelectOption::new("", "Not set")];
+                                team_options.extend(
+                                    teams
+                                        .iter()
+                                        .map(|o| SelectOption::new(o.id.to_string(), o.name.clone())),
+                                );
+                                let current_team_value = team_choice
+                                    .read()
+                                    .as_ref()
+                                    .map(|(id, _)| id.clone())
+                                    .unwrap_or_default();
+                                let save_id = props.id.clone();
+                                let mut tr = ticket_resource;
+                                let mut hr = history_resource;
+                                let teams_for_lookup = teams.clone();
+                                let onchange = move |e: FormEvent| {
+                                    let raw = e.value();
+                                    let new_id: Option<uuid::Uuid> = if raw.is_empty() {
+                                        None
+                                    } else {
+                                        match uuid::Uuid::parse_str(&raw) {
+                                            Ok(u) => Some(u),
+                                            Err(_) => return,
+                                        }
+                                    };
+                                    let picked_name = teams_for_lookup
+                                        .iter()
+                                        .find(|o| o.id.to_string() == raw)
+                                        .map(|o| o.name.clone())
+                                        .unwrap_or_default();
+                                    let save_id = save_id.clone();
+                                    let raw_for_choice = raw.clone();
+                                    spawn(async move {
+                                        field_error.set(String::new());
+                                        let body = UpdateTicketBody {
+                                            team_id: Some(new_id),
+                                            ..Default::default()
+                                        };
+                                        match crate::hooks::fetch::api::put_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(
+                                            &format!("/tickets/{save_id}"), &body
+                                        )
+                                        .await
+                                        {
+                                            Ok(_) => {
+                                                if raw_for_choice.is_empty() {
+                                                    team_choice.set(None);
+                                                } else {
+                                                    team_choice
+                                                        .set(Some((raw_for_choice, picked_name)));
+                                                }
+                                                tr.restart();
+                                                hr.restart();
+                                            }
+                                            Err(err) => {
+                                                field_error.set(format!(
+                                                    "Could not update team: {err}"
+                                                ));
+                                            }
+                                        }
+                                    });
+                                };
+                                rsx! {
+                                    DetailItem {
+                                        label: "Team",
+                                        value: rsx! {
+                                            Select {
+                                                name: "team_id",
+                                                label: "",
+                                                options: team_options,
+                                                value: current_team_value,
+                                                disabled: !can_mutate || !staff_only,
+                                                onchange,
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                            {
+                                let mut contract_options: Vec<SelectOption> =
+                                    vec![SelectOption::new("", "Not set")];
+                                contract_options.extend(
+                                    contracts
+                                        .iter()
+                                        .map(|o| SelectOption::new(o.id.to_string(), o.name.clone())),
+                                );
+                                let current_contract_value = contract_choice
+                                    .read()
+                                    .as_ref()
+                                    .map(|(id, _)| id.clone())
+                                    .unwrap_or_default();
+                                let save_id = props.id.clone();
+                                let mut tr = ticket_resource;
+                                let mut hr = history_resource;
+                                let contracts_for_lookup = contracts.clone();
+                                let onchange = move |e: FormEvent| {
+                                    let raw = e.value();
+                                    let new_id: Option<uuid::Uuid> = if raw.is_empty() {
+                                        None
+                                    } else {
+                                        match uuid::Uuid::parse_str(&raw) {
+                                            Ok(u) => Some(u),
+                                            Err(_) => return,
+                                        }
+                                    };
+                                    let picked_name = contracts_for_lookup
+                                        .iter()
+                                        .find(|o| o.id.to_string() == raw)
+                                        .map(|o| o.name.clone())
+                                        .unwrap_or_default();
+                                    let save_id = save_id.clone();
+                                    let raw_for_choice = raw.clone();
+                                    spawn(async move {
+                                        field_error.set(String::new());
+                                        let body = UpdateTicketBody {
+                                            contract_id: Some(new_id),
+                                            ..Default::default()
+                                        };
+                                        match crate::hooks::fetch::api::put_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(
+                                            &format!("/tickets/{save_id}"), &body
+                                        )
+                                        .await
+                                        {
+                                            Ok(_) => {
+                                                if raw_for_choice.is_empty() {
+                                                    contract_choice.set(None);
+                                                } else {
+                                                    contract_choice
+                                                        .set(Some((raw_for_choice, picked_name)));
+                                                }
+                                                tr.restart();
+                                                hr.restart();
+                                            }
+                                            Err(err) => {
+                                                field_error.set(format!(
+                                                    "Could not update contract: {err}"
+                                                ));
+                                            }
+                                        }
+                                    });
+                                };
+                                rsx! {
+                                    DetailItem {
+                                        label: "Contract",
+                                        value: rsx! {
+                                            Select {
+                                                name: "contract_id",
+                                                label: "",
+                                                options: contract_options,
+                                                value: current_contract_value,
+                                                disabled: !can_mutate || !staff_only,
+                                                onchange,
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                            {
+                                let mut sla_options: Vec<SelectOption> =
+                                    vec![SelectOption::new("", "Not set")];
+                                sla_options.extend(
+                                    sla_policies
+                                        .iter()
+                                        .map(|o| SelectOption::new(o.id.to_string(), o.name.clone())),
+                                );
+                                let current_sla_value = sla_choice
+                                    .read()
+                                    .as_ref()
+                                    .map(|(id, _)| id.clone())
+                                    .unwrap_or_default();
+                                let save_id = props.id.clone();
+                                let mut tr = ticket_resource;
+                                let mut hr = history_resource;
+                                let sla_policies_for_lookup = sla_policies.clone();
+                                let onchange = move |e: FormEvent| {
+                                    let raw = e.value();
+                                    let new_id: Option<uuid::Uuid> = if raw.is_empty() {
+                                        None
+                                    } else {
+                                        match uuid::Uuid::parse_str(&raw) {
+                                            Ok(u) => Some(u),
+                                            Err(_) => return,
+                                        }
+                                    };
+                                    let picked_name = sla_policies_for_lookup
+                                        .iter()
+                                        .find(|o| o.id.to_string() == raw)
+                                        .map(|o| o.name.clone())
+                                        .unwrap_or_default();
+                                    let save_id = save_id.clone();
+                                    let raw_for_choice = raw.clone();
+                                    spawn(async move {
+                                        field_error.set(String::new());
+                                        let body = UpdateTicketBody {
+                                            sla_id: Some(new_id),
+                                            ..Default::default()
+                                        };
+                                        match crate::hooks::fetch::api::put_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(
+                                            &format!("/tickets/{save_id}"), &body
+                                        )
+                                        .await
+                                        {
+                                            Ok(_) => {
+                                                if raw_for_choice.is_empty() {
+                                                    sla_choice.set(None);
+                                                } else {
+                                                    sla_choice
+                                                        .set(Some((raw_for_choice, picked_name)));
+                                                }
+                                                tr.restart();
+                                                hr.restart();
+                                            }
+                                            Err(err) => {
+                                                field_error.set(format!(
+                                                    "Could not update SLA policy: {err}"
+                                                ));
+                                            }
+                                        }
+                                    });
+                                };
+                                rsx! {
+                                    DetailItem {
+                                        label: "SLA Policy",
+                                        value: rsx! {
+                                            Select {
+                                                name: "sla_id",
+                                                label: "",
+                                                options: sla_options,
+                                                value: current_sla_value,
+                                                disabled: !can_mutate || !staff_only,
+                                                onchange,
                                             }
                                         },
                                     }
@@ -8175,6 +8898,74 @@ mod mapps686_shared_dto_tests {
             .expect("serialise the asset-clear body"),
             r#"{"asset_id":null}"#
         );
+        // MAPPS-1222: the seven new inline editors, each sending only its
+        // own field, matching every editor above.
+        assert_eq!(
+            serde_json::to_string(&UpdateTicketBody {
+                type_id: Some(Some(uuid(TICKET))),
+                ..Default::default()
+            })
+            .expect("serialise the type body"),
+            format!(r#"{{"type_id":"{TICKET}"}}"#)
+        );
+        assert_eq!(
+            serde_json::to_string(&UpdateTicketBody {
+                category_id: Some(Some(uuid(TICKET))),
+                ..Default::default()
+            })
+            .expect("serialise the category body"),
+            format!(r#"{{"category_id":"{TICKET}"}}"#)
+        );
+        assert_eq!(
+            serde_json::to_string(&UpdateTicketBody {
+                contact_id: Some(Some(uuid(TICKET))),
+                ..Default::default()
+            })
+            .expect("serialise the contact body"),
+            format!(r#"{{"contact_id":"{TICKET}"}}"#)
+        );
+        assert_eq!(
+            serde_json::to_string(&UpdateTicketBody {
+                site_id: Some(Some(uuid(TICKET))),
+                ..Default::default()
+            })
+            .expect("serialise the site body"),
+            format!(r#"{{"site_id":"{TICKET}"}}"#)
+        );
+        assert_eq!(
+            serde_json::to_string(&UpdateTicketBody {
+                team_id: Some(Some(uuid(TICKET))),
+                ..Default::default()
+            })
+            .expect("serialise the team body"),
+            format!(r#"{{"team_id":"{TICKET}"}}"#)
+        );
+        assert_eq!(
+            serde_json::to_string(&UpdateTicketBody {
+                contract_id: Some(Some(uuid(TICKET))),
+                ..Default::default()
+            })
+            .expect("serialise the contract body"),
+            format!(r#"{{"contract_id":"{TICKET}"}}"#)
+        );
+        assert_eq!(
+            serde_json::to_string(&UpdateTicketBody {
+                sla_id: Some(Some(uuid(TICKET))),
+                ..Default::default()
+            })
+            .expect("serialise the sla body"),
+            format!(r#"{{"sla_id":"{TICKET}"}}"#)
+        );
+        // Clearing one of the seven: present and null, never omitted, same
+        // rule as the Unassign / asset-clear bodies above.
+        assert_eq!(
+            serde_json::to_string(&UpdateTicketBody {
+                team_id: Some(None),
+                ..Default::default()
+            })
+            .expect("serialise the team-clear body"),
+            r#"{"team_id":null}"#
+        );
 
         assert_eq!(
             serde_json::to_string(&CreateNoteBody {
@@ -8329,20 +9120,24 @@ mod mapps686_shared_dto_tests {
             // field and `null` here is the Unassign rather than an omission.
             assigned_to_id: Some(assigned_to_id),
             asset_id,
-        };
-        // Editable on the ticket, but not from this page: the detail sidebar
-        // offers Status, Priority, Assignee and Asset, and the card above it
-        // offers Title and Description. Everything else needs an editor this
-        // page does not render, and `billing_status` is invoicing's to move.
-        let _ = (
+            // MAPPS-1222: the seven fields PMS-1565 made the server persist,
+            // each with its own inline editor below.
             type_id,
             category_id,
-            queue_id,
             contact_id,
             site_id,
             team_id,
             contract_id,
             sla_id,
+        };
+        // Editable on the ticket, but not from this page: the detail sidebar
+        // offers Status, Priority, Assignee and Asset, and the card above it
+        // offers Title and Description. `queue_id` is routing the server
+        // resolves from the company, not an operator pick; the rest are a
+        // later edit this page has never offered and `billing_status` is
+        // invoicing's to move.
+        let _ = (
+            queue_id,
             scheduled_start,
             scheduled_end,
             estimated_hours,
@@ -8477,6 +9272,12 @@ mod mapps686_shared_dto_tests {
             // depend on the ownership gate. Populate it (Some(uuid)) in a
             // test that needs to exercise the gate through this fixture.
             contact_id: None,
+            // MAPPS-1222: the inline Type / Category editors resolve their
+            // current selection by matching these names against the fetched
+            // lookups, since `TicketResponse` carries no `type_id` /
+            // `category_id`.
+            type_name,
+            category_name,
             queue_name,
             status: status_summary,
             priority: priority_summary,
@@ -8499,15 +9300,12 @@ mod mapps686_shared_dto_tests {
                 mokosh_types::tickets::SlaStatus::NotApplicable => SlaStatus::NotApplicable,
             },
         };
-        // Carried by the response and rendered by neither view: the type and
-        // category are captured at create time and shown nowhere afterwards,
-        // the contact is rendered by name, the billing trio belongs to
-        // invoicing, `actual_hours` is re-derived from the ticket's own time
-        // entries so the journal and the total cannot disagree, and there is
-        // no tag editor on this page.
+        // Carried by the response and rendered by neither view: the contact
+        // is rendered by name, the billing trio belongs to invoicing,
+        // `actual_hours` is re-derived from the ticket's own time entries so
+        // the journal and the total cannot disagree, and there is no tag
+        // editor on this page.
         let _ = (
-            type_name,
-            category_name,
             source,
             contact_id,
             is_billable,
