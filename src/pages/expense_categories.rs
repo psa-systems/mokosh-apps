@@ -44,6 +44,7 @@ struct RemoteCategory {
 
 /// The list path for a page. Pagination and nothing else, which is all
 /// `GET /expense-categories` reads.
+// SPEC-10.43.3: pagination only; no filter parameters exist on this route.
 pub(crate) fn list_path(page: usize) -> String {
     format!("/expense-categories?page={page}&per_page={PER_PAGE}")
 }
@@ -60,6 +61,7 @@ pub fn ExpenseCategoriesSettingsPage() -> Element {
         .unwrap_or(false);
 
     use_page_title("Expense Categories");
+    // SPEC-10.43.1: gate before the body so no list request is made.
     if !has_finance {
         return rsx! {
             crate::pages::billing::NoFinancePermission { title: "Expense Categories" }
@@ -77,6 +79,7 @@ fn ExpenseCategoriesSettingsBody() -> Element {
     let mut resource = use_resource(move || {
         // Read inside the closure so the resource subscribes to the page
         // signal itself (MAPPS-847).
+        // SPEC-10.43.4: page, tenant and reachability all re-run this fetch.
         let path = list_path((*page.read()).max(1));
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -98,6 +101,7 @@ fn ExpenseCategoriesSettingsBody() -> Element {
 
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // SPEC-10.43.5: an outage replaces the page; otherwise the banner below shows.
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Expense Categories".to_string() }
@@ -105,6 +109,7 @@ fn ExpenseCategoriesSettingsBody() -> Element {
     }
 
     rsx! {
+        // SPEC-10.43.2
         PageHeader {
             title: "Expense Categories",
             subtitle: "What a cost was for, on a bill line or an expense claim",
@@ -114,6 +119,7 @@ fn ExpenseCategoriesSettingsBody() -> Element {
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
+                    // SPEC-10.43.9
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                     onclick: move |_| editing.set(Some(CategoryFormState::new())),
@@ -127,10 +133,12 @@ fn ExpenseCategoriesSettingsBody() -> Element {
             "Your own list, not an inherited one. A QuickBooks tenant also maps each category to a ledger account on the QuickBooks page, because every bill line QuickBooks accepts names the account it posts to."
         }
 
+        // SPEC-10.43.5
         if fetch_failed {
             ErrorBanner { class: "mb-3", "Could not load expense categories. Refresh the page to retry." }
         }
 
+        // SPEC-10.43.13
         DataTable {
             loading: is_loading,
             total_items: total as usize,
@@ -145,6 +153,7 @@ fn ExpenseCategoriesSettingsBody() -> Element {
                         TableHeader { "Status" }
                     }
                 }
+                // SPEC-10.43.6, SPEC-10.43.7: empty state only when the load succeeded.
                 if is_loading {
                     TableLoading { columns: 2, rows: 4 }
                 } else if rows.is_empty() && !fetch_failed {
@@ -179,11 +188,12 @@ fn ExpenseCategoriesSettingsBody() -> Element {
                                         },
                                         TableCell {
                                             // MAPPS-569: the row opens a modal, so this cell is
-                                            // the keyboard path.
+                                            // the keyboard path. SPEC-10.43.10
                                             onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
+                                            // SPEC-10.43.8
                                             if active {
                                                 Badge { variant: BadgeVariant::Green, "Active" }
                                             } else {
@@ -203,6 +213,7 @@ fn ExpenseCategoriesSettingsBody() -> Element {
             CategoryFormModal {
                 state,
                 onclose: move |_| editing.set(None),
+                // SPEC-10.43.11
                 onsaved: move |_| {
                     editing.set(None);
                     resource.restart();
@@ -220,6 +231,7 @@ struct CategoryFormState {
 }
 
 impl CategoryFormState {
+    // SPEC-10.44.1
     fn new() -> Self {
         Self {
             id: None,
@@ -237,6 +249,7 @@ impl CategoryFormState {
     }
 
     /// The `UpsertExpenseCategoryRequest` body.
+    // SPEC-10.44.3
     fn body(&self) -> serde_json::Value {
         serde_json::json!({
             "name": self.name.trim(),
@@ -268,11 +281,13 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
 
     let save_id = initial.id.clone();
     let handle_save = move |_| {
+        // SPEC-10.44.5
         if *saving.read() {
             return;
         }
         error.set(String::new());
 
+        // SPEC-10.44.2: both rules are checked client side before any request.
         let mut guard = FormGuard::new();
         let name_v = name.read().trim().to_string();
         name_err.set(guard.field(
@@ -296,6 +311,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-10.44.4
                 let result = match id {
                     None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                         "/expense-categories",
@@ -312,6 +328,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
                 };
                 match result {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-10.44.6
                     Err(err) => error.set(format!("Could not save category: {err}")),
                 }
             }
@@ -321,6 +338,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
+            // SPEC-10.44.7
             title: if is_edit { "Edit Category".to_string() } else { "New Category".to_string() },
             is_edit,
             saving: *saving.read(),
@@ -332,6 +350,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
             // anyway: a bill line already classified keeps naming it. The
             // handler is required by the shared modal's props and is never
             // reachable, because `deletable: false` renders no button.
+            // SPEC-10.43.12, SPEC-10.44.8
             deletable: false,
             ondelete: move |_| {},
             create_label: "Create Category".to_string(),

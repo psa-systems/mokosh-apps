@@ -30,11 +30,13 @@ use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// Rows per page for the paginated billing list views.
+// SPEC-10.1.5
 const PER_PAGE: usize = 25;
 
 // Money formatting is centralized in `crate::utils::money` (MAPPS-197).
 // `format_money_str` parses the server's decimal string and renders it with
 // grouped thousands + two decimals, matching projects and contracts.
+// SPEC-10.1.4
 use crate::utils::money::format_money_str;
 
 /// Map the server's snake_case `PaymentMethod` tag to a readable label.
@@ -43,6 +45,7 @@ use crate::utils::money::format_money_str;
 /// vocabulary is shared with the server. An unknown value (older or newer
 /// enum variant) falls through to the raw string; the enum's `from_str`
 /// returning `None` is the "didn't match" signal.
+// SPEC-10.1.1: unknown values pass through raw so a newer server variant stays visible.
 pub(crate) fn humanize_payment_method(raw: &str) -> String {
     use mokosh_types::billing::PaymentMethod;
     match PaymentMethod::from_str(raw) {
@@ -59,6 +62,7 @@ pub(crate) fn humanize_payment_method(raw: &str) -> String {
 
 /// Build the `serde_json` null-or-string helper used by the create forms
 /// (matches `contacts::optional_string`).
+// SPEC-10.1.2
 fn optional_string(value: &str) -> serde_json::Value {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -80,6 +84,7 @@ fn optional_string(value: &str) -> serde_json::Value {
 /// [`optional_string`] on CREATE forms and on UPDATE fields whose "clear"
 /// intent is deliberately not exposed (`billing_contact_id` on an invoice
 /// keeps its recipient once sent under PMS-1004).
+// SPEC-10.1.3: "" clears a field on update, null leaves it unchanged.
 fn clearable_string(value: &str) -> String {
     value.trim().to_string()
 }
@@ -102,6 +107,7 @@ struct CompanyOption {
 
 /// Load the tenant's companies for the billing pickers (PMS-186).
 /// Best-effort: an empty list on error so a form still renders.
+// SPEC-10.1.16
 async fn load_companies() -> Vec<CompanyOption> {
     crate::hooks::fetch::list_or_empty(
         "billing company picker option",
@@ -111,6 +117,7 @@ async fn load_companies() -> Vec<CompanyOption> {
 
 /// The tenant's default rate, the one the server applies when a body names
 /// none (PMS-1029): active and flagged default.
+// SPEC-10.2.1
 fn default_tax_rate(rates: &[RemoteTaxRate]) -> Option<&RemoteTaxRate> {
     rates.iter().find(|r| r.is_default && r.is_active)
 }
@@ -118,6 +125,7 @@ fn default_tax_rate(rates: &[RemoteTaxRate]) -> Option<&RemoteTaxRate> {
 /// The label of the empty picker entry (MAPPS-712). Picking nothing sends no
 /// rate, and the server then applies the tenant's default, so the entry says
 /// which rate that is; a tenant with no default really gets no tax.
+// SPEC-10.2.2
 fn unset_tax_rate_label(rates: &[RemoteTaxRate]) -> String {
     match default_tax_rate(rates) {
         Some(r) => format!("Default: {} ({}%)", r.name, r.rate.trim()),
@@ -127,6 +135,7 @@ fn unset_tax_rate_label(rates: &[RemoteTaxRate]) -> String {
 
 /// Build `[("", default-or-no-tax), (id, "name (rate%)"), ...]` select options
 /// from a loaded tax-rate list, keeping only active rates (MAPPS-192).
+// SPEC-10.2.3
 fn tax_rate_select_options(rates: &[RemoteTaxRate]) -> Vec<SelectOption> {
     let mut opts = vec![SelectOption::new("", unset_tax_rate_label(rates))];
     opts.extend(
@@ -144,6 +153,7 @@ fn tax_rate_select_options(rates: &[RemoteTaxRate]) -> Vec<SelectOption> {
 /// tax). Rates are stored as a percentage (PMS-339), so tax = subtotal * rate
 /// / 100, rounded to two decimals. A PREVIEW only: the server's figure is the
 /// one shown once the invoice is saved.
+// SPEC-10.2.4
 fn computed_tax_amount(rates: &[RemoteTaxRate], rate_id: &str, subtotal: &str) -> String {
     let rate = if rate_id.is_empty() {
         default_tax_rate(rates)
@@ -176,6 +186,7 @@ struct TaxBody {
 /// server applies the tenant's default on create and keeps the recorded rate
 /// on edit. A blank override is not one: clearing the field goes back to the
 /// rate.
+// SPEC-10.2.5
 fn tax_body_fields(rate_id: &str, override_amount: Option<&str>) -> TaxBody {
     let override_amount = override_amount.map(str::trim).filter(|a| !a.is_empty());
     match override_amount {
@@ -194,6 +205,7 @@ fn tax_body_fields(rate_id: &str, override_amount: Option<&str>) -> TaxBody {
 /// way the document prints it (PMS-1029), and a bare `Tax` when it carries a
 /// given amount or none. The percent drops its trailing zeros (`13.0000` is
 /// `13`, `7.25` stays).
+// SPEC-10.2.6
 fn tax_label(rate: Option<&str>) -> String {
     match rate
         .map(str::trim)
@@ -207,6 +219,7 @@ fn tax_label(rate: Option<&str>) -> String {
 
 /// Build `[("", placeholder), (id, name), ...]` select options from a
 /// loaded company list.
+// SPEC-10.1.16
 fn company_select_options(companies: &[CompanyOption], placeholder: &str) -> Vec<SelectOption> {
     let mut opts = vec![SelectOption::new("", placeholder)];
     opts.extend(
@@ -251,6 +264,7 @@ struct RemoteInvoice {
 
 /// MAPPS-728: the badge text for an overdue invoice. The day count is the
 /// server's (`days_overdue`, PMS-1037), never derived here.
+// SPEC-10.1.6
 pub(crate) fn overdue_label(days: i64) -> String {
     match days {
         1 => "Overdue (1 day)".to_string(),
@@ -260,6 +274,7 @@ pub(crate) fn overdue_label(days: i64) -> String {
 
 /// MAPPS-728: the `overdue` query the list sends for the filter's three
 /// states: everything, overdue only, not overdue.
+// SPEC-10.1.7
 pub(crate) fn overdue_query(filter: &str) -> Option<&'static str> {
     match filter {
         "true" => Some("&overdue=true"),
@@ -272,6 +287,7 @@ pub(crate) fn overdue_query(filter: &str) -> Option<&'static str> {
 /// Hits `GET /invoices?company_id=<id>` (the `InvoiceFilter.company_id`
 /// filter). Best-effort: an empty list on error so the picker still renders
 /// the "(Unapplied payment)" choice.
+// SPEC-10.1.17
 async fn load_company_invoices(company_id: uuid::Uuid) -> Vec<RemoteInvoice> {
     let path = format!("/invoices?company_id={company_id}");
     crate::hooks::fetch::api::get_all_authed::<RemoteInvoice>(&path)
@@ -288,6 +304,7 @@ async fn load_company_invoices(company_id: uuid::Uuid) -> Vec<RemoteInvoice> {
 /// and labelled with its human number, amount, and status. Selecting from this
 /// list can only ever yield a valid UUID or the explicit blank, so the old
 /// silent bad-UUID -> unapplied coercion path is gone.
+// SPEC-10.1.18
 fn invoice_select_options(invoices: &[RemoteInvoice]) -> Vec<SelectOption> {
     let mut opts = vec![SelectOption::new("", "(Unapplied payment)")];
     opts.extend(invoices.iter().map(|inv| {
@@ -303,6 +320,7 @@ fn invoice_select_options(invoices: &[RemoteInvoice]) -> Vec<SelectOption> {
 /// bare error sentence (MAPPS-133): an icon, a clear heading, who has
 /// access, and the viewer's current role for context.
 #[component]
+// SPEC-10.3.1
 pub(crate) fn NoFinancePermission(title: String) -> Element {
     let auth = crate::hooks::use_auth();
     let role = auth
@@ -354,6 +372,7 @@ pub fn InvoiceListPage() -> Element {
     let contact_can_read = crate::hooks::capabilities::use_capability("invoices:read");
 
     use_page_title("Invoices");
+    // SPEC-10.3.2
     if !has_finance && !contact_can_read {
         // MAPPS-775: a customer and a technician are refused for different
         // reasons and need different words. `NoFinancePermission` says
@@ -362,6 +381,7 @@ pub fn InvoiceListPage() -> Element {
         // customer: they have no administrator, and the person who can change
         // this is the MSP they hired. The portal state names the MSP and
         // offers the ask (PMS-1187).
+        // SPEC-10.3.3: customers and staff are refused with different wording.
         if crate::hooks::fetch::api::has_contact_session() {
             return rsx! {
                 crate::components::PortalAccessRequired {
@@ -385,6 +405,7 @@ fn InvoiceListBody() -> Element {
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     // MAPPS-249: seed the company filter from `?company_id=<uuid>` so a context
     // card's "View All" lands here scoped to that company.
+    // SPEC-10.4.1
     let mut company_filter =
         use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut status_filter = use_signal(String::new);
@@ -397,6 +418,7 @@ fn InvoiceListBody() -> Element {
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke, matching the pattern on every other list page (e.g.
     // `tickets.rs`).
+    // SPEC-10.4.2
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let mut page = use_signal(|| 1usize);
 
@@ -415,6 +437,7 @@ fn InvoiceListBody() -> Element {
     // MAPPS-670 (mokosh-invoices P1e): the server hides drafts from a
     // Contact caller, so the dropdown drops the option too - offering
     // it would let the portal filter to an always-empty list.
+    // SPEC-10.4.6
     let mut status_options = vec![SelectOption::new("", "All Statuses")];
     if staff_only {
         status_options.push(SelectOption::new("draft", "Draft"));
@@ -444,6 +467,7 @@ fn InvoiceListBody() -> Element {
         let overdue = overdue_for_resource.clone();
         let q = search_for_resource.clone();
         async move {
+            // SPEC-10.4.5
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-357: subscribe to reachability so the list auto-refetches
             // the instant the server comes back (paired with the recovery poll).
@@ -453,11 +477,13 @@ fn InvoiceListBody() -> Element {
             // `contact.company_scope()` when the caller is a Contact,
             // so a contact sees only their own invoices without touching
             // this fetch path.
+            // SPEC-10.4.4
             if crate::hooks::fetch::api::current_access_token().is_none()
                 && !crate::hooks::fetch::api::has_contact_session()
             {
                 return None;
             }
+            // SPEC-10.4.3: the company filter is sent only when it parses as a UUID.
             let mut path = format!("/invoices?page={current_page}&per_page={PER_PAGE}");
             // `company` is a UUID filter (`InvoiceFilter.company_id`). Only
             // send it when it parses, otherwise the server 422s.
@@ -478,6 +504,7 @@ fn InvoiceListBody() -> Element {
             }
             crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteInvoice>>(&path)
                 .await
+                // SPEC-10.4.8
                 .inspect_err(|e| tracing::error!("invoice list load failed: {e}"))
                 .ok()
         }
@@ -497,6 +524,7 @@ fn InvoiceListBody() -> Element {
     // controls are navigation Links + filters (no inline mutations), so no
     // `can_mutate` gating is needed here.
     let reachable = crate::hooks::use_server_reachable();
+    // SPEC-10.4.9
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Invoices".to_string() }
@@ -508,6 +536,7 @@ fn InvoiceListBody() -> Element {
         || !search_text.is_empty();
 
     rsx! {
+        // SPEC-10.5.1, SPEC-10.3.6
         PageHeader {
             title: "Invoices",
             subtitle: "Manage customer invoices and billing",
@@ -575,6 +604,7 @@ fn InvoiceListBody() -> Element {
                 // chip is a query filter rather than a client-side sort.
                 Select {
                     name: "overdue",
+                    // SPEC-10.4.7
                     options: vec![
                         SelectOption::new("", "Overdue and current"),
                         SelectOption::new("true", "Overdue only"),
@@ -590,6 +620,7 @@ fn InvoiceListBody() -> Element {
         }
 
         if fetch_failed {
+            // SPEC-10.4.8
             ErrorBanner { class: "mb-3", "Could not load invoices. Refresh the page to retry." }
         }
 
@@ -614,6 +645,7 @@ fn InvoiceListBody() -> Element {
                         TableHeader { "Status" }
                     }
                 }
+                // SPEC-10.5.2, SPEC-10.5.3
                 if is_loading {
                     TableLoading { columns: 7, rows: 5 }
                 } else if rows.is_empty() && has_filters {
@@ -636,6 +668,7 @@ fn InvoiceListBody() -> Element {
                         },
                     }
                 } else if rows.is_empty() {
+                    // SPEC-10.5.4
                     TableEmpty {
                         columns: 7,
                         title: "No invoices yet".to_string(),
@@ -656,6 +689,7 @@ fn InvoiceListBody() -> Element {
                 } else {
                     TableBody {
                         for invoice in rows.iter().cloned() {
+                            // SPEC-10.5.5
                             InvoiceRow {
                                 key: "{invoice.id}",
                                 id: invoice.id.to_string(),
@@ -712,6 +746,7 @@ fn InvoiceRow(props: InvoiceRowProps) -> Element {
     rsx! {
         TableRow {
             clickable: true,
+            // SPEC-10.5.6
             onclick: move |_| { navigator.push(Route::InvoiceDetail { id: id.clone() }); },
             TableCell {
                 Link {
@@ -808,6 +843,7 @@ struct RemoteInvoiceLedger {
 /// Empty rather than "Issued by Mokosh", because that is every invoice on
 /// every deployment that has not delegated and a line saying so on all of
 /// them is noise.
+// SPEC-10.1.15
 pub(crate) fn issued_elsewhere_line(
     provider: Option<&str>,
     external_number: Option<&str>,
@@ -953,6 +989,7 @@ struct InvoiceDetail {
 /// opposite, for every action on this invoice: the control stays, greyed, with a
 /// tooltip naming the reason, because hiding it answers the operator's question
 /// ("can I write this off?") with silence, and silence reads as broken.
+// SPEC-10.7.1
 pub(crate) fn can_write_off(status: &str) -> bool {
     matches!(status, "sent" | "partially_paid")
 }
@@ -971,10 +1008,12 @@ pub(crate) fn can_write_off(status: &str) -> bool {
 /// record and the button downloads them. Mirrors the `editable` check that
 /// also gates Edit and Record Payment, kept as its own function so a test
 /// can pin the preview/download split without reaching into the page.
+// SPEC-10.11.1
 pub(crate) fn invoice_pdf_previews(status: &str) -> bool {
     matches!(status, "draft" | "pending")
 }
 
+// SPEC-10.7.2
 pub(crate) fn edit_unavailable(status: &str) -> Option<String> {
     // One statement per state: the status badge handles the "what", this
     // helper names the next action in one line and nothing more.
@@ -988,6 +1027,7 @@ pub(crate) fn edit_unavailable(status: &str) -> Option<String> {
 /// PMS-1334: amend replaces a sent invoice with a linked draft, and the server
 /// refuses it for anything else. `paid` and `credited` are whether either amount
 /// is above zero on the invoice, which is what makes a void wrong.
+// SPEC-10.7.3
 pub(crate) fn amend_unavailable(status: &str, paid: bool, credited: bool) -> Option<String> {
     // PMS-1335: one statement per state. The badge handles the status; this
     // helper names the next action.
@@ -1010,6 +1050,7 @@ pub(crate) fn amend_unavailable(status: &str, paid: bool, credited: bool) -> Opt
 /// something is left to credit. `left_to_credit` is the total less what is
 /// already credited, and deliberately NOT less what was paid: a paid invoice can
 /// be credited in full, which is the case where the customer is owed money back.
+// SPEC-10.7.4
 pub(crate) fn credit_note_unavailable(status: &str, left_to_credit: bool) -> Option<String> {
     match status {
         "draft" | "pending" => Some("Not sent yet. Edit it directly, or void it.".to_string()),
@@ -1021,6 +1062,7 @@ pub(crate) fn credit_note_unavailable(status: &str, left_to_credit: bool) -> Opt
 
 /// PMS-1036: a write-off says the customer owes this and will not pay, which is
 /// only a question for an invoice that is owed.
+// SPEC-10.7.5
 pub(crate) fn write_off_unavailable(status: &str) -> Option<String> {
     // One statement per state. Status badge handles the "what".
     match status {
@@ -1035,6 +1077,7 @@ pub(crate) fn write_off_unavailable(status: &str) -> Option<String> {
 /// PMS-1333: voiding is the pre-send back-out, and PMS-1334 is the only other
 /// way an invoice reaches `void`: sending the amendment that replaces it. So the
 /// control itself stays pre-send only, and says which instrument takes over.
+// SPEC-10.7.6
 pub(crate) fn void_unavailable(status: &str) -> Option<String> {
     // One statement per state. Status badge handles the "what".
     match status {
@@ -1047,6 +1090,7 @@ pub(crate) fn void_unavailable(status: &str) -> Option<String> {
 /// PMS-1334: the reason a control is greyed, with the server being unreachable
 /// taking precedence over any status reason, because nothing can be saved at all
 /// until it is back (MAPPS-357).
+// SPEC-10.7.7
 pub(crate) fn action_block(
     can_mutate: bool,
     unreachable: &str,
@@ -1061,6 +1105,7 @@ pub(crate) fn action_block(
 
 /// MAPPS-727: the Details row for a written-off invoice: the amount, the
 /// date part of the timestamp, and who, when the server named them.
+// SPEC-10.1.8
 pub(crate) fn write_off_line(amount: &str, at: Option<&str>, by: Option<&str>) -> String {
     format!("{amount}{}", stamped_by(at, by))
 }
@@ -1069,6 +1114,7 @@ pub(crate) fn write_off_line(amount: &str, at: Option<&str>, by: Option<&str>) -
 /// PMS-1333 freezes no amount on a void, because nothing was ever owed, so
 /// the line is the date and the person and nothing else. An empty result
 /// means the server predates the columns, and the caller renders no row.
+// SPEC-10.1.8
 pub(crate) fn voided_line(at: Option<&str>, by: Option<&str>) -> String {
     stamped_by(at, by).trim_start().to_string()
 }
@@ -1094,6 +1140,7 @@ fn stamped_by(at: Option<&str>, by: Option<&str>) -> String {
 /// server's snake_case token with the underscores spaced and the first
 /// letter raised (`credit_card` to "Credit card"). An empty token reads
 /// as "Payment" rather than as a blank.
+// SPEC-10.1.9
 pub(crate) fn payment_method_label(method: &str) -> String {
     let words = method.trim().replace('_', " ");
     let mut chars = words.chars();
@@ -1105,6 +1152,7 @@ pub(crate) fn payment_method_label(method: &str) -> String {
 
 /// The row text for a payment: the method, the date, and the reference
 /// when the server sent a non-blank one.
+// SPEC-10.1.10
 pub(crate) fn payment_line(date: &str, method: &str, reference: Option<&str>) -> String {
     let mut line = payment_method_label(method);
     let date = date.trim();
@@ -1118,6 +1166,7 @@ pub(crate) fn payment_line(date: &str, method: &str, reference: Option<&str>) ->
 }
 
 /// The row text for a refund: the date part of its timestamp.
+// SPEC-10.1.11
 pub(crate) fn refund_line(created_at: &str) -> String {
     let date: String = created_at.trim().chars().take(10).collect();
     if date.is_empty() {
@@ -1129,6 +1178,7 @@ pub(crate) fn refund_line(created_at: &str) -> String {
 
 /// True for a decimal string the server uses for "nothing": empty, or
 /// zero at any scale (`0`, `0.00`).
+// SPEC-10.1.12
 pub(crate) fn is_zero_amount(raw: &str) -> bool {
     let t = raw.trim();
     t.is_empty() || t.chars().all(|c| c == '0' || c == '.')
@@ -1169,6 +1219,7 @@ pub(crate) fn format_sent_date(sent_at: Option<&str>) -> Option<String> {
 /// Pure core of [`format_sent_date`]: takes `pref` and `tz` explicitly so a
 /// unit test can prove the late-evening UTC date-shift behaviour without a
 /// live Dioxus context.
+// SPEC-10.1.13
 pub(crate) fn format_sent_date_in(
     sent_at: Option<&str>,
     pref: Option<&str>,
@@ -1186,6 +1237,7 @@ pub(crate) fn format_sent_date_in(
     ))
 }
 
+// SPEC-10.1.14
 pub(crate) fn sent_line(
     delivery_method: Option<&str>,
     delivery_note: Option<&str>,
@@ -1267,6 +1319,7 @@ fn default_true() -> bool {
 /// `contact_email` is `None` for no billing contact, `Some(None)` for a
 /// contact with no address, `Some(Some(_))` otherwise; `gateway` is `None`
 /// while the check has not answered.
+// SPEC-10.8.12, SPEC-10.8.13
 pub(crate) fn invoice_pay_now_preview(
     org_name: &str,
     invoice_number: &str,
@@ -1396,6 +1449,7 @@ pub(crate) struct DeliveryOptionsResponse {
 /// or the response did not name it (a server predating PMS-1462 sends an
 /// empty list). `None` means "no opinion": the caller leaves the method
 /// selectable with no tooltip, MAPPS-1014's stated fallback.
+// SPEC-10.8.15
 pub(crate) fn find_delivery_option<'a>(
     options: Option<&'a [DeliveryOption]>,
     method: &str,
@@ -1415,6 +1469,7 @@ pub(crate) fn find_delivery_option<'a>(
 ///
 /// The email is `notify_invoice_pay_now` on the server, fired on the first
 /// transition into `sent`.
+// SPEC-10.8.14
 fn invoice_send_path(id: &str) -> String {
     format!("/invoices/{id}")
 }
@@ -1431,6 +1486,7 @@ fn invoice_send_path(id: &str) -> String {
 /// possibility rather than a button), and the Credit Notes card below. A
 /// written-off invoice's late payment is a recovery (PMS-1036), so that
 /// state says so instead of "cannot be reinstated".
+// SPEC-10.6.12
 pub(crate) fn locked_invoice_note(status: &str) -> Option<&'static str> {
     // PMS-1335: one statement per state, no explanatory assertion. The
     // locked status reads from the badge; this note says what the actor
@@ -1464,6 +1520,7 @@ pub struct InvoiceDetailPageProps {
 /// rather than a `json!` literal so a rename on the server is a compile error
 /// here. The reason is optional, and omitted entirely when blank.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+// SPEC-10.9.2: the reason is omitted from the body entirely when blank.
 struct VoidInvoiceBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
@@ -1533,6 +1590,7 @@ pub(crate) struct PayOption {
 /// Identified by position rather than by provider or label: the provider is
 /// absent against a server that predates PMS-1179, and two providers may carry
 /// the same admin-set label, so neither identifies a button.
+// SPEC-10.10.3
 pub(crate) fn pay_button_loading(pending: Option<usize>, index: usize) -> bool {
     pending == Some(index)
 }
@@ -1543,6 +1601,7 @@ pub(crate) fn pay_button_loading(pending: Option<usize>, index: usize) -> bool {
 /// flight, which is a button that appears late rather than one that is
 /// disabled - so the pending state keeps its single unnamed button, exactly
 /// what this page rendered before the choice existed.
+// SPEC-10.10.2
 pub(crate) fn pay_options_for_render(
     choices: &[PayOption],
     fallback_label: &str,
@@ -1567,6 +1626,7 @@ pub(crate) fn pay_options_for_render(
 /// becomes a single option naming no provider, which is the request every
 /// client sent before the choice existed. No labels at all means nothing to
 /// offer, and the caller renders no button rather than one that cannot work.
+// SPEC-10.10.2
 pub(crate) fn pay_options(
     providers: &[RemotePaymentProvider],
     button_label: Option<&str>,
@@ -1593,6 +1653,7 @@ pub(crate) fn pay_options(
 
 /// MAPPS-668 (mokosh-invoices P1c): body sent to POST /invoices/{id}/pay.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
+// SPEC-10.10.4: provider and amount are omitted when not chosen or typed.
 struct PayInvoiceBody {
     success_url: String,
     cancel_url: String,
@@ -1635,6 +1696,7 @@ struct PayInvoiceResp {
 #[component]
 pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let contact_can_read = crate::hooks::capabilities::use_capability("invoices:read");
+    // SPEC-10.3.4: gated before the body mounts, so no detail fetch is issued.
     if crate::hooks::fetch::api::has_contact_session() && !contact_can_read {
         use_page_title("Invoice");
         return rsx! {
@@ -1657,6 +1719,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // MAPPS-727: writing off is finance only on the server (PMS-1036), so
     // the action is gated on the role and not only on the staff plane; a
     // technician sees no button rather than a 403.
+    // SPEC-10.3.7
     let has_finance = crate::hooks::use_auth()
         .read()
         .user
@@ -1679,6 +1742,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // Now - clicking it as a staff caller would mint a hosted-checkout
     // session for the admin's own browser. Require BOTH a live contact
     // session AND the cap so the button only renders on the portal plane.
+    // SPEC-10.3.8
     let can_pay = crate::hooks::capabilities::use_is_contact_session()
         && crate::hooks::capabilities::use_capability("invoices:pay");
     let _pdf_downloading = use_signal(|| false);
@@ -1696,6 +1760,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // arm off the staff detail page even if a staff caller manually
     // types the query string, so the same predicate that hides the
     // button hides its post-checkout artefacts too.
+    // SPEC-10.6.13
     let is_paid_landing = {
         #[cfg(feature = "app")]
         {
@@ -1723,6 +1788,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 "/invoices/{id}/payment-readiness"
             ))
             .await
+            // SPEC-10.6.4
             .inspect_err(|e| tracing::error!("payment readiness load failed for invoice {id}: {e}"))
             .ok()
         }
@@ -1747,6 +1813,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
             // src/modules/billing/routes.rs:410 already gates the
             // contact branch on `invoices:read` + Company-scope 404,
             // so contact-first bearer selection is safe.
+            // SPEC-10.6.1
             crate::hooks::fetch::api::get_authed_any::<InvoiceDetail>(&format!("/invoices/{id}"))
                 .await
                 .inspect_err(|e| tracing::error!("invoice detail load failed for {id}: {e}"))
@@ -1764,6 +1831,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     let delivery_options_resource = use_resource(move || {
         let id = id_for_delivery.clone();
         async move {
+            // SPEC-10.6.5
             if !staff_only {
                 return None;
             }
@@ -1785,6 +1853,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         let id = id_for_notes.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // SPEC-10.6.6
             crate::pages::credit_notes::load_invoice_credit_notes(&id).await
         }
     });
@@ -1805,6 +1874,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         let _invoice = invoice_resource.read().clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // SPEC-10.6.6
             crate::hooks::fetch::api::get_authed_any::<RemoteInvoiceLedger>(&format!(
                 "/invoices/{id}/payments"
             ))
@@ -1871,6 +1941,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // the budget ran out and the spinner span forever. A customer who had just
     // paid sat on it indefinitely with nothing saying what had happened.
     let mut poll_expired = use_signal(|| false);
+    // SPEC-10.6.13: 15 ticks of 2000 ms is the 30 s budget.
     use_future(move || async move {
         if !is_paid_landing {
             return;
@@ -1899,6 +1970,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         // and this fetch is for the staff email preview, so on the portal
         // plane it 401d on every render - and once per poll tick during the
         // post-payment wait, which is what filled the customer's console.
+        // SPEC-10.6.7
         if !staff_only {
             return None;
         }
@@ -1920,6 +1992,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         // MAPPS-772: staff only, for the same reason. A customer learns
         // whether they can pay from `payment-readiness`, which serves both
         // planes; `/payment-gateways` is finance-gated and 401s for them.
+        // SPEC-10.6.8
         if !staff_only {
             return None;
         }
@@ -1958,6 +2031,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // (older/newer server variant) resolves to `None`, which means the
     // caller is not editable, collectible or frozen; the gating buttons
     // stay off rather than guessing.
+    // SPEC-10.6.9
     let parsed_status = mokosh_types::billing::InvoiceStatus::from_str(status.as_str());
     // MAPPS-1147: issued by a provider rather than by Mokosh. The number
     // the customer holds is theirs, and there is no Mokosh document for it.
@@ -1970,6 +2044,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         .as_ref()
         .and_then(|i| i.external_number.clone())
         .filter(|n| !n.trim().is_empty());
+    // SPEC-10.6.10
     let editable = matches!(
         parsed_status,
         Some(
@@ -2001,6 +2076,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // five arms here, so moving a status into or out of the frozen set is
     // one edit in mokosh-types instead of a silent drift between repos.
     let frozen = parsed_status.is_some_and(|s| s.is_frozen());
+    // SPEC-10.6.11
     let remaining_to_credit = invoice
         .as_ref()
         .and_then(|i| {
@@ -2021,6 +2097,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // customer", "Record a payment", "write it off"), and every action it
     // names is staff-only. A customer was being told to write off their own
     // invoice.
+    // SPEC-10.6.12
     let frozen_note = staff_only
         .then(|| locked_invoice_note(status.as_str()))
         .flatten();
@@ -2067,6 +2144,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // reason is worth asking for because it is the only thing on a voided
     // invoice that says what happened.
     let mut void_reason = use_signal(String::new);
+    // SPEC-10.9.2, SPEC-10.9.9
     let mut on_confirm_void = move |_: ()| {
         if *busy.read() {
             return;
@@ -2110,6 +2188,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // out; a 502 (relay refused) closes the dialog and surfaces the
     // separate send-failed banner with its Retry; any other failure stays
     // inside the dialog.
+    // SPEC-10.8.5, SPEC-10.8.6
     let mut on_confirm_send = move |_: ()| {
         if *busy.read() {
             return;
@@ -2119,6 +2198,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         // The note is required on `other`; the dialog's confirm_disabled
         // guard renders Send disabled until it is non-blank, but a
         // keyboard-driven confirm could still land here, so we re-check.
+        // SPEC-10.8.4
         if method == "other" && note.is_empty() {
             send_error.set("Describe how the invoice was delivered.".to_string());
             return;
@@ -2143,6 +2223,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 )
                 .await
                 {
+                    // SPEC-10.8.7
                     Ok(_) => {
                         confirming_send.set(false);
                         send_blocked.set(None);
@@ -2156,6 +2237,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     // PMS-1004: a 409 is "nobody to email", and it gets the
                     // panel with the ways out rather than the dialog's
                     // error. Reachable only on `email`.
+                    // SPEC-10.8.8
                     Err(crate::hooks::fetch::api::ApiError::Status {
                         code: 409, message, ..
                     }) => {
@@ -2165,6 +2247,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     // MAPPS-1014: the relay refused the mail. Dialog
                     // closes; the banner above the invoice carries the
                     // detail and the Retry.
+                    // SPEC-10.8.9
                     Err(crate::hooks::fetch::api::ApiError::Status { code, message, .. })
                         if (500..=599).contains(&code) =>
                     {
@@ -2172,6 +2255,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                         confirming_send.set(false);
                         send_failed.set(Some(message));
                     }
+                    // SPEC-10.8.10
                     Err(err) => {
                         tracing::warn!("send failed for invoice {invoice_id_for_log}: {err:?}");
                         send_error.set(format!("Could not send invoice: {err}"));
@@ -2184,6 +2268,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
 
     // MAPPS-727: the write-off POST fires from the dialog once a reason is
     // typed. A refusal (a 409 naming the status, a 403) stays in the dialog.
+    // SPEC-10.9.5, SPEC-10.9.6, SPEC-10.9.9
     let mut on_confirm_write_off = move |_: ()| {
         if *busy.read() {
             return;
@@ -2222,6 +2307,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // PMS-1004: setting the billing contact from the blocked-send panel. A
     // plain field update; the operator then sends again, on purpose.
     let id_for_contact = props.id.clone();
+    // SPEC-10.8.11
     let on_pick_contact = move |(contact_id, _name): (String, String)| {
         if *busy.read() {
             return;
@@ -2261,6 +2347,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // are blocked while down via `can_mutate`.
     let fetch_failed = matches!(*snap, Some(None));
     let reachable = crate::hooks::use_server_reachable();
+    // SPEC-10.6.15
     let can_mutate = crate::hooks::use_can_mutate();
     // PMS-1334: every staff action on this invoice now states its own
     // availability, so the row is the same row whatever the status and each
@@ -2274,6 +2361,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         .as_ref()
         .and_then(|i| Decimal::from_str_exact(&i.amount_credited).ok())
         .is_some_and(|credited| credited > Decimal::ZERO);
+    // SPEC-10.7.7, SPEC-10.7.9
     let edit_block = action_block(
         can_mutate,
         "Can't edit while the server is unreachable",
@@ -2299,6 +2387,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         "Can't void while the server is unreachable",
         void_unavailable(status.as_str()),
     );
+    // SPEC-10.6.2
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Invoice".to_string() }
@@ -2319,6 +2408,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     let invoice_payable = readiness.as_ref().is_some_and(|r| r.invoice_payable);
     // MAPPS-771: one button per connected provider. An older server sends one
     // label and no list, which becomes a single unnamed option.
+    // SPEC-10.10.2
     let pay_choices = readiness
         .as_ref()
         .map(|r| pay_options(&r.providers, r.button_label.as_deref()))
@@ -2339,6 +2429,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // The typed amount is a plain string on the wire (Decimal round-trips
     // badly through JSON floats) and blank means "full balance", which is
     // the byte-identical pre-MAPPS-673 request.
+    // SPEC-10.10.7
     let partial_payment_allowed = readiness
         .as_ref()
         .is_some_and(|r| r.partial_payment_allowed);
@@ -2368,6 +2459,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         .and_then(|i| i.currency.clone())
         .filter(|s| !s.trim().is_empty());
     let browser_currency = crate::platform::currency::browser_locale_currency();
+    // SPEC-10.10.8
     let currency_mismatch_note: Option<String> = match (&invoice_currency, &browser_currency) {
         (Some(inv), Some(browser))
             if !inv.eq_ignore_ascii_case(browser) && can_pay && invoice_payable && !is_paid =>
@@ -2389,6 +2481,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         // MAPPS-727: the write-off dialog. A Modal rather than ConfirmDialog
         // because the reason is required and typed here (PMS-1036 records it
         // as the audit trail), and ConfirmDialog carries no field.
+        // SPEC-10.9.4, SPEC-10.9.7
         if show_write_off() {
             Modal {
                 open: true,
@@ -2414,6 +2507,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     Button {
                         variant: ButtonVariant::Danger,
                         loading: *busy.read(),
+                        // SPEC-10.9.5
                         disabled: !can_mutate || write_off_reason.read().trim().is_empty(),
                         title: (!can_mutate).then(|| "Can't write off while the server is unreachable".to_string()),
                         onclick: move |_| on_confirm_write_off(()),
@@ -2440,6 +2534,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 }
             }
         }
+        // SPEC-10.9.1
         crate::components::ConfirmDialog {
             open: confirming_void(),
             title: "Void invoice".to_string(),
@@ -2465,6 +2560,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 }
             },
             onconfirm: move |_| on_confirm_void(()),
+            // SPEC-10.9.3
             oncancel: move |_| {
                 if !*busy.read() {
                     confirming_void.set(false);
@@ -2488,6 +2584,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 .clone()
                 .flatten()
                 .map(|r| r.methods);
+            // SPEC-10.8.2
             let email_option = find_delivery_option(delivery_options.as_deref(), "email").cloned();
             let email_unavailable = email_option.as_ref().is_some_and(|o| !o.available);
             let email_reason = email_option.as_ref().and_then(|o| o.reason.clone());
@@ -2495,6 +2592,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
             let other_invalid = method == "other" && note.is_empty();
             let invoice_pdf_path = format!("/api/v1/invoices/{}/pdf", props.id);
             rsx! {
+                // SPEC-10.8.1
                 crate::components::ConfirmDialog {
                     open: confirming_send(),
                     title: "Send invoice".to_string(),
@@ -2504,6 +2602,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     destructive: false,
                     loading: *busy.read(),
                     error: send_error.read().clone(),
+                    // SPEC-10.8.2
                     confirm_disabled: other_invalid || (method == "email" && email_unavailable),
                     body: rsx! {
                         div { class: "space-y-3",
@@ -2528,7 +2627,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                     }
                                 }
                             }
-                            // Postal
+                            // Postal (SPEC-10.8.3)
                             label { class: "flex items-start gap-2 text-sm",
                                 input {
                                     r#type: "radio",
@@ -2566,6 +2665,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                     }
                                 }
                             }
+                            // SPEC-10.8.3
                             if method == "other" {
                                 div { class: "space-y-1",
                                     label {
@@ -2584,6 +2684,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                     p { class: "text-xs text-muted", "Required." }
                                 }
                             }
+                            // SPEC-10.8.12
                             if method == "email" {
                                 div { class: "pt-2 border-t border-line",
                                     p { class: "mb-2 text-xs text-muted", "Preview of the email the client will receive." }
@@ -2648,6 +2749,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
             // in the title is not the one the customer was sent. Beside it
             // rather than instead of it: every internal reference, every
             // payment and every note still uses Mokosh's.
+            // SPEC-10.6.3
             subtitle: issued_elsewhere_line(delegated_by.as_deref(), external_number.as_deref()),
             // PMS-746: a route back to the list, matching ContractDetailPage.
             breadcrumbs: rsx! {
@@ -2668,6 +2770,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 // all: those don't have "pay this" as an option, only
                 // "wait for a real invoice". P1d spawns the polling
                 // loop and the splash below.
+                // SPEC-10.10.1
                 if can_pay && !is_paid {
                     if invoice_payable {
                         // MAPPS-673: the partial-payment amount input. Only
@@ -2678,6 +2781,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                         // pre-MAPPS-673 pay request; a value below the tenant's
                         // floor or above `balance_due` is refused server-side
                         // and surfaced through `pay_error`.
+                        // SPEC-10.10.7
                         if partial_payment_allowed {
                             div {
                                 class: "max-w-[14rem]",
@@ -2741,6 +2845,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                         // checkout sessions for one invoice is
                                         // not a thing to offer.
                                         loading: is_pending,
+                                        // SPEC-10.10.3
                                         disabled: !can_mutate || !gateway_ready || *pay_saving.read(),
                                         title: if !can_mutate {
                                             Some("Can't start a payment while the server is unreachable".to_string())
@@ -2786,6 +2891,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                                     } else {
                                                         Some(typed)
                                                     };
+                                                    // SPEC-10.10.4
                                                     let body = PayInvoiceBody {
                                                         success_url: format!("{origin}{path}?paid=1"),
                                                         cancel_url: format!("{origin}{path}"),
@@ -2798,6 +2904,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                                         &format!("/invoices/{id}/pay"),
                                                         &body,
                                                     ).await {
+                                                        // SPEC-10.10.5
                                                         Ok(resp) if !resp.checkout_url.is_empty() => {
                                                             #[cfg(target_arch = "wasm32")]
                                                             {
@@ -2822,6 +2929,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                                                 "Payment checkout is only available in the web portal. Open your portal in a browser to pay.".to_string(),
                                                             );
                                                         }
+                                                        // SPEC-10.10.6
                                                         Ok(_) => {
                                                             pay_error.set(
                                                                 "Payment provider returned an empty response. Try again.".to_string(),
@@ -2857,6 +2965,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 // is no Mokosh document for one, the server refuses the
                 // route, and offering the button would promise a copy of
                 // something that was never rendered here.
+                // SPEC-10.11.1
                 if can_download_pdf && !delegated {
                     if let Some(inv) = invoice.as_ref() {
                         crate::components::DownloadButton {
@@ -2884,6 +2993,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     // correction path at all.
                     Button {
                         variant: ButtonVariant::Secondary,
+                        // SPEC-10.7.2, SPEC-10.7.9
                         disabled: edit_block.is_some(),
                         title: edit_block.clone(),
                         onclick: move |_| {
@@ -2899,6 +3009,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     Button {
                         variant: ButtonVariant::Secondary,
                         loading: *busy.read(),
+                        // SPEC-10.7.3
                         disabled: amend_block.is_some(),
                         title: amend_block.clone(),
                         onclick: move |_| {
@@ -2907,6 +3018,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                             }
                             busy.set(true);
                             action_error.set(String::new());
+                            // SPEC-10.9.8, SPEC-10.9.9
                             let path = format!("/invoices/{}/amend", id_for_amend);
                             spawn(async move {
                                 #[cfg(feature = "app")]
@@ -2944,6 +3056,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                         "Amend"
                     }
                 }
+                // SPEC-10.7.8
                 if editable && staff_only {
                     Button {
                         variant: ButtonVariant::Primary,
@@ -2962,6 +3075,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                         "Send"
                     }
                 }
+                // SPEC-10.7.8, SPEC-10.9.10
                 if collectible && staff_only {
                     Button {
                         variant: ButtonVariant::Secondary,
@@ -2978,9 +3092,11 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 // MAPPS-727 (PMS-1036): the bad-debt record for a sent
                 // balance that will not be paid. Finance only, like the
                 // route.
+                // SPEC-10.3.7
                 if staff_only && has_finance {
                     Button {
                         variant: ButtonVariant::Secondary,
+                        // SPEC-10.7.5
                         disabled: write_off_block.is_some(),
                         title: write_off_block.clone(),
                         onclick: move |_| {
@@ -3001,6 +3117,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 if staff_only {
                     Button {
                         variant: ButtonVariant::Secondary,
+                        // SPEC-10.7.4
                         disabled: credit_note_block.is_some(),
                         title: credit_note_block.clone(),
                         onclick: move |_| {
@@ -3018,6 +3135,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                         // control on the page past `pending` and lets the reason
                         // say which instrument takes over, rather than the
                         // operator inferring it from an absence.
+                        // SPEC-10.7.6
                         disabled: void_block.is_some(),
                         title: void_block.clone().unwrap_or_else(|| {
                             "Voids this draft invoice and keeps it on record.".to_string()
@@ -3045,6 +3163,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         // the payment has still not reached the invoice. Saying nothing leaves
         // them looking at an unpaid invoice they know they paid, which is the
         // moment someone pays twice.
+        // SPEC-10.6.14
         if is_paid_landing && poll_expired() && status != "paid" {
             div {
                 role: "status",
@@ -3084,6 +3203,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         // email is impossible (no billing contact or no address). The panel
         // offers the ways out it points at, in place; the operator can
         // also just open Send again and pick postal / other.
+        // SPEC-10.8.8
         if let Some(reason) = send_blocked.read().clone() {
             crate::components::StatusBanner {
                 tone: crate::components::BannerTone::Warning,
@@ -3115,6 +3235,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
         // dialog closed with the mail unsent, and the banner carries the
         // reason + a Retry that reopens Send with the method and note
         // the operator had.
+        // SPEC-10.8.9
         if let Some(reason) = send_failed.read().clone() {
             crate::components::StatusBanner {
                 tone: crate::components::BannerTone::Warning,
@@ -3146,6 +3267,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
             }
         }
 
+        // SPEC-10.6.2
         match &*snap {
             None => rsx! {
                 // PMS-353
@@ -3163,6 +3285,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     }
                 }
             },
+            // SPEC-10.6.14
             Some(Some(inv)) if is_paid_landing && !poll_expired() && inv.status != "paid" => rsx! {
                 // MAPPS-669 (P1d): post-checkout splash. The Stripe /
                 // PayPal webhook writes the payment; until the tick
@@ -3203,6 +3326,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 // gets no link to follow. Empty against a server that predates
                 // the field, and the cell then renders a dash.
                 let billing_contact_name = inv.billing_contact_name.clone().unwrap_or_default();
+                // SPEC-10.11.7
                 let sent_at_display = format_sent_date(inv.sent_at.as_deref());
                 let sent_line_text = sent_line(
                     inv.delivery_method.as_deref(),
@@ -3211,6 +3335,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     sent_at_display.as_deref(),
                 );
                 // MAPPS-727: the write-off block, when there was one.
+                // SPEC-10.11.8
                 let write_off = inv.written_off_at.as_deref().map(|at| {
                     write_off_line(
                         &format_money_str(inv.write_off_amount.as_deref().unwrap_or("0")),
@@ -3241,6 +3366,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 rsx! {
                     // MAPPS-672: on a draft, try another template before
                     // committing to it in settings. Nothing is saved.
+                    // SPEC-10.11.2
                     if can_download_pdf && editable {
                         div { class: "mb-4 w-full sm:max-w-xs",
                             crate::components::Select {
@@ -3292,7 +3418,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                     }
                                 }
 
-                                // Line items
+                                // Line items (SPEC-10.11.3)
                                 Table {
                                     TableHead {
                                         TableRow {
@@ -3360,6 +3486,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
 
                         // Sidebar
                         div { class: "space-y-6",
+                            // SPEC-10.11.4
                             Card { title: "Status",
                                 div { class: "space-y-4",
                                     div { class: "flex justify-between items-center",
@@ -3401,6 +3528,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                 let ledger = ledger_resource.read_unchecked().clone().flatten();
                                 rsx! {
                                     if let Some(ledger) = ledger {
+                                        // SPEC-10.11.5
                                         Card { title: "Payments",
                                             if ledger.payments.is_empty() {
                                                 p { class: "text-sm text-muted", "No payments recorded." }
@@ -3431,6 +3559,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                 }
                             }
 
+                            // SPEC-10.11.6
                             Card { title: "Credit Notes",
                                 {
                                     let notes = credit_notes_resource.read_unchecked().clone().unwrap_or_default();
@@ -3487,6 +3616,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                 }
                             }
 
+                            // SPEC-10.11.7
                             Card { title: "Details",
                                 dl { class: "space-y-3 text-sm",
                                     if !currency.is_empty() {
@@ -3595,6 +3725,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
             },
         }
 
+        // SPEC-10.9.10
         if *show_edit.read() {
             if let Some(inv) = invoice.clone() {
                 InvoiceEditModal {
@@ -3626,6 +3757,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
             }
         }
 
+        // SPEC-10.9.10
         if *show_payment.read() {
             RecordPaymentModal {
                 company_id: pay_company_id.clone(),
@@ -3640,6 +3772,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
 
         // MAPPS-638: the create form. Mounted here and nowhere else, because a
         // credit note is always about one invoice.
+        // SPEC-10.9.10
         if *show_credit_note.read() {
             if let Some(inv) = invoice.clone() {
                 crate::pages::credit_notes::CreditNoteFormModal {
@@ -3665,6 +3798,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
 /// `/invoices/from-time-entries`). Both take a company UUID; the manual
 /// path also takes dates and one line item.
 #[component]
+// SPEC-10.12.1
 pub fn InvoiceNewPage() -> Element {
     // MAPPS-300: pre-fill `company_id` from the URL so the Company detail
     // "New Invoice" CTA lands on a form already scoped to that company.
@@ -3685,6 +3819,7 @@ pub fn InvoiceNewPage() -> Element {
     // MAPPS-940: shared payment-terms cache, not a per-form fetch.
     let terms_resource = crate::hooks::use_payment_terms(true);
     let terms: Vec<PaymentTermOpt> = terms_resource.read_unchecked().clone().unwrap_or_default();
+    // SPEC-10.12.1
     if !*term_seeded.read() && !terms.is_empty() {
         if let Some(default) = terms.iter().find(|t| t.is_default && t.is_active) {
             payment_term_id.set(default.id.to_string());
@@ -3744,6 +3879,7 @@ pub fn InvoiceNewPage() -> Element {
     // recomputes as any input changes. A manual edit to the Tax field
     // overrides it until another rate is picked. The server's figure is the
     // one shown after save (MAPPS-712).
+    // SPEC-10.12.7
     let computed_tax = use_memo(move || {
         let qty = Decimal::from_str(line_quantity.read().trim()).unwrap_or_default();
         let price = Decimal::from_str(line_unit_price.read().trim()).unwrap_or_default();
@@ -3779,6 +3915,7 @@ pub fn InvoiceNewPage() -> Element {
         // all failures surface at once (each in its own inline slot) and the first
         // invalid field is focused, instead of the previous first-failure-returns
         // chain that masked every field after the first.
+        // SPEC-10.12.3
         let mut guard = FormGuard::new();
 
         // PMS-579: surface a missing company inline under the picker (red
@@ -3805,6 +3942,7 @@ pub fn InvoiceNewPage() -> Element {
         // Cross-field order check, only meaningful once both dates are present.
         // Dates come from the native picker as ISO `YYYY-MM-DD`, so a lexicographic
         // compare is a correct order check. Overrides the per-field slot set above.
+        // SPEC-10.12.4
         if !inv_date.is_empty() && !due.is_empty() && due < inv_date {
             due_date_error.set("Due date must be on or after the invoice date.".to_string());
             guard.note_invalid(Some("due_date"));
@@ -3850,6 +3988,7 @@ pub fn InvoiceNewPage() -> Element {
         is_submitting.set(true);
         // MAPPS-712: the rate, or the override, never both; the server derives
         // the amount from the rate over the taxable lines (PMS-1029).
+        // SPEC-10.12.5
         let tax = tax_body_fields(&tax_rate_id.read(), tax_override.read().as_deref());
         let body = serde_json::json!({
             "company_id": company_uuid,
@@ -3895,6 +4034,7 @@ pub fn InvoiceNewPage() -> Element {
                         });
                     }
                     Err(err) => {
+                        // SPEC-10.12.5
                         error.set(format!("Could not create invoice: {err}"));
                     }
                 }
@@ -3906,6 +4046,7 @@ pub fn InvoiceNewPage() -> Element {
     // Generate from time entries: POST /invoices/from-time-entries.
     // Sweeps every eligible billable entry for the company (no
     // time_entry_ids => all eligible).
+    // SPEC-10.12.8, SPEC-10.12.9
     let handle_generate = move |_| {
         if *is_submitting.read() || *is_generating.read() {
             return;
@@ -3948,6 +4089,7 @@ pub fn InvoiceNewPage() -> Element {
                         });
                     }
                     Err(err) => {
+                        // SPEC-10.12.8
                         error.set(format!("Could not generate invoice: {err}"));
                     }
                 }
@@ -3993,6 +4135,7 @@ pub fn InvoiceNewPage() -> Element {
                     allow_inline_create: true,
                     // PMS-579: inline field-level error instead of the banner.
                     error: company_error.read().clone(),
+                    // SPEC-10.12.2
                     onselect: move |(id, name): (String, String)| {
                         let changed = *company_id.read() != id;
                         company_id.set(id);
@@ -4057,6 +4200,7 @@ pub fn InvoiceNewPage() -> Element {
                             let term = terms.iter().find(|t| t.id.to_string() == selected)
                                 .or_else(|| terms.iter().find(|t| t.is_default && t.is_active));
                             match (term, derived_due_date(&invoice_date.read(), term.and_then(|t| t.net_days))) {
+                                // SPEC-10.12.4
                                 (Some(t), Some(date)) => format!("Leave blank to use {} from the invoice date: {date}.", t.name),
                                 (None, Some(date)) => format!("Leave blank for thirty days from the invoice date: {date}."),
                                 (Some(t), None) => format!("Leave blank to derive it from {} once the invoice date is set.", t.name),
@@ -4083,6 +4227,7 @@ pub fn InvoiceNewPage() -> Element {
                 crate::components::Input {
                     name: "po_number",
                     label: "PO Number",
+                    // SPEC-10.12.10
                     maxlength: 100,
                     value: po_number.read().clone(),
                     oninput: move |e: FormEvent| po_number.set(e.value()),
@@ -4102,6 +4247,7 @@ pub fn InvoiceNewPage() -> Element {
                                 (!id.is_empty()).then_some(id)
                             },
                             label: "From the price list",
+                            // SPEC-10.12.6
                             onselect: move |picked: crate::components::PickedProduct| {
                                 line_product_id.set(picked.id.clone());
                                 line_product_name.set(picked.name.clone());
@@ -4178,6 +4324,7 @@ pub fn InvoiceNewPage() -> Element {
                             label: "Taxable",
                             checked: *line_is_taxable.read(),
                             // MAPPS-712: a product line follows the product.
+                            // SPEC-10.12.6
                             disabled: !line_product_id.read().is_empty(),
                             help: if line_product_id.read().is_empty() {
                                 "The tax rate applies to this line.".to_string()
@@ -4204,6 +4351,7 @@ pub fn InvoiceNewPage() -> Element {
                             options: tax_rate_options,
                             value: tax_rate_id.read().clone(),
                             onchange: move |e: FormEvent| {
+                                // SPEC-10.12.7
                                 tax_rate_id.set(e.value());
                                 // Re-follow the computed value for the new rate.
                                 tax_override.set(None);
@@ -4254,6 +4402,7 @@ pub fn InvoiceNewPage() -> Element {
                         loading: *is_generating.read(),
                         // MAPPS-357: block generation while the server is down.
                         disabled: !can_mutate,
+                        // SPEC-10.12.9
                         title: (!can_mutate).then(|| "Can't generate an invoice while the server is unreachable".to_string()),
                         onclick: handle_generate,
                         "Generate from Time Entries"
@@ -4264,6 +4413,7 @@ pub fn InvoiceNewPage() -> Element {
                         loading: *is_submitting.read(),
                         // MAPPS-357: block creation while the server is down.
                         disabled: !can_mutate,
+                        // SPEC-10.12.9
                         title: (!can_mutate).then(|| "Can't create an invoice while the server is unreachable".to_string()),
                         "Create Invoice"
                     }
@@ -4314,6 +4464,7 @@ pub fn PaymentListPage() -> Element {
         .unwrap_or(false);
 
     use_page_title("Payments");
+    // SPEC-10.3.5
     if !has_finance {
         return rsx! { NoFinancePermission { title: "Payments" } };
     }
@@ -4339,6 +4490,7 @@ fn PaymentListBody() -> Element {
             // MAPPS-357: subscribe to reachability so the list auto-refetches
             // the instant the server comes back (paired with the recovery poll).
             let _reachable = crate::hooks::use_server_reachable();
+            // SPEC-10.13.1
             let token = crate::hooks::fetch::api::current_access_token()?;
             let path = format!("/payments?page={current_page}&per_page={PER_PAGE}");
             crate::hooks::fetch::api::get_with_auth::<Paginated<RemotePayment>>(&path, &token)
@@ -4362,6 +4514,7 @@ fn PaymentListBody() -> Element {
     // inline banner below. Writes are blocked while down via `can_mutate`.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // SPEC-10.13.2
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Payments".to_string() }
@@ -4378,6 +4531,7 @@ fn PaymentListBody() -> Element {
                     // MAPPS-357: block recording a payment while down.
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't record a payment while the server is unreachable".to_string()),
+                    // SPEC-10.13.4
                     onclick: move |_| recording.set(true),
                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                     "Record Payment"
@@ -4386,6 +4540,7 @@ fn PaymentListBody() -> Element {
         }
 
         if fetch_failed {
+            // SPEC-10.13.2
             ErrorBanner { class: "mb-3", "Could not load payments. Refresh the page to retry." }
         }
 
@@ -4399,6 +4554,7 @@ fn PaymentListBody() -> Element {
             Table {
                 TableHead {
                     TableRow {
+                        // SPEC-10.13.3
                         TableHeader { "Date" }
                         TableHeader { "Company" }
                         TableHeader { "Invoice" }
@@ -4413,6 +4569,7 @@ fn PaymentListBody() -> Element {
                 } else if rows.is_empty() {
                     TableEmpty {
                         columns: 7,
+                        // SPEC-10.13.3
                         title: "No payments yet".to_string(),
                         description: "Record a payment to track what your customers have paid.".to_string(),
                         actions: rsx! {
@@ -4440,10 +4597,12 @@ fn PaymentListBody() -> Element {
                                         invoice_id: payment.invoice_id.map(|i| i.to_string()).unwrap_or_default(),
                                         invoice_number: payment.invoice_number.clone().unwrap_or_default(),
                                         date: payment.payment_date.clone().unwrap_or_default(),
+                                        // SPEC-10.13.5
                                         method: humanize_payment_method(&payment.payment_method),
                                         reference: payment.reference_number.clone().unwrap_or_default(),
                                         amount: format_money_str(&payment.amount),
                                         on_edit: move |_| editing.set(Some(edit_payment.clone())),
+                                        // SPEC-10.13.6
                                         on_deleted: move |_| { reload += 1; },
                                     }
                                 }
@@ -4454,6 +4613,7 @@ fn PaymentListBody() -> Element {
             }
         }
 
+        // SPEC-10.13.4
         if *recording.read() {
             RecordPaymentModal {
                 onclose: move |_| recording.set(false),
@@ -4464,6 +4624,7 @@ fn PaymentListBody() -> Element {
             }
         }
 
+        // SPEC-10.13.5
         if let Some(p) = editing.read().clone() {
             RecordPaymentModal {
                 payment_id: p.id.to_string(),
@@ -4514,6 +4675,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
         if *deleting.read() {
             return;
         }
+        // SPEC-10.14.7: a second confirm while in flight returns above.
         let id = delete_id.clone();
         deleting.set(true);
         error.set(String::new());
@@ -4523,6 +4685,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                 let path = format!("/payments/{id}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {
                     Ok(()) => on_deleted.call(()),
+                    // SPEC-10.14.8
                     Err(err) => error.set(format!("Could not delete payment: {err}")),
                 }
             }
@@ -4537,6 +4700,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
     } else {
         props.invoice_number.clone()
     };
+    // SPEC-10.14.1: empty date, company and reference render a muted dash.
     rsx! {
         TableRow {
             TableCell {
@@ -4554,6 +4718,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                 }
             }
             TableCell {
+                // SPEC-10.14.2
                 if props.invoice_id.is_empty() {
                     span { class: "text-subtle", "Unapplied" }
                 } else {
@@ -4572,12 +4737,14 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                     "{props.reference}"
                 }
             }
+            // SPEC-10.14.3
             TableCell { class: "text-right font-medium text-green-600 dark:text-green-400", "{props.amount}" }
             TableCell { class: "text-right",
                 div { class: "inline-flex gap-2",
                     Button {
                         variant: ButtonVariant::Ghost,
                         size: ButtonSize::Small,
+                        // SPEC-10.14.4
                         disabled: *deleting.read() || !can_mutate,
                         title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
                         onclick: move |_| on_edit.call(()),
@@ -4585,6 +4752,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                     }
                     Button {
                         variant: ButtonVariant::Danger,
+                        // SPEC-10.14.5
                         loading: *deleting.read(),
                         disabled: !can_mutate,
                         title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
@@ -4602,6 +4770,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
             }
             crate::components::ConfirmDialog {
                 open: confirming_delete(),
+                // SPEC-10.14.6
                 title: "Delete payment".to_string(),
                 message: "Delete this payment? The linked invoice balance will be restored."
                     .to_string(),
@@ -4624,12 +4793,14 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
 // Mirror the mokosh-server column limits so over-long input is blocked inline
 // (via `maxlength`) instead of failing later as an opaque 422; the server
 // stays the source of truth.
+// SPEC-10.15.9
 const PAYMENT_REFERENCE_MAX: usize = 100;
 const PAYMENT_NOTES_MAX: usize = 2000;
 
 /// Upper bound for the Amount field (MAPPS-215). Comfortably inside `Decimal`'s
 /// range while ruling out absurd magnitudes, so such input is caught with a
 /// clear "out of range" message rather than a misleading parse error.
+// SPEC-10.16.6
 const PAYMENT_AMOUNT_MAX: i64 = 10_000_000_000;
 
 #[derive(Props, Clone, PartialEq)]
@@ -4664,6 +4835,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
     let mut company_id = use_signal(|| props.company_id.clone());
     let mut company_name = use_signal(String::new);
     let mut invoice_id = use_signal(|| props.invoice_id.clone());
+    // SPEC-10.15.6
     // MAPPS-191: invoice picker options for the selected company. Reading
     // `company_id` inside the resource subscribes it, so the list re-fetches
     // whenever the chosen company changes.
@@ -4672,6 +4844,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             match uuid::Uuid::parse_str(&company) {
+                // SPEC-10.15.7: a failed load logs a warning inside the helper.
                 Ok(cid) => load_company_invoices(cid).await,
                 Err(_) => Vec::new(),
             }
@@ -4687,6 +4860,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
     let amount = use_signal(|| props.amount.clone());
     // Seed the method from the edited payment, falling back to the create
     // default when this is a fresh record (MAPPS-235).
+    // SPEC-10.15.2
     let seed_method = props.payment_method.clone();
     let mut payment_method = use_signal(|| {
         if seed_method.is_empty() {
@@ -4708,6 +4882,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
     // PMS-518: Payment Date gets its own slot too (previously banner-only).
     let mut payment_date_err = use_signal(String::new);
 
+    // SPEC-10.15.3
     let method_options = vec![
         SelectOption::new("check", "Check"),
         SelectOption::new("credit_card", "Credit Card"),
@@ -4721,6 +4896,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
     let onsaved = props.onsaved;
     // Empty => create (POST); set => edit that payment (PUT). MAPPS-235.
     let payment_id = props.payment_id.clone();
+    // SPEC-10.15.1
     let is_edit = !payment_id.is_empty();
 
     // PMS-367 AC1: company chosen via the shared autocomplete CompanyPicker.
@@ -4735,6 +4911,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         if *saving.read() {
             return;
         }
+        // SPEC-10.16.1
         error.set(String::new());
         amount_err.set(String::new());
         invoice_err.set(String::new());
@@ -4749,6 +4926,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         // focus-first.
         let mut guard = FormGuard::new();
 
+        // SPEC-10.16.2, SPEC-10.16.3
         // The CompanyPicker has no inline slot, so its failure goes to the
         // form-level banner; `note_invalid` still blocks the submit.
         let company_uuid = uuid::Uuid::parse_str(company_id.read().trim()).ok();
@@ -4758,8 +4936,10 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         }
 
         let date = payment_date.read().trim().to_string();
+        // SPEC-10.16.4
         payment_date_err.set(guard.field("payment_date", &date, "Payment date", &[Rule::Required]));
 
+        // SPEC-10.16.5, SPEC-10.16.6
         // Amount: required, strictly positive, at most 2 decimals, in range.
         // `min`/`step` on the field block most bad input in the browser; this
         // re-checks on submit so a pasted or scripted value can't slip a
@@ -4797,6 +4977,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             }
         };
 
+        // SPEC-10.16.7
         // Invoice ID is optional (an unapplied payment is allowed). When
         // present it must be a valid UUID; existence is confirmed below before
         // the payment is recorded. A malformed value is no longer silently
@@ -4833,6 +5014,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             Some(id) => serde_json::Value::String(id.to_string()),
             None => serde_json::Value::Null,
         };
+        // SPEC-10.16.8
         let body = serde_json::json!({
             "company_id": company_uuid,
             "invoice_id": invoice_value,
@@ -4848,6 +5030,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-10.16.9
                 // For an applied payment, confirm the invoice exists (and is
                 // visible to this tenant) before recording, so a well-formed
                 // but unknown ID gets a field message instead of an opaque
@@ -4864,6 +5047,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         return;
                     }
                 }
+                // SPEC-10.16.10
                 let result = if is_edit {
                     crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
                         &format!("/payments/{payment_id}"),
@@ -4878,8 +5062,10 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     .await
                 };
                 match result {
+                    // SPEC-10.16.11
                     Ok(_) => onsaved.call(()),
                     Err(err) => {
+                        // SPEC-10.16.12
                         let verb = if is_edit { "save" } else { "record" };
                         error.set(format!("Could not {verb} payment: {err}"));
                     }
@@ -4902,6 +5088,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             // MAPPS-357: block the save while the server is unreachable.
             disabled: !can_mutate,
             title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+            // SPEC-10.15.10
             onclick: handle_save,
             if is_edit { "Save Changes" } else { "Record Payment" }
         }
@@ -4924,6 +5111,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     required: true,
                     allow_inline_create: true,
                     onselect: move |(id, name): (String, String)| {
+                        // SPEC-10.15.4
                         // Switching companies invalidates any previously picked
                         // invoice; clear it so a stale UUID can't be submitted.
                         company_id.set(id);
@@ -4937,12 +5125,14 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     },
                 }
                 Select {
+                    // SPEC-10.15.5
                     name: "payment_invoice_id",
                     label: "Invoice",
                     help: "Select a company first. Choose (Unapplied payment) to leave this payment unapplied.",
                     options: invoice_options,
                     value: invoice_id.read().clone(),
                     error: invoice_err(),
+                    // SPEC-10.15.11
                     onchange: clear_on_edit(invoice_id, invoice_err),
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
@@ -4964,6 +5154,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         r#type: "number",
                         // `min`/`step` make the browser reject non-positive and
                         // sub-cent amounts; submit-time validation re-checks.
+                        // SPEC-10.15.8
                         min: "0.01".to_string(),
                         step: "0.01".to_string(),
                         required: true,
@@ -5061,6 +5252,7 @@ type PaymentTermOpt = crate::hooks::PaymentTermRow;
 /// blank: the invoice date plus the term's days, or plus thirty when the
 /// term names no count, which is the server's own fallback (PMS-990).
 /// `None` until there is an invoice date to add to.
+// SPEC-10.21.1, SPEC-10.21.2
 fn derived_due_date(invoice_date: &str, net_days: Option<i64>) -> Option<String> {
     let date = chrono::NaiveDate::parse_from_str(invoice_date.trim(), "%Y-%m-%d").ok()?;
     let days = net_days.unwrap_or(30);
@@ -5080,6 +5272,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     // modal opened with is kept so the save sends `company_id` only when it
     // changed; the server clears the old company's contact on a move.
     let mut company_id = use_signal(|| props.company_id.clone());
+    // SPEC-10.17.2
     let mut company_name = use_signal(|| props.company_name.clone());
     let mut company_err = use_signal(String::new);
     let original_company_id = props.company_id.clone();
@@ -5099,6 +5292,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             .lines
             .iter()
             .map(|l| EditableLine {
+                // SPEC-10.18.1
                 line_type: if l.line_type.is_empty() {
                     "service".to_string()
                 } else {
@@ -5118,6 +5312,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     // a given amount keeps that amount as its override until a rate is picked,
     // because sending nothing would let the tenant's default replace it.
     let mut tax_rate_id = use_signal(|| props.tax_rate_id.clone());
+    // SPEC-10.19.3
     let mut tax_override = use_signal(|| {
         props
             .tax_rate_id
@@ -5173,6 +5368,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     // term was later deactivated (it stays selected because we seed by id).
     // MAPPS-940: shared payment-terms cache, not a per-form fetch.
     let terms_resource = crate::hooks::use_payment_terms(true);
+    // SPEC-10.17.7, SPEC-10.17.8
     let current_term = payment_term_id.read().clone();
     // The server PUT does `payment_term_id = COALESCE($x, payment_term_id)`, so
     // a null cannot clear a term that is already set. Only offer the "no term"
@@ -5205,10 +5401,12 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
         // problems surface at once (the dates in their own inline slots, each
         // line in its own per-field slots) and the first invalid field is
         // focused, instead of the previous first-failure-returns chain.
+        // SPEC-10.20.1
         let mut guard = FormGuard::new();
 
         let inv_date = invoice_date.read().trim().to_string();
         let due = due_date.read().trim().to_string();
+        // SPEC-10.20.2
         invoice_date_err.set(guard.field(
             "invoice_date",
             &inv_date,
@@ -5225,11 +5423,13 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
         let rows = lines.read().clone();
         if rows.is_empty() {
             // The empty-set rule has no per-line slot; surface it on the banner.
+            // SPEC-10.20.3
             error.set("An invoice must have at least one line item.".to_string());
             guard.note_invalid(None);
         }
         // Quantity / unit price share the create form's money rules: required,
         // numeric, non-negative. The trimmed strings still feed the body verbatim.
+        // SPEC-10.20.4
         let money_rules = [
             Rule::Required,
             Rule::Number {
@@ -5272,6 +5472,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             } else {
                 line.line_type.trim()
             };
+            // SPEC-10.20.7
             lines_json.push(serde_json::json!({
                 "line_type": line_type,
                 // MAPPS-640: the reference survives a re-save; the price is
@@ -5290,6 +5491,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
 
         // PMS-977: the company picker can be cleared; an invoice cannot.
         if company_id.read().trim().is_empty() {
+            // SPEC-10.20.5
             company_err.set("Choose the company this invoice is for.".to_string());
             return;
         }
@@ -5298,6 +5500,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
         }
         saving.set(true);
         let path = format!("/invoices/{invoice_id}");
+        // SPEC-10.19.7, SPEC-10.20.6
         // MAPPS-712: the rate, or the override, never both. Neither leaves the
         // recorded rate in place, and the server re-derives the amount from it
         // over the replaced lines (PMS-1029).
@@ -5317,6 +5520,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             "invoice_date": inv_date,
             // MAPPS-662: only what the operator typed. Null leaves the date to
             // the server, which keeps it unless the term changed.
+            // SPEC-10.19.8
             "due_date": if *due_touched.read() { optional_string(&due) } else { serde_json::Value::Null },
             "payment_term_id": optional_string(&payment_term_id.read()),
             // clearable_string ("" clears vs null keeps) instead of
@@ -5326,6 +5530,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             "notes": clearable_string(&notes.read()),
             "tax_rate_id": tax.rate_id,
             "tax_amount": tax.amount,
+            // SPEC-10.19.6
             "discount_amount": optional_string(&discount_amount.read()),
             // Replace the line set (server deletes + reinserts transactionally
             // and recomputes the subtotal). MAPPS-234.
@@ -5338,6 +5543,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                     .await
                 {
                     Ok(_) => onsaved.call(()),
+                    // SPEC-10.20.8
                     Err(err) => error.set(format!("Could not save invoice: {err}")),
                 }
             }
@@ -5358,11 +5564,13 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             // MAPPS-357: block the save while the server is unreachable.
             disabled: !can_mutate,
             title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+            // SPEC-10.17.1
             onclick: handle_save,
             "Save"
         }
     };
 
+    // SPEC-10.19.4: the override wins; otherwise show the computed preview.
     let tax_value = tax_override
         .read()
         .clone()
@@ -5395,6 +5603,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                     required: true,
                     error: company_err(),
                     onselect: move |(id, name): (String, String)| {
+                        // SPEC-10.17.3
                         let changed = *company_id.peek() != id;
                         company_id.set(id);
                         company_name.set(name);
@@ -5411,6 +5620,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                         billing_contact_name.set(String::new());
                     },
                 }
+                // SPEC-10.17.4
                 if *company_id.read() != props.company_id && !company_id.read().is_empty() {
                     p { class: "-mt-2 text-sm text-muted",
                         "This draft moves to {company_name} when you save. The billing contact is cleared, because it belonged to the previous company. A draft that bills time or mileage, comes from a contract, or has a payment recorded cannot move."
@@ -5422,6 +5632,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                         let id = billing_contact_id.read().clone();
                         (!id.is_empty()).then_some(id)
                     },
+                    // SPEC-10.17.5
                     label: "Billing Contact".to_string(),
                     company_filter: {
                         let id = company_id.read().clone();
@@ -5452,11 +5663,13 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                     crate::components::DateField {
                         name: "due_date",
                         label: "Due Date",
+                        // SPEC-10.17.6
                         help: "Change the payment term and leave this as it is to take the due date from that term.",
                         error: due_date_err(),
                         value: due_date.read().clone(),
                         oninput: move |e: FormEvent| {
                             due_date_err.set(String::new());
+                            // SPEC-10.17.10
                             due_touched.set(true);
                             due_date.set(e.value());
                         },
@@ -5470,6 +5683,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                     onchange: move |e: FormEvent| payment_term_id.set(e.value()),
                 }
                 crate::components::Input {
+                    // SPEC-10.17.9
                     name: "po_number",
                     label: "PO Number",
                     value: po_number.read().clone(),
@@ -5486,6 +5700,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                             onclick: move |_| {
                                 lines
                                     .write()
+                                    // SPEC-10.18.2
                                     .push(EditableLine {
                                         line_type: "service".to_string(),
                                         is_taxable: true,
@@ -5504,6 +5719,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                             label: "Add from the price list",
                             placeholder: "Search the price list to add a line\u{2026}",
                             clear_on_select: true,
+                            // SPEC-10.18.3
                             onselect: move |picked: crate::components::PickedProduct| {
                                 lines.write().push(EditableLine {
                                     line_type: "product".to_string(),
@@ -5518,6 +5734,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                             onclear: move |_| {},
                         }
                     }
+                    // SPEC-10.18.4
                     if lines.read().is_empty() {
                         p { class: "text-sm text-muted",
                             "No line items. Add at least one before saving."
@@ -5528,6 +5745,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                             div {
                                 key: "{idx}",
                                 class: "grid grid-cols-1 gap-3 sm:grid-cols-[1fr_90px_120px_auto_auto] sm:items-end",
+                                // SPEC-10.18.5
                                 crate::components::Input {
                                     name: "line_description_{idx}",
                                     label: "Description",
@@ -5540,6 +5758,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                                     oninput: move |e: FormEvent| {
                                         let mut w = lines.write();
                                         w[idx].description = e.value();
+                                        // SPEC-10.18.8
                                         w[idx].description_err = String::new();
                                     },
                                 }
@@ -5595,6 +5814,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                                     name: "line_is_taxable_{idx}",
                                     label: "Taxable",
                                     checked: line.is_taxable,
+                                    // SPEC-10.18.6
                                     // MAPPS-712: a product line follows the product.
                                     disabled: line.product_id.is_some(),
                                     onchange: move |_| {
@@ -5604,6 +5824,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                                 }
                                 Button {
                                     variant: ButtonVariant::Ghost,
+                                    // SPEC-10.18.7
                                     onclick: move |_| {
                                         lines.write().remove(idx);
                                     },
@@ -5615,6 +5836,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-3",
                     Select {
+                        // SPEC-10.19.1, SPEC-10.19.2
                         name: "tax_rate_id",
                         label: "Tax Rate",
                         options: tax_rate_options,
@@ -5633,6 +5855,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                         placeholder: "0.00",
                         help: "Worked out from your tax rate. Type your own amount to override it; an override is saved as you enter it and records no rate.",
                         value: tax_value.clone(),
+                        // SPEC-10.19.5
                         oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
                     }
                     crate::components::Input {
@@ -5678,6 +5901,7 @@ pub fn TaxRateListPage() -> Element {
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
 
+    // SPEC-10.22.1
     use_page_title("Tax Rates");
     if !has_finance {
         return rsx! { NoFinancePermission { title: "Tax Rates" } };
@@ -5699,9 +5923,11 @@ fn TaxRateListBody() -> Element {
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
         let token = crate::hooks::fetch::api::current_access_token()?;
+        // SPEC-10.22.2
         let path = format!("/tax-rates?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTaxRate>>(&path, &token)
             .await
+            // SPEC-10.22.3
             .inspect_err(|e| tracing::error!("tax rate list load failed: {e}"))
             .ok()
     });
@@ -5722,6 +5948,7 @@ fn TaxRateListBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-10.22.4
             crate::components::ContentUnavailable { title: "Tax Rates".to_string() }
         };
     }
@@ -5729,6 +5956,7 @@ fn TaxRateListBody() -> Element {
     rsx! {
         PageHeader {
             title: "Tax Rates",
+            // SPEC-10.22.5
             subtitle: "Manage tax rates applied to invoices",
             actions: rsx! {
                 Link {
@@ -5747,6 +5975,7 @@ fn TaxRateListBody() -> Element {
             },
         }
 
+        // SPEC-10.22.4
         if fetch_failed {
             ErrorBanner { class: "mb-3", "Could not load tax rates. Refresh the page to retry." }
         }
@@ -5757,6 +5986,7 @@ fn TaxRateListBody() -> Element {
             current_page,
             per_page: PER_PAGE,
             columns: 4,
+            // SPEC-10.22.9
             onpagechange: move |p| page.set(p),
             Table {
                 TableHead {
@@ -5772,6 +6002,7 @@ fn TaxRateListBody() -> Element {
                 } else if rows.is_empty() {
                     TableEmpty {
                         columns: 4,
+                        // SPEC-10.22.6
                         title: "No tax rates yet".to_string(),
                         description: "Add a tax rate to apply it to your invoices.".to_string(),
                         actions: rsx! {
@@ -5805,9 +6036,11 @@ fn TaxRateListBody() -> Element {
                                         TableCell {
                                             // MAPPS-569: the row's click opens a modal, so there is no
                                             // route to link to; this cell is the keyboard path instead.
+                                            // SPEC-10.22.8
                                             onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
+                                        // SPEC-10.22.7
                                         TableCell { class: "text-right", "{rate_label}%" }
                                         TableCell {
                                             if is_default {
@@ -5886,6 +6119,7 @@ struct TaxRateFormModalProps {
 fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
     let initial = props.state.clone();
     let is_edit = initial.id.is_some();
+    // SPEC-10.23.1
     let modal_title = if is_edit {
         "Edit Tax Rate"
     } else {
@@ -5915,6 +6149,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
         }
         error.set(String::new());
 
+        // SPEC-10.23.5
         // PMS-518: report both fields at once (each in its own inline slot) and
         // focus the first invalid, instead of bailing on the first presence miss.
         // The rate string still feeds the body verbatim; the server reparses it.
@@ -5945,6 +6180,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
         }
 
         saving.set(true);
+        // SPEC-10.23.6
         let body = serde_json::json!({
             "name": name.read().trim(),
             // Server parses the rate string into `rust_decimal::Decimal`.
@@ -5972,6 +6208,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
                 };
                 match result {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-10.23.7
                     Err(err) => error.set(format!("Could not save tax rate: {err}")),
                 }
             }
@@ -5984,6 +6221,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
     // MAPPS-189: Delete opens the styled ConfirmDialog; the DELETE runs
     // from `on_confirm_delete` once the user confirms.
     let mut confirming_delete = use_signal(|| false);
+    // SPEC-10.23.9
     let handle_delete = move |_| {
         if !can_delete || *saving.read() || *deleting.read() {
             return;
@@ -6003,6 +6241,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
                 let path = format!("/tax-rates/{id}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-10.23.10
                     Err(err) => error.set(format!("Could not delete tax rate: {err}")),
                 }
             }
@@ -6036,6 +6275,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
             disabled: !can_mutate,
             title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
             onclick: handle_save,
+            // SPEC-10.23.11
             if is_edit { "Save Changes" } else { "Create Tax Rate" }
         }
     };
@@ -6052,6 +6292,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
                     ErrorBanner { "{error.read()}" }
                 }
                 crate::components::Input {
+                    // SPEC-10.23.2
                     name: "tax_rate_name",
                     label: "Name",
                     placeholder: "e.g. US-CA or Standard VAT",
@@ -6063,11 +6304,13 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
                     error: name_err(),
                     value: name.read().clone(),
                     oninput: move |e: FormEvent| {
+                        // SPEC-10.23.8
                         name_err.set(String::new());
                         name.set(e.value());
                     },
                 }
                 crate::components::Input {
+                    // SPEC-10.23.3
                     name: "tax_rate_rate",
                     label: "Rate (%)",
                     r#type: "number",
@@ -6095,6 +6338,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
                     },
                 }
                 crate::components::Checkbox {
+                    // SPEC-10.23.4
                     name: "tax_rate_is_default",
                     label: "Default rate",
                     checked: *is_default.read(),
@@ -6211,6 +6455,7 @@ pub fn PaymentGatewayConfigPage() -> Element {
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
 
+    // SPEC-10.24.1
     use_page_title("Payment Gateways");
     if !has_finance {
         return rsx! { NoFinancePermission { title: "Payment Gateways" } };
@@ -6229,6 +6474,7 @@ fn PaymentGatewayConfigBody() -> Element {
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
         let token = crate::hooks::fetch::api::current_access_token()?;
+        // SPEC-10.24.2, SPEC-10.24.3
         crate::hooks::fetch::api::get_all_with_auth::<RemoteGateway>("/payment-gateways", &token)
             .await
             .inspect_err(|e| tracing::error!("payment gateway list load failed: {e}"))
@@ -6253,9 +6499,11 @@ fn PaymentGatewayConfigBody() -> Element {
     // follows a conditional `return` runs on some renders and not others,
     // which poisons the dioxus hook index on the next render.
     let current_route: Route = use_route();
+    // SPEC-10.24.6
     let in_settings = matches!(current_route, Route::SettingsGateways {});
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-10.24.4
             crate::components::ContentUnavailable { title: "Payment Gateways".to_string() }
         };
     }
@@ -6271,6 +6519,7 @@ fn PaymentGatewayConfigBody() -> Element {
     rsx! {
         PageHeader {
             title: "Payment Gateways",
+            // SPEC-10.24.5
             subtitle: "Configure payment gateway integrations",
             breadcrumbs: header_breadcrumbs,
             actions: rsx! {
@@ -6313,6 +6562,7 @@ fn PaymentGatewayConfigBody() -> Element {
                 } else if rows.is_empty() {
                     TableEmpty {
                         columns: 4,
+                        // SPEC-10.24.7
                         title: "No payment gateways yet".to_string(),
                         description: "Configure a gateway to accept online payments.".to_string(),
                         actions: rsx! {
@@ -6333,6 +6583,7 @@ fn PaymentGatewayConfigBody() -> Element {
                             {
                                 let key = gateway.id.to_string();
                                 let edit_state = GatewayFormState::from_existing(&gateway);
+                                // SPEC-10.24.8
                                 let provider_label = humanize_provider(&gateway.provider);
                                 let is_test = gateway.is_test_mode;
                                 let is_active = gateway.is_active;
@@ -6346,6 +6597,7 @@ fn PaymentGatewayConfigBody() -> Element {
                                         TableCell {
                                             // MAPPS-569: the row's click opens a modal, so there is no
                                             // route to link to; this cell is the keyboard path instead.
+                                            // SPEC-10.24.9
                                             onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{provider_label}" }
                                         }
@@ -6392,6 +6644,7 @@ fn PaymentGatewayConfigBody() -> Element {
     }
 }
 
+// SPEC-10.25.10
 fn humanize_provider(raw: &str) -> String {
     match raw {
         "stripe" => "Stripe".to_string(),
@@ -6407,6 +6660,7 @@ fn humanize_provider(raw: &str) -> String {
 /// predates any implementation and still allows `authorize_net`, which this
 /// form used to offer: the server refuses to activate one, so choosing it was
 /// a 400 the admin could do nothing about.
+// SPEC-10.25.1
 pub(crate) const CONFIGURABLE_PROVIDERS: &[(&str, &str)] =
     &[("stripe", "Stripe"), ("paypal", "PayPal")];
 
@@ -6434,6 +6688,7 @@ pub(crate) struct CredentialField {
 /// stops the form writing a credential set for one: an existing
 /// `authorize_net` row can still be viewed and removed, and saving it leaves
 /// whatever is stored alone.
+// SPEC-10.25.2, SPEC-10.25.3, SPEC-10.25.4
 pub(crate) fn credential_fields(provider: &str) -> &'static [CredentialField] {
     match provider {
         // `StripeCredentials` in mokosh-server's provider/stripe.rs.
@@ -6490,6 +6745,7 @@ pub(crate) fn credential_fields(provider: &str) -> &'static [CredentialField] {
 ///
 /// `None` is a server that predates PMS-1181 and says nothing, which is
 /// rendered as nothing rather than as "not stored".
+// SPEC-10.27.1, SPEC-10.27.2
 pub(crate) fn stored_credential_note(state: Option<&RemoteCredentialState>) -> String {
     let Some(state) = state else {
         return String::new();
@@ -6518,6 +6774,7 @@ pub(crate) fn stored_credential_note(state: Option<&RemoteCredentialState>) -> S
 /// `not_checkable` is deliberately NOT rendered as a pass: the provider
 /// offered no way to check it, and a green tick on a field nothing checked is
 /// the failure this whole ticket is about.
+// SPEC-10.27.8
 pub(crate) fn check_label(outcome: &str) -> &'static str {
     match outcome {
         "passed" => "Passed",
@@ -6530,6 +6787,7 @@ pub(crate) fn check_label(outcome: &str) -> &'static str {
 /// The one-line summary above the checks, which has to be readable without
 /// reading the rows: an admin who came here because a payment did not arrive
 /// needs to know in one glance whether this configuration is the reason.
+// SPEC-10.27.9
 pub(crate) fn check_summary(checks: &[RemoteGatewayCheck]) -> String {
     if checks.is_empty() {
         return "This gateway reported no checks.".to_string();
@@ -6557,6 +6815,7 @@ pub(crate) fn check_summary(checks: &[RemoteGatewayCheck]) -> String {
 /// "keep what is stored" (the MAPPS-363 omit-to-keep rule), and anything typed
 /// means every field is required, with the ones left empty named in the `Err`
 /// so each gets its own message.
+// SPEC-10.25.5, SPEC-10.25.6, SPEC-10.25.7, SPEC-10.25.8
 pub(crate) fn gateway_config_body(
     provider: &str,
     values: &std::collections::HashMap<String, String>,
@@ -6607,6 +6866,7 @@ pub(crate) fn gateway_config_body(
 /// The sets are the ones mokosh-server's providers act on
 /// (`provider/stripe.rs` and `provider/paypal.rs`); anything else is ignored
 /// there, so subscribing to more is noise rather than harm.
+// SPEC-10.28.7
 pub(crate) fn webhook_events(provider: &str) -> &'static [&'static str] {
     match provider {
         "stripe" => &["checkout.session.completed", "charge.refunded"],
@@ -6660,6 +6920,7 @@ pub(crate) struct ProviderSetup {
 }
 
 /// What we can tell an admin about `provider` beyond the URL and the events.
+// SPEC-10.28.8, SPEC-10.28.9
 pub(crate) fn provider_setup(provider: &str) -> Option<ProviderSetup> {
     match provider {
         "stripe" => Some(ProviderSetup {
@@ -6716,6 +6977,7 @@ pub(crate) enum WebhookEndpoint {
 /// `None` and reads as [`WebhookEndpoint::Unknown`]: the rest of the form
 /// still works, because a missing hint must not take the credential fields
 /// down with it.
+// SPEC-10.28.3
 pub(crate) fn endpoint_for(
     rows: Option<&[RemoteWebhookEndpoint]>,
     provider: &str,
@@ -6738,6 +7000,7 @@ pub(crate) fn endpoint_for(
 /// configure it: the select is disabled on an existing row, and an option that
 /// is not in the list renders as an empty control rather than as the name of
 /// the gateway the admin came to remove.
+// SPEC-10.25.9
 pub(crate) fn provider_choices(current: &str) -> Vec<(String, String)> {
     let mut choices: Vec<(String, String)> = CONFIGURABLE_PROVIDERS
         .iter()
@@ -6772,6 +7035,7 @@ struct GatewayFormState {
 }
 
 impl GatewayFormState {
+    // SPEC-10.24.10
     fn new() -> Self {
         Self {
             existing: false,
@@ -6784,6 +7048,7 @@ impl GatewayFormState {
         }
     }
 
+    // SPEC-10.24.10
     fn from_existing(g: &RemoteGateway) -> Self {
         Self {
             existing: true,
@@ -6808,6 +7073,7 @@ struct GatewayFormModalProps {
 fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     let initial = props.state.clone();
     let provider_locked = initial.existing;
+    // SPEC-10.26.1
     let modal_title = if provider_locked {
         "Edit Gateway"
     } else {
@@ -6854,6 +7120,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     // provider's dashboard is what produces the signing secret this form then
     // demands. A server that predates the endpoint 404s, which reads as
     // `Unknown` and leaves the rest of the form alone.
+    // SPEC-10.28.1
     let endpoints = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<Vec<RemoteWebhookEndpoint>>(
@@ -6879,6 +7146,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             return;
         }
         error.set(String::new());
+        // SPEC-10.26.6
         cred_errs.set(std::collections::HashMap::new());
         client_display_name_err.set(String::new());
 
@@ -6888,6 +7156,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         let selected = provider.read().clone();
         let config = match gateway_config_body(&selected, &creds.read(), *is_test_mode.read()) {
             Ok(value) => value,
+            // SPEC-10.26.7
             Err(missing) => {
                 let mut errs = std::collections::HashMap::new();
                 for key in missing {
@@ -6902,6 +7171,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         };
         // A first-time gateway must supply one - the server rejects a create
         // with no `config` (400), so this is a field-level message instead.
+        // SPEC-10.26.8
         if config.is_none() && !configured {
             let fields = credential_fields(&selected);
             if fields.is_empty() {
@@ -6924,11 +7194,13 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         // MAPPS-671: 64-char cap mirrors the server's validator; catching it
         // here gives a field-level error rather than a form-level 422.
         let cdn = client_display_name.read().clone();
+        // SPEC-10.29.5
         if cdn.chars().count() > 64 {
             client_display_name_err.set("Button label must be 64 characters or fewer.".to_string());
             return;
         }
         saving.set(true);
+        // SPEC-10.26.9
         let mut body = serde_json::json!({
             "provider": selected.clone(),
             "is_active": *is_active.read(),
@@ -6953,6 +7225,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 .await
                 {
                     Ok(_) => onsaved.call(()),
+                    // SPEC-10.26.10
                     Err(err) => {
                         error.set(format!("Could not save gateway: {}", err.user_message()))
                     }
@@ -6967,6 +7240,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     // value: the select is locked on an existing row, and checking a provider
     // other than the one whose credentials are stored would answer about the
     // wrong gateway.
+    // SPEC-10.27.4
     let check_provider = initial.provider.clone();
     let handle_check = move |_| {
         if *checking.read() {
@@ -6987,6 +7261,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 .await
                 {
                     Ok(results) => check_results.set(Some(results)),
+                    // SPEC-10.27.6
                     Err(err) => check_error.set(format!(
                         "Could not check this gateway: {}",
                         err.user_message()
@@ -7001,6 +7276,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     // MAPPS-189: Remove opens the styled ConfirmDialog; the DELETE runs
     // from `on_confirm_delete` once the user confirms.
     let mut confirming_delete = use_signal(|| false);
+    // SPEC-10.29.1
     let handle_delete = move |_| {
         if !provider_locked || *saving.read() || *deleting.read() {
             return;
@@ -7017,9 +7293,11 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-10.29.2
                 let path = format!("/payment-gateways/{provider}");
                 match crate::hooks::fetch::api::delete_authed(&path).await {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-10.29.3
                     Err(err) => error.set(format!("Could not remove gateway: {err}")),
                 }
             }
@@ -7053,6 +7331,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             disabled: !can_mutate,
             title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
             onclick: handle_save,
+            // SPEC-10.29.6
             "Save Gateway"
         }
     };
@@ -7077,6 +7356,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                     onchange: move |e: FormEvent| provider.set(e.value()),
                 }
                 crate::components::Checkbox {
+                    // SPEC-10.26.2
                     name: "gateway_is_active",
                     label: "Active",
                     checked: *is_active.read(),
@@ -7100,6 +7380,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 // fitted neither: the server parses a per-provider blob, and
                 // the one this form used to send read as empty strings.
                 div { class: "space-y-3",
+                    // SPEC-10.26.3
                     div { class: "flex items-center gap-2",
                         span { class: "block text-sm font-medium text-content", "Credentials" }
                         if configured {
@@ -7110,6 +7391,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                     }
                     {
                         let selected = provider.read().clone();
+                        // SPEC-10.26.4
                         let fields = credential_fields(&selected);
                         if fields.is_empty() {
                             rsx! {
@@ -7143,6 +7425,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                                     error: cred_errs.read().get(key).cloned().unwrap_or_default(),
                                                     value: creds.read().get(key).cloned().unwrap_or_default(),
                                                     oninput: move |e: FormEvent| {
+                                                        // SPEC-10.26.11
                                                         cred_errs.write().remove(key);
                                                         creds.write().insert(key.to_string(), e.value());
                                                     },
@@ -7156,6 +7439,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                 }
                                 // Said once, under the set, because it is the
                                 // rule for the set and not for any one field.
+                                // SPEC-10.26.5
                                 p { class: "text-xs text-muted",
                                     if configured {
                                         "Secrets are stored encrypted and are never shown again in full. Leave them all blank to keep what is stored; filling any one replaces the whole set, so enter all of them."
@@ -7168,6 +7452,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                 // nothing to check before the first save, and
                                 // an admin pressing it then would be told the
                                 // gateway is broken when it is merely new.
+                                // SPEC-10.27.3
                                 if configured && provider_locked {
                                     div { class: "rounded-md border border-line p-3 space-y-2",
                                         div { class: "flex items-center justify-between gap-2",
@@ -7175,6 +7460,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                             Button {
                                                 variant: ButtonVariant::Secondary,
                                                 loading: *checking.read(),
+                                                // SPEC-10.27.5
                                                 disabled: !can_mutate || *checking.read(),
                                                 title: (!can_mutate).then(|| "Can't reach the server to run a check".to_string()),
                                                 onclick: handle_check,
@@ -7187,6 +7473,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                         if !check_error.read().is_empty() {
                                             ErrorBanner { "{check_error}" }
                                         }
+                                        // SPEC-10.27.7
                                         if let Some(results) = check_results.read().clone() {
                                             p { class: "text-sm text-content", "{check_summary(&results)}" }
                                             ul { class: "space-y-1",
@@ -7229,6 +7516,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                         snap.as_ref().and_then(|r| r.as_deref()),
                         &selected,
                     );
+                    // SPEC-10.28.2
                     if events.is_empty() {
                         rsx! {}
                     } else {
@@ -7236,6 +7524,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                             div { class: "space-y-2 rounded-md border border-line bg-surface p-4",
                                 span { class: "block text-sm font-medium text-content", "Webhook endpoint" }
                                 match known {
+                                    // SPEC-10.28.4
                                     WebhookEndpoint::Known(url) => rsx! {
                                         div { class: "flex items-start gap-2",
                                             code {
@@ -7271,11 +7560,13 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                             "Create a webhook in {humanize_provider(&selected)} for this URL, subscribed to the events below. It will give you a signing secret: paste that into the field above."
                                         }
                                     },
+                                    // SPEC-10.28.5
                                     WebhookEndpoint::NoPublicBase => rsx! {
                                         p { class: "text-xs text-muted",
                                             "This deployment has no public API address set, so the endpoint cannot be shown. Whoever runs the server sets PUBLIC_API_BASE_URL."
                                         }
                                     },
+                                    // SPEC-10.28.6
                                     WebhookEndpoint::Unknown => rsx! {
                                         p { class: "text-xs text-muted",
                                             "The endpoint for this provider could not be read from the server."
@@ -7304,6 +7595,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                 // in this block names something the provider
                                 // controls, so it lives in `provider_setup`
                                 // where its staleness is findable.
+                                // SPEC-10.28.10
                                 if let Some(setup) = provider_setup(&selected) {
                                     div { class: "space-y-1 border-t border-line pt-2",
                                         p { class: "text-xs text-muted", "{setup.where_to_look}" }
@@ -7327,6 +7619,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 // the Pay Now button label the portal contact sees on
                 // their invoice.
                 crate::components::Input {
+                    // SPEC-10.29.4
                     name: "gateway_client_display_name",
                     label: "Button label (optional)".to_string(),
                     placeholder: "Pay with card".to_string(),

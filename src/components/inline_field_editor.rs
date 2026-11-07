@@ -25,6 +25,7 @@ use crate::hooks::fetch::api::ApiError;
 /// `tracing::warn!` for the dev / ops console. `from_envelope` is true
 /// when the message came from `fields[]` and should be trusted verbatim;
 /// only the top-level fallback gets sanitised.
+// SPEC-5.30.13: only top-level (non-envelope) messages are screened.
 fn sanitise_server_message(raw: &str, from_envelope: bool, field: &str) -> String {
     if from_envelope {
         return raw.to_string();
@@ -111,6 +112,7 @@ pub struct InlineFieldEditorProps {
 /// Select's `(value, label)` pairs so the drawer reads "In Stock" /
 /// "Active", not the raw enum. Any non-Select kind returns None so the
 /// outer `or_else` chain falls through to `value`.
+// SPEC-5.30.1: option label for a stored select value.
 fn select_label_for(kind: &InlineFieldKind, value: Option<&str>) -> Option<String> {
     let InlineFieldKind::Select { options } = kind else {
         return None;
@@ -129,6 +131,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut err = use_signal(String::new);
 
+    // SPEC-5.30.1: display override, select label, stored value, then "-".
     let display_text = props
         .display
         .clone()
@@ -152,6 +155,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
     // the same component tree. Without a registry, falls back to the
     // local `editing` signal and the behaviour is unchanged.
     let open_field = props.open_field;
+    // SPEC-5.30.2: the registry, when present, decides which editor is open.
     let is_editing_now = match open_field {
         Some(sig) => sig.read().as_deref() == Some(is_editing_patch_field.as_str()),
         None => editing(),
@@ -160,6 +164,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
     // `use_callback` gives a `Copy` handle so the closure can be cloned
     // into every editor's `onblur`/`onkeydown` without a per-site move.
     let commit = use_callback(move |raw: String| {
+        // SPEC-5.30.7: no second commit while one is in flight.
         if saving() {
             return;
         }
@@ -168,12 +173,15 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
         spawn(async move {
             saving.set(true);
             err.set(String::new());
+            // SPEC-5.30.15: not enforced here, see the tracked defect (draft is trimmed but invisible characters are not stripped).
             let trimmed = raw.trim().to_string();
+            // SPEC-5.30.8: empty is rejected locally unless the field is optional.
             if trimmed.is_empty() && !optional {
                 err.set("Required".to_string());
                 saving.set(false);
                 return;
             }
+            // SPEC-5.30.9: empty optional values are sent as null.
             let body_value = if trimmed.is_empty() {
                 serde_json::Value::Null
             } else {
@@ -183,6 +191,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
             match crate::hooks::fetch::api::patch_authed_typed::<serde_json::Value, _>(&path, &body)
                 .await
             {
+                // SPEC-5.30.10
                 Ok(_) => {
                     saving.set(false);
                     editing.set(false);
@@ -197,6 +206,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                         Some(trimmed)
                     });
                 }
+                // SPEC-5.30.11, SPEC-5.30.12: field message, else top-level, else "Save failed".
                 Err(ApiError::Status {
                     message, fields, ..
                 }) => {
@@ -216,6 +226,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                     });
                     saving.set(false);
                 }
+                // SPEC-5.30.11, SPEC-5.30.12: transport and other errors show the user message.
                 Err(e) => {
                     editing.set(true);
                     if let Some(mut sig) = open_field {
@@ -239,6 +250,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
     // entry when this editor is the one closing). `use_callback` gives
     // a `Copy` handle so each event closure can take it without a
     // per-site clone.
+    // SPEC-5.30.6: shared Escape path.
     let close_editor = use_callback(move |()| {
         editing.set(false);
         if let Some(mut sig) = open_field {
@@ -258,6 +270,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                 div { class: "flex items-start gap-2",
                     div { class: "flex-1",
                         match kind {
+                            // SPEC-5.30.3: text control; Enter and blur commit, Escape cancels (SPEC-5.30.4 to SPEC-5.30.6).
                             InlineFieldKind::Text { placeholder, maxlength, required: _ } => rsx! {
                                 input {
                                     r#type: "text",
@@ -282,6 +295,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                     autofocus: true,
                                 }
                             },
+                            // SPEC-5.30.3: textarea; Enter inserts a newline, only blur commits.
                             InlineFieldKind::TextArea { placeholder, rows } => rsx! {
                                 textarea {
                                     class: "block w-full rounded-md border border-line bg-surface text-content \
@@ -302,6 +316,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                     autofocus: true,
                                 }
                             },
+                            // SPEC-5.30.3
                             InlineFieldKind::Date => rsx! {
                                 input {
                                     r#type: "date",
@@ -323,6 +338,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                     autofocus: true,
                                 }
                             },
+                            // SPEC-5.30.3: select commits on change (SPEC-5.30.5).
                             InlineFieldKind::Select { options } => rsx! {
                                 select {
                                     class: "block w-full rounded-md border border-line bg-surface text-content \
@@ -341,6 +357,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                                         }
                                     },
                                     autofocus: true,
+                                    // SPEC-5.30.9
                                     if optional {
                                         option { value: "", "-" }
                                     }
@@ -356,6 +373,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                             }
                         }
                     }
+                    // SPEC-5.30.14
                     if saving() {
                         span { class: "text-xs text-subtle whitespace-nowrap pt-1.5",
                             "Saving…"
@@ -367,6 +385,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                     r#type: "button",
                     class: "block w-full text-left rounded px-2 py-1 text-sm text-content \
                             hover:bg-surface-2 border border-transparent hover:border-line",
+                    // SPEC-5.30.2
                     onclick: move |_| {
                         draft.set(current.clone());
                         err.set(String::new());

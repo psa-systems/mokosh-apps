@@ -25,6 +25,7 @@
 # check.yml, which the cargo job below still carries.
 name: Check
 
+# SPEC-1.10.1: trigger set and the paths-ignore list below.
 on:
   # paths-ignore: these files cannot affect what any guard, compile, or
   # audit step here proves. docs-touching files (docs/**, **.md) are NOT
@@ -57,10 +58,12 @@ on:
 # the cache for them. A back-to-back main push does share the group, and
 # that is the one case where cancel-in-progress matters here: two
 # concurrent runs on the same main commit are a wasted compile.
+# SPEC-1.10.2: a newer run for the same ref cancels the older one.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# SPEC-1.10.3: classify, cargo, guards and secrets are the four jobs.
 jobs:
   # MAPPS-1221/PC-134/STD-3.1: classify the PR diff with the shared `common`
   # action instead of a repo-local classifier, so the skip rule stays in one
@@ -96,6 +99,7 @@ jobs:
     needs: classify
     # Heavy label: compiles and links Rust (clippy, wasm, desktop, tests) on the
     # runner, which needs the dev image's C toolchain.
+    # SPEC-1.10.8: heavy label for the compile job, medium for the rest.
     runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_HEAVY }}
 
     steps:
@@ -123,6 +127,7 @@ jobs:
         # any future mokosh-apps cache-warm workflow.
         uses: https://github.com/Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
+          # SPEC-1.10.6: the cross-ref cache key.
           shared-key: check
           cache-on-failure: true
 
@@ -139,6 +144,7 @@ jobs:
       # MAPPS-1221/STD-3.1: fmt still runs on a comments-only diff; only a
       # non-code (docs-only) diff skips it too.
       - name: Check formatting
+        # SPEC-1.10.4: fmt skips only a non-code diff.
         if: needs.classify.outputs.result != 'non-code'
         run: cargo fmt --all --check
 
@@ -182,6 +188,7 @@ jobs:
       # `ghcr.io/niceguyit/rust-builder-glibc` sets CARGO_HOME=/usr/local/cargo
       # and puts only that on PATH, not `~/.cargo/bin`.
       # `${CARGO_HOME:-$HOME/.cargo}/bin` is where `cargo` actually looks.
+      # SPEC-1.10.5: the pinned archive is digest-checked before extraction.
       - name: Cache cargo-audit tarball
         # Version-keyed tarball cache. A hit skips the ~5s download; a
         # version bump misses the key, downloads once, and the sha256 check
@@ -250,6 +257,7 @@ jobs:
     # Backstop, not a target. The guard set is ~38 shell/nu/just
     # invocations that each take seconds; the full job runs in well
     # under a minute on a warm runner.
+    # SPEC-1.10.7: bounded job.
     timeout-minutes: 15
 
     steps:
@@ -269,6 +277,7 @@ jobs:
       # the tag refs. Without tags the script treats every entry as unreleased
       # and demands every historical release reappear in the Recently-added
       # window.
+      # SPEC-1.10.7: shallow tag fetch so config-docs.nu sees release tags.
       - name: Fetch release tags
         run: git fetch --tags --no-recurse-submodules --depth=1
 
@@ -465,6 +474,7 @@ jobs:
       # showed a non-admin the whole capability editor to anybody who typed the
       # URL. Nothing in the types joins the registry's data to the page's
       # control flow, which is why a script holds it.
+      # SPEC-2.10.1: the admin-gate guard runs self-test first, then for real.
       - name: Admin-gate guard
         run: |
           bash scripts/check-admin-gate.sh --self-test
@@ -475,6 +485,7 @@ jobs:
       # same value emits nothing and a cancelled turn-off leaves the box
       # showing a value nothing wrote. Two pages shipped that way, one with a
       # comment claiming a server re-read would fix it.
+      # SPEC-2.11.1: the confirmed-toggle guard runs self-test first, then for real.
       - name: Confirmed-toggle guard
         run: |
           bash scripts/check-confirmed-toggle.sh --self-test
@@ -625,4 +636,5 @@ jobs:
           # SHA the composite action is pinned to above (MAPPS-954): a SHA
           # pin isn't a credential, so suppress this one finding by id
           # rather than reverting the pin.
+          # SPEC-1.11.4: the path allow-list lives in .noseyparker-ignore.txt.
           noseyparker_findings_exclude: 5ea6a266e38a359ff88be14c9235d517260ad043

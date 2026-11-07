@@ -25,8 +25,10 @@
 /// wait is treated as absent, because "try again in 0 seconds" is worse copy
 /// than no number at all.
 pub fn retry_after_seconds(body: &str) -> Option<u64> {
+    // SPEC-4.79.1, SPEC-4.79.2, SPEC-4.79.4: any parse miss is None, never a panic.
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     let seconds = value.get("retry_after_seconds")?.as_i64()?;
+    // SPEC-4.79.3
     (seconds > 0).then_some(seconds as u64)
 }
 
@@ -36,10 +38,13 @@ pub fn retry_after_seconds(body: &str) -> Option<u64> {
 /// Rounds up: telling someone to wait a minute when the bucket clears in 90
 /// seconds earns a second failed attempt.
 pub fn retry_after_phrase(body: &str) -> Option<String> {
+    // SPEC-4.79.5
     let seconds = retry_after_seconds(body)?;
     Some(if seconds < 60 {
+        // SPEC-4.79.6
         format!("in {seconds} seconds")
     } else {
+        // SPEC-4.79.7: rounds up so the advice is never early.
         let minutes = seconds.div_ceil(60);
         if minutes == 1 {
             "in about a minute".to_string()

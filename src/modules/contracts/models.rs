@@ -20,6 +20,8 @@ use uuid::Uuid;
 // ============================================================================
 
 /// Contract response. Mirrors `ContractResponse`.
+// SPEC-3.13.1: Decimal fields are bare so they decode from, and encode to, JSON strings.
+// SPEC-3.13.2: required vs defaulted fields.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ContractResponse {
     pub id: Uuid,
@@ -53,6 +55,7 @@ pub struct ContractResponse {
 }
 
 /// Create-contract request. Mirrors `CreateContractRequest`.
+// SPEC-3.13.3: optional keys are omitted when None.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CreateContractRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -80,6 +83,7 @@ pub struct CreateContractRequest {
 
 /// Update-contract request. Mirrors `UpdateContractRequest`. Every field
 /// is optional; only the keys the user actually changed are sent.
+// SPEC-3.13.4: all-None default, every None omitted.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct UpdateContractRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,6 +115,7 @@ pub struct UpdateContractRequest {
 // ============================================================================
 
 /// Contract line-item response. Mirrors `ContractItemResponse`.
+// SPEC-3.13.5: quantity, unit_price and total_price are required decimals.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ContractItemResponse {
     pub id: Uuid,
@@ -144,6 +149,7 @@ pub struct ContractItemResponse {
 }
 
 /// Upsert contract line-item request. Mirrors `UpsertContractItemRequest`.
+// SPEC-3.13.6: optional keys are omitted when None.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UpsertContractItemRequest {
     pub name: String,
@@ -173,6 +179,7 @@ pub struct UpsertContractItemRequest {
 // ============================================================================
 
 /// Hour-balance period response. Mirrors `ContractHourBalanceResponse`.
+// SPEC-3.13.7: every field is required.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ContractHourBalanceResponse {
     pub id: Uuid,
@@ -191,6 +198,7 @@ pub struct ContractHourBalanceResponse {
 // ============================================================================
 
 /// Rate-card response. Mirrors `RateCardResponse`.
+// SPEC-3.13.8: id and name required, is_default defaults to false.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct RateCardResponse {
     pub id: Uuid,
@@ -211,6 +219,7 @@ pub struct UpsertRateCardRequest {
 }
 
 /// Rate-card line-item response. Mirrors `RateCardItemResponse`.
+// SPEC-3.13.9: hourly_rate required, the other two rates optional.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct RateCardItemResponse {
     pub id: Uuid,

@@ -23,6 +23,7 @@
 
 /// Every class this module can emit. The sanitizer's allowlist is built from
 /// this, so adding a token kind here is all it takes to let it through.
+// SPEC-4.63.3, SPEC-4.63.4
 pub const CLASSES: &[&str] = &[
     "hl-com", // comment
     "hl-str", // string or character literal
@@ -55,6 +56,7 @@ struct Lang {
     keyed: bool,
 }
 
+// SPEC-4.61.5
 const DEFAULT_LANG: Lang = Lang {
     line_comments: &["#", "//"],
     block_comment: Some(("/*", "*/")),
@@ -69,12 +71,14 @@ const DEFAULT_LANG: Lang = Lang {
 /// Resolve a fence's info string to a language. The info string may carry more
 /// than the name (`rust,ignore`, `bash {1,3}`), so only the first word counts.
 fn spec(lang: &str) -> Option<&'static Lang> {
+    // SPEC-4.61.1
     let name = lang
         .split(|c: char| c.is_whitespace() || c == ',' || c == '{')
         .next()
         .unwrap_or("")
         .to_ascii_lowercase();
 
+    // SPEC-4.62.3, SPEC-4.62.5, SPEC-4.62.16: per-grammar tables below.
     const RUST: Lang = Lang {
         line_comments: &["//"],
         block_comment: Some(("/*", "*/")),
@@ -325,6 +329,7 @@ fn spec(lang: &str) -> Option<&'static Lang> {
         keyed: true,
     };
 
+    // SPEC-4.61.4
     Some(match name.as_str() {
         "rust" | "rs" => &RUST,
         "js" | "javascript" | "ts" | "typescript" | "jsx" | "tsx" => &JS,
@@ -339,6 +344,7 @@ fn spec(lang: &str) -> Option<&'static Lang> {
         // goes wrong in the cases that matter: `#` opens a comment in a shell
         // but is a heading in a pasted Markdown sample, and a `$` prompt in a
         // terminal transcript is not a variable.
+        // SPEC-4.61.3
         "" => return None,
         // A fence that DOES name a language we do not know still gets the
         // universal tokens. The author has asserted it is code, so comments,
@@ -349,6 +355,7 @@ fn spec(lang: &str) -> Option<&'static Lang> {
 
 /// HTML-escape into `out`. Applied to every byte of source text, on every path,
 /// so a token-scan mistake can never produce unescaped output.
+// SPEC-4.61.6
 fn push_escaped(out: &mut String, s: &str) {
     for c in s.chars() {
         match c {
@@ -361,6 +368,7 @@ fn push_escaped(out: &mut String, s: &str) {
     }
 }
 
+// SPEC-4.61.7
 fn push_span(out: &mut String, class: &str, text: &str) {
     out.push_str("<span class=\"");
     out.push_str(class);
@@ -374,11 +382,13 @@ fn push_span(out: &mut String, class: &str, text: &str) {
 /// `lang` is the fence info string and may be empty. The returned HTML is
 /// already escaped and is safe to place inside `<code>`.
 pub fn highlight_html(lang: &str, code: &str) -> String {
+    // SPEC-4.61.1
     let name = lang
         .split(|c: char| c.is_whitespace() || c == ',' || c == '{')
         .next()
         .unwrap_or("")
         .to_ascii_lowercase();
+    // SPEC-4.61.2
     if matches!(name.as_str(), "diff" | "patch") {
         return highlight_diff(code);
     }
@@ -392,6 +402,7 @@ pub fn highlight_html(lang: &str, code: &str) -> String {
 
 /// Diff is line-oriented, so it gets its own pass rather than a token scan that
 /// would colour the contents of every changed line instead of the change.
+// SPEC-4.63.1
 fn highlight_diff(code: &str) -> String {
     let mut out = String::with_capacity(code.len() * 2);
     for line in code.split_inclusive('\n') {
@@ -401,6 +412,7 @@ fn highlight_diff(code: &str) -> String {
         };
         // Order matters: `+++` / `---` are file headers, not an added or
         // removed line, so they are tested before the single-character forms.
+        // SPEC-4.63.2
         let class = if body.starts_with("@@") {
             Some("hl-mta")
         } else if body.starts_with("+++")
@@ -431,6 +443,7 @@ fn is_ident(c: char) -> bool {
 
 /// End offset of the `$name` / `${name}` starting at `at`, or `None` if what
 /// follows the `$` is not a variable.
+// SPEC-4.62.9
 fn var_end(code: &str, at: usize) -> Option<usize> {
     let mut j = at + 1;
     if code[j..].starts_with('{') {
@@ -451,6 +464,7 @@ fn var_end(code: &str, at: usize) -> Option<usize> {
 /// that is what the shell does with it and it is the common case in a
 /// knowledge-base snippet (`echo "$HOME/bin"`). Single quotes are literal in
 /// those languages, so they are emitted whole.
+// SPEC-4.62.10
 fn push_string(out: &mut String, spec: &Lang, text: &str) {
     if !spec.dollar_vars || !text.starts_with('"') {
         push_span(out, "hl-str", text);
@@ -491,6 +505,7 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
         let rest = &code[i..];
         let c = rest.chars().next().expect("in-bounds slice is non-empty");
 
+        // SPEC-4.62.1
         if c == '\n' {
             out.push('\n');
             i += 1;
@@ -499,7 +514,7 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
             continue;
         }
 
-        // Block comment.
+        // Block comment. SPEC-4.62.2, SPEC-4.62.4
         if let Some((open, close)) = spec.block_comment {
             if let Some(after_open) = rest.strip_prefix(open) {
                 let end = after_open
@@ -512,6 +527,7 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
             }
         }
 
+        // SPEC-4.62.3
         // Line comment. Not inside a string, because strings are consumed whole
         // below before we ever look at their contents.
         if let Some(marker) = spec
@@ -534,6 +550,7 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
         // at the newline keeps one unbalanced quote from swallowing the rest of
         // the block, which is the failure that makes a lexical highlighter look
         // broken rather than imprecise.
+        // SPEC-4.62.5, SPEC-4.62.7
         if spec.quotes.contains(&c) {
             let mut j = i + c.len_utf8();
             let mut closed = false;
@@ -542,6 +559,7 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
                 if ch == '\n' {
                     break;
                 }
+                // SPEC-4.62.6
                 if spec.escapes && ch == '\\' {
                     j += ch.len_utf8();
                     if j < code.len() {
@@ -556,7 +574,7 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
                 }
             }
             let text = &code[i..j];
-            // A quoted property name is a key, not a value.
+            // A quoted property name is a key, not a value. SPEC-4.62.8
             let is_key = spec.keyed
                 && closed
                 && !seen_sep
@@ -572,7 +590,7 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
             continue;
         }
 
-        // Interpolated variable.
+        // Interpolated variable. SPEC-4.62.9
         if spec.dollar_vars && c == '$' {
             if let Some(j) = var_end(code, i) {
                 push_span(&mut out, "hl-var", &code[i..j]);
@@ -581,6 +599,7 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
             }
         }
 
+        // SPEC-4.62.11
         // Number. Only when it does not continue an identifier, so `utf8` and
         // `sha256` stay whole.
         if c.is_ascii_digit() && (i == 0 || !is_ident(code[..i].chars().next_back().unwrap_or(' ')))
@@ -600,6 +619,7 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
         }
 
         // Identifier: keyword, type, property name, or plain text.
+        // SPEC-4.62.12, SPEC-4.62.13
         if is_ident(c) && !c.is_ascii_digit() {
             let mut j = i;
             while j < code.len() {
@@ -633,6 +653,7 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
             continue;
         }
 
+        // SPEC-4.62.14, SPEC-4.62.15
         if c == ':' || c == '=' {
             seen_sep = true;
         }

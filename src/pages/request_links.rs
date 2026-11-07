@@ -53,6 +53,7 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
             let _token = crate::hooks::fetch::api::current_access_token()?;
+            // SPEC-9.47.1
             crate::hooks::fetch::api::get_authed_typed::<Vec<RequestLink>>(&format!(
                 "/form-request-links?company_id={id}"
             ))
@@ -82,6 +83,7 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                 Button {
                     variant: ButtonVariant::Link,
                     disabled: !can_mutate,
+                    // SPEC-9.47.6
                     title: (!can_mutate).then(|| "Can't send while the server is unreachable".to_string()),
                     onclick: move |_| sending.set(true),
                     "Send a form"
@@ -97,6 +99,7 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                         TableHeader { "Expires" }
                     }
                 }
+                // SPEC-9.47.2
                 match &*snap {
                     None => rsx! { TableLoading { columns: 4, rows: 3 } },
                     Some(None) => rsx! {
@@ -113,6 +116,7 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                             for link in rows.clone().into_iter() {
                                 {
                                     let key = link.id.to_string();
+                                    // SPEC-9.47.3
                                     let status = link.status(now);
                                     let variant = match status {
                                         RequestLinkStatus::Submitted => BadgeVariant::Green,
@@ -120,6 +124,7 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                                         | RequestLinkStatus::PartlySubmitted => BadgeVariant::Blue,
                                         RequestLinkStatus::Expired => BadgeVariant::Gray,
                                     };
+                                    // SPEC-9.47.5
                                     let expires = crate::utils::datetime::format_user_datetime_in(link.expires_at, None, tz);
                                     let expires_iso = link.expires_at.to_rfc3339();
                                     rsx! {
@@ -128,6 +133,7 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                                             TableCell { class: "text-muted", "{link.recipient_email}" }
                                             TableCell {
                                                 Badge { variant, "{status.label()}" }
+                                                // SPEC-9.47.4
                                                 // MAPPS-934: a link issued for
                                                 // several people says how far it
                                                 // has got; a one-person link has
@@ -152,6 +158,7 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                 company_id: company_id.clone(),
                 company_name: company_name.clone(),
                 onclose: move |_| sending.set(false),
+                // SPEC-9.47.6
                 onsent: move |_| {
                     sending.set(false);
                     links.restart();
@@ -164,6 +171,7 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
 /// MAPPS-934: the most people one link may cover, matching the server's own
 /// cap (PMS-737). Refused here so the agent hears it from the field rather
 /// than from a round trip.
+// SPEC-9.48.7, SPEC-9.48.8
 const MAX_PEOPLE: i32 = 50;
 
 /// PMS-764: how many of the tenant's most recent links the builder shows.
@@ -172,6 +180,7 @@ const MAX_PEOPLE: i32 = 50;
 /// short enough that the panel stays a panel rather than becoming a second
 /// table competing with the definitions above it. The full history per client
 /// is on the company page, which every row links to.
+// SPEC-9.47.8
 const RECENT_SENT: usize = 8;
 
 /// The links the panel shows, and how many it is leaving out.
@@ -179,6 +188,7 @@ const RECENT_SENT: usize = 8;
 /// The server returns every link the tenant has issued, newest first, and this
 /// takes the head of that. The remainder is returned rather than dropped
 /// because a truncated list that does not say so reads as "this is everything".
+// SPEC-9.47.8
 fn recent_visible(rows: Vec<RequestLink>, cap: usize) -> (Vec<RequestLink>, usize) {
     let hidden = rows.len().saturating_sub(cap);
     let mut rows = rows;
@@ -199,6 +209,7 @@ fn recent_visible(rows: Vec<RequestLink>, cap: usize) -> (Vec<RequestLink>, usiz
 /// `reload` is bumped by the caller after a send so the row appears at the
 /// moment it is created, which is when the question is actually being asked.
 #[component]
+// SPEC-9.47.7
 pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
     let links = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -209,6 +220,7 @@ pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
         let _token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_authed_typed::<Vec<RequestLink>>("/form-request-links")
             .await
+            // SPEC-9.47.9
             .inspect_err(|e| tracing::error!("sent request link load failed: {e}"))
             .ok()
     });
@@ -250,6 +262,7 @@ pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
                             message: "Nothing sent yet. Use Send on a form above to email a client a link.".to_string(),
                         }
                     },
+                    // SPEC-9.47.8, SPEC-9.47.9
                     Some(Some(rows)) => {
                         let (visible, hidden) = recent_visible(rows.clone(), RECENT_SENT);
                         rsx! {
@@ -318,6 +331,7 @@ pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
 /// pair of keys below is the contract: the new contact lands on this client and
 /// its breadcrumb leads back to the company. MAPPS-696: routed through `Link`,
 /// because a raw anchor to an in-app path is inert in the desktop webview.
+// SPEC-9.48.5
 fn add_contact_href(company_id: &str, company_name: &str) -> String {
     format!(
         "/contacts/new?company_id={}&company_name={}",
@@ -338,6 +352,7 @@ pub(crate) fn SendRequestLinkModal(
     onclose: EventHandler<()>,
     onsent: EventHandler<()>,
 ) -> Element {
+    // SPEC-9.48.1
     let form_id = use_signal(|| preselected_form_id.clone().unwrap_or_default());
     // MAPPS-934: how many people this one request covers (PMS-737). One is the
     // default and is the link that has always existed; more than one files a
@@ -355,6 +370,7 @@ pub(crate) fn SendRequestLinkModal(
     // Only forms a client could actually be sent: a retired definition refuses
     // submissions server-side, so offering it would issue a link that dies on
     // arrival.
+    // SPEC-9.48.2
     let forms = use_resource(|| async {
         let _token = crate::hooks::fetch::api::current_access_token()?;
         // An empty form picker is what a tenant with no active definitions
@@ -373,6 +389,7 @@ pub(crate) fn SendRequestLinkModal(
                 Some(rows)
             }
             Err(e) => {
+                // SPEC-9.48.14: not enforced here, see the tracked defect (forms and contacts picker failures are logged but not shown in the modal).
                 tracing::error!("form picker load failed, the picker will be empty: {e}");
                 None
             }
@@ -398,6 +415,7 @@ pub(crate) fn SendRequestLinkModal(
             // the rest of a large company's contacts from the picker. This
             // deliberately does NOT reuse the detail page's contacts resource,
             // capped at 5 rows for its preview card.
+            // SPEC-9.48.4
             crate::hooks::fetch::api::get_all_authed::<PickerContact>(&format!(
                 "/contacts/companies/{id}/contacts"
             ))
@@ -424,6 +442,7 @@ pub(crate) fn SendRequestLinkModal(
     // A contact with no email cannot receive the link, so it is not offered:
     // choosing one would only produce a server 400 telling the agent to supply
     // an address they already could have typed.
+    // SPEC-9.48.4
     let contact_options: Vec<SelectOption> = contact_rows
         .iter()
         .filter(|c| c.email.as_deref().map(|e| !e.is_empty()).unwrap_or(false))
@@ -461,6 +480,7 @@ pub(crate) fn SendRequestLinkModal(
         error.set(String::new());
         let mut failed = false;
 
+        // SPEC-9.48.8: every check runs before the first return
         let Some(company_uuid) = company_uuid else {
             error.set("This company could not be identified. Reload the page.".to_string());
             return;
@@ -494,6 +514,7 @@ pub(crate) fn SendRequestLinkModal(
         }
 
         saving.set(true);
+        // SPEC-9.48.9
         let req = IssueRequestLinkRequest {
             form_definition_id: form_uuid.expect("checked above"),
             company_id: company_uuid,
@@ -515,6 +536,7 @@ pub(crate) fn SendRequestLinkModal(
                         // MAPPS-934: a multi-person request names the parent
                         // ticket it will file under, because that is where the
                         // MSP works it.
+                        // SPEC-9.48.10
                         let sent = match (link.people > 1, link.parent_ticket_number.as_deref()) {
                             (true, Some(parent)) => format!(
                                 "Request form sent to {} for {} people. They file under {parent}.",
@@ -533,6 +555,7 @@ pub(crate) fn SendRequestLinkModal(
                         crate::hooks::push_api_error(&err);
                         // The server routes a bad address to `recipient_email`;
                         // anything else is a whole-request problem.
+                        // SPEC-9.48.11
                         match (
                             err.field_message("recipient_email"),
                             err.field_message("people"),
@@ -554,6 +577,7 @@ pub(crate) fn SendRequestLinkModal(
     // its link and the tenant's own identity only exist at send time, so they
     // come back in `unresolved` and the modal shows them as filled in when
     // sent rather than pretending to a value it does not have.
+    // SPEC-9.48.1
     let preview_context = {
         let form_options = form_options.clone();
         let contact_rows = contact_rows.clone();
@@ -597,6 +621,7 @@ pub(crate) fn SendRequestLinkModal(
         Button {
             variant: ButtonVariant::Primary,
             loading: saving(),
+            // SPEC-9.48.3, SPEC-9.48.13
             disabled: !can_mutate || no_forms,
             title: if no_forms {
                 Some("Define a request form first".to_string())
@@ -624,6 +649,7 @@ pub(crate) fn SendRequestLinkModal(
                     ErrorBanner { "{error()}" }
                 }
 
+                // SPEC-9.48.3
                 if no_forms {
                     ErrorBanner {
                         "No active request forms exist yet. "
@@ -661,6 +687,7 @@ pub(crate) fn SendRequestLinkModal(
                     value: contact_id(),
                     disabled: saving(),
                     help: "Only contacts with an email address are listed.".to_string(),
+                    // SPEC-9.48.6
                     onchange: move |e: FormEvent| {
                         let v = e.value();
                         // Filling the address from the chosen contact keeps the
@@ -679,6 +706,7 @@ pub(crate) fn SendRequestLinkModal(
                 // PMS-747: named as a fact about this client, with the route to
                 // fix it, rather than left as an empty dropdown to interpret.
                 // Not an error: the send works fine on a typed address alone.
+                // SPEC-9.48.5
                 if no_contacts {
                     p { class: "-mt-2 text-xs text-muted",
                         "{company_name} has no contact with an email address yet. "
@@ -719,6 +747,7 @@ pub(crate) fn SendRequestLinkModal(
                     },
                 }
 
+                // SPEC-9.48.12
                 p { class: "text-xs text-muted",
                     if people.read().trim() == "1" {
                         "The link can be submitted once and expires in 7 days. Their answers arrive as a ticket for this client."
@@ -740,6 +769,7 @@ pub(crate) fn SendRequestLinkModal(
 /// the tenant, while the contact list is a plain bounded `Select` that cannot
 /// even be populated until the company is known.
 #[component]
+// SPEC-9.49.1
 pub fn SendFormToClientModal(
     form_definition_id: String,
     form_name: String,
@@ -754,6 +784,7 @@ pub fn SendFormToClientModal(
     // Company settled: the rest of the send is identical to the company-page
     // route, so it runs through the same modal rather than a second copy of
     // the contact picker and the issue call.
+    // SPEC-9.49.3
     if let Some((id, name)) = chosen.read().clone() {
         return rsx! {
             SendRequestLinkModal {
@@ -780,6 +811,7 @@ pub fn SendFormToClientModal(
             variant: ButtonVariant::Primary,
             onclick: move |_| {
                 let id = company_id.read().trim().to_string();
+                // SPEC-9.49.2
                 if id.is_empty() {
                     company_error.set("Choose the client this form is going to.".to_string());
                     return;

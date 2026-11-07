@@ -5,6 +5,7 @@
 //! machine. Mirrors mokosh-server's `quotes` module shapes
 //! (PMS-671 through PMS-674).
 
+// SPEC-3.17.3: quote DTOs and the status helpers are re-exported from the module path.
 mod models;
 
 pub use models::*;

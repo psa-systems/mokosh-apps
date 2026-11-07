@@ -42,6 +42,7 @@ pub enum DownloadFailure {
 
 impl DownloadFailure {
     /// From an HTTP status, or `None` for a transport failure.
+    // SPEC-5.20.8, SPEC-5.20.9: status classification and the Other message.
     pub fn from_status(status: Option<u16>, message: &str) -> Self {
         match status {
             None => Self::Network,
@@ -60,6 +61,7 @@ impl DownloadFailure {
     }
 
     /// What the page shows. `what` names the document ("the invoice PDF").
+    // SPEC-5.20.10: exact failure sentences.
     pub fn describe(&self, what: &str) -> String {
         match self {
             Self::SessionExpired => {
@@ -104,6 +106,7 @@ pub struct DownloadButtonProps {
     pub fallback_name: String,
     /// The document, for the failure sentence: "the invoice PDF".
     pub what: String,
+    // SPEC-5.20.13: prop defaults.
     #[props(default = String::from("Download PDF"))]
     pub label: String,
     #[props(default = ButtonVariant::Secondary)]
@@ -135,9 +138,11 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
     let what = props.what.clone();
     let preview = props.preview;
     let on_click = move |_| {
+        // SPEC-5.20.1: a click while busy issues no second request.
         if *busy.read() {
             return;
         }
+        // SPEC-5.20.2: busy on, previous outcome discarded.
         busy.set(true);
         outcome.set(None);
         let path = path.clone();
@@ -148,6 +153,7 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
         // pop-up blockers catch, so this has to happen inside the click
         // itself (MAPPS-1005). `None` (not a preview, or the tab could not
         // be opened) falls back to the save-to-disk path below.
+        // SPEC-5.21.1, SPEC-5.21.5, SPEC-5.21.6: tab opened only in preview mode.
         let preview_tab = if preview {
             crate::utils::download::open_preview_tab().ok()
         } else {
@@ -156,8 +162,10 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-5.20.2: bearer-authenticated fetch of the document.
                 match crate::hooks::fetch::api::get_authed_bytes_typed(&path).await {
                     Ok((bytes, name)) => match preview_tab {
+                        // SPEC-5.21.2, SPEC-5.21.3: show in the tab, save nothing.
                         Some(tab) => {
                             if let Err(reason) =
                                 crate::utils::download::show_bytes_in_tab(tab, &bytes).await
@@ -167,21 +175,26 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
                                 )));
                             }
                         }
+                        // SPEC-5.20.3: server filename wins over the fallback.
                         None => {
                             let filename = name.unwrap_or(fallback);
                             match crate::utils::download::save_bytes_as_file(&bytes, &filename)
                                 .await
                             {
+                                // SPEC-5.20.4: the desktop build reports the destination.
                                 Ok(Some(saved)) => outcome.set(Some(Outcome::SavedTo(saved))),
-                                // The browser shows its own download shelf.
+                                // SPEC-5.20.5: The browser shows its own download shelf.
                                 Ok(None) => {}
+                                // SPEC-5.20.6: bytes arrived but the host could not write them.
                                 Err(reason) => outcome.set(Some(Outcome::Failed(
                                     DownloadFailure::CouldNotSave(reason).describe(&what),
                                 ))),
                             }
                         }
                     },
+                    // SPEC-5.20.8, SPEC-5.20.12: classify and report the failure.
                     Err(err) => {
+                        // SPEC-5.21.4: no blank tab left behind.
                         if let Some(tab) = preview_tab {
                             tab.close();
                         }
@@ -198,10 +211,12 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
                     }
                 }
             }
+            // SPEC-5.20.14: no request without the app feature.
             #[cfg(not(feature = "app"))]
             {
                 let _ = (path, fallback, what, preview_tab);
             }
+            // SPEC-5.20.7: busy clears on every path.
             busy.set(false);
         });
     };
@@ -219,9 +234,11 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
                 "{props.label}"
             }
             match current {
+                // SPEC-5.20.11: failures render as an alert paragraph.
                 Some(Outcome::Failed(message)) => rsx! {
                     p { class: "text-xs text-red-600 dark:text-red-400", role: "alert", "{message}" }
                 },
+                // SPEC-5.20.4
                 Some(Outcome::SavedTo(saved)) => rsx! {
                     p { class: "text-xs text-muted", role: "status", "Saved to {saved}" }
                 },

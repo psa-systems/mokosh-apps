@@ -36,6 +36,7 @@ use crate::modules::kb::KbTemplateVariable;
 ///
 /// Returned ordered (BTreeMap), so the serialized body is stable across
 /// renders and a cached response can be matched by request body.
+// SPEC-5.32.1, SPEC-5.32.2, SPEC-5.32.3, SPEC-5.32.4: declared-only, non-empty, name-ordered body
 pub fn render_values(
     declared: &[KbTemplateVariable],
     picks: &BTreeMap<String, String>,
@@ -54,6 +55,7 @@ pub fn render_values(
 /// Seed one variable's initial value: the declared default when set,
 /// else empty. Kept separate so the admin preview and the detail reader
 /// seed the same way.
+// SPEC-5.32.5: default or empty
 pub fn seed_value(v: &KbTemplateVariable) -> String {
     v.default.clone().unwrap_or_default()
 }
@@ -67,6 +69,7 @@ pub fn seed_values(declared: &[KbTemplateVariable]) -> BTreeMap<String, String> 
 }
 
 /// Whether a variable renders as a dropdown rather than a free-text input.
+// SPEC-5.32.6: allowed values select the dropdown shape
 pub fn is_allowed_values_picker(v: &KbTemplateVariable) -> bool {
     !v.allowed_values.is_empty()
 }
@@ -87,22 +90,26 @@ pub struct TemplateVariablesPanelProps {
     /// fills this from the server's 422 message so the picker row stays
     /// editable while the reader sees what went wrong.
     #[props(default)]
+    // SPEC-5.32.13, SPEC-5.32.15: empty hides the error line
     pub error: String,
     /// Whether a render is in flight; drives the "Updating…" hint under
     /// the heading.
     #[props(default = false)]
+    // SPEC-5.32.14, SPEC-5.32.15
     pub busy: bool,
 }
 
 #[component]
 pub fn TemplateVariablesPanel(props: TemplateVariablesPanelProps) -> Element {
     let variables = props.variables.clone();
+    // SPEC-5.32.7
     if variables.is_empty() {
         return rsx! {};
     }
     let mut picks = props.picks;
     rsx! {
         div { class: "space-y-3",
+            // SPEC-5.32.13
             if !props.error.is_empty() {
                 p {
                     class: "text-sm leading-5 text-red-600 dark:text-red-400",
@@ -110,17 +117,21 @@ pub fn TemplateVariablesPanel(props: TemplateVariablesPanelProps) -> Element {
                     "{props.error}"
                 }
             }
+            // SPEC-5.32.14
             if props.busy {
                 p { class: "text-xs text-subtle", role: "status", "Updating\u{2026}" }
             }
+            // SPEC-5.32.8: declaration order, id kb-tplvar-<name>
             for v in variables.iter().cloned() {
                 {
                     let name = v.name.clone();
+                    // SPEC-5.32.9
                     let label = if v.label.trim().is_empty() {
                         v.name.clone()
                     } else {
                         v.label.clone()
                     };
+                    // SPEC-5.32.10
                     let current = picks.read().get(&v.name).cloned().unwrap_or_default();
                     let field_id = format!("kb-tplvar-{}", v.name);
                     if is_allowed_values_picker(&v) {
@@ -138,9 +149,11 @@ pub fn TemplateVariablesPanel(props: TemplateVariablesPanelProps) -> Element {
                                     name: "{v.name}",
                                     class: "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm",
                                     value: "{current}",
+                                    // SPEC-5.32.11
                                     onchange: move |e: FormEvent| {
                                         picks.write().insert(name_for_change.clone(), e.value());
                                     },
+                                    // SPEC-5.32.12
                                     if current.is_empty() {
                                         option { value: "", "Choose\u{2026}" }
                                     }

@@ -19,6 +19,7 @@ use uuid::Uuid;
 /// tripped through create/update so a `/render` call knows what names it
 /// accepts.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+// SPEC-3.15.1: name and label required, allowed_values and default optional.
 pub struct KbTemplateVariable {
     pub name: String,
     pub label: String,
@@ -32,6 +33,7 @@ pub struct KbTemplateVariable {
 /// `values` is `{}`, so the server renders every variable from its
 /// `default` (or the `[missing: NAME]` placeholder when none).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
+// SPEC-3.15.2: a sorted map under `values`; the response requires `id`.
 pub struct RenderKbArticleRequest {
     pub values: std::collections::BTreeMap<String, String>,
 }
@@ -48,6 +50,7 @@ pub struct RenderKbArticleResponse {
 /// `KbCategoryResponse` subset. The category grid keys badges/links on
 /// `id`, `name`, `slug`, `description`, and `visibility`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.15.3: only id and name are required.
 pub struct KbCategory {
     pub id: Uuid,
     pub name: String,
@@ -73,6 +76,8 @@ pub struct KbCategory {
 /// ids. The contact projection carries none of these, so every one
 /// defaults, and the page prints attribution only on a staff session.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.15.4: only id is required, because the contact projection omits fields.
+// SPEC-3.15.5: author, editor and company names ride along as resolved names.
 pub struct KbArticle {
     pub id: Uuid,
     #[serde(default)]
@@ -116,6 +121,7 @@ pub struct KbArticle {
     /// for `public` / `internal`. The article form round-trips this set, and
     /// the portal filter matches on it, so an empty set on a client-specific
     /// article means no client can see it.
+    // SPEC-3.15.7: an empty scope hides a client-specific article from everyone.
     #[serde(default)]
     pub company_ids: Vec<Uuid>,
     /// The generic article this one is a company-specific version of, or
@@ -123,6 +129,7 @@ pub struct KbArticle {
     /// parent is always a top-level article, enforced server-side so the
     /// SPA can trust the invariant and render a flat "Company versions"
     /// list under the parent rather than a tree.
+    // SPEC-3.15.6: one level only, a top-level parent.
     #[serde(default)]
     pub parent_article_id: Option<Uuid>,
     /// MAPPS-1044: server-resolved company display names, one per id in
@@ -148,6 +155,7 @@ pub struct KbArticle {
 /// it is a root. A deleted comment keeps its place with `deleted: true` and
 /// an empty body.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.15.8: a deleted comment keeps its place with an empty body.
 pub struct KbComment {
     pub id: Uuid,
     pub article_id: Uuid,
@@ -179,6 +187,7 @@ pub struct KbComment {
 
 /// `POST /kb/articles/{id}/comments` (PMS-1128).
 #[derive(Clone, Debug, PartialEq, Serialize)]
+// SPEC-3.15.9: parent_id and anchor are omitted when None.
 pub struct CreateKbCommentRequest {
     pub body: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -198,6 +207,7 @@ pub struct UpdateKbCommentRequest {
 /// from `GET /kb/articles/{id}/tickets`. `relation` is `source` (opened
 /// from the article) or `procedure` (the article says how to work it).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.15.10: `relation` is `source` or `procedure`.
 pub struct KbArticleTicket {
     pub id: Uuid,
     #[serde(default)]
@@ -222,6 +232,7 @@ pub struct KbArticleTicket {
 /// (`create`, `edit`, `restore`), why, and for a restore which version it
 /// brought back (PMS-1126).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.15.11: id, article_id and version_number are required.
 pub struct KbArticleVersion {
     pub id: Uuid,
     pub article_id: Uuid,
@@ -244,6 +255,7 @@ pub struct KbArticleVersion {
 
 /// MAPPS-739: the body of `POST /kb/articles/{id}/versions/{n}/restore`.
 #[derive(Clone, Debug, PartialEq, Serialize, Default)]
+// SPEC-3.15.12: change_note is omitted when None.
 pub struct RestoreKbArticleVersionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change_note: Option<String>,
@@ -254,6 +266,7 @@ pub struct RestoreKbArticleVersionRequest {
 /// page can re-render tallies and the caller's current vote without a
 /// full article reload.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.15.13: my_vote is `helpful`, `not_helpful` or None.
 pub struct KbArticleFeedback {
     pub id: Uuid,
     #[serde(default)]
@@ -269,6 +282,7 @@ pub struct KbArticleFeedback {
 /// required server-side; the category form derives one from the name when the
 /// author leaves it blank.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+// SPEC-3.15.14: all six fields always serialize, None as null.
 pub struct CreateKbCategoryRequest {
     pub name: String,
     pub slug: String,
@@ -282,6 +296,7 @@ pub struct CreateKbCategoryRequest {
 /// full set so omitted-vs-cleared is unambiguous (mirrors
 /// [`UpdateKbArticleRequest`]).
 #[derive(Clone, Debug, PartialEq, Serialize)]
+// SPEC-3.15.14: no field is skipped, so the full set is always sent.
 pub struct UpdateKbCategoryRequest {
     pub name: Option<String>,
     pub slug: Option<String>,
@@ -294,6 +309,7 @@ pub struct UpdateKbCategoryRequest {
 /// `CreateKbArticleRequest`. `slug` is required server-side; the new-article
 /// form derives one from the title when the author leaves it blank.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+// SPEC-3.15.15: parent_article_id and template_variables are omitted when None.
 pub struct CreateKbArticleRequest {
     pub title: String,
     pub slug: String,
@@ -329,6 +345,7 @@ pub struct CreateKbArticleRequest {
 /// the SPA is talking to. It goes into the Markdown as-is and the browser
 /// resolves it against the page.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.15.17: the relative `url` goes into the Markdown unchanged.
 pub struct KbAttachmentResponse {
     pub id: Uuid,
     pub article_id: Uuid,
@@ -341,6 +358,7 @@ pub struct KbAttachmentResponse {
 /// `UpdateKbArticleRequest`. Every field is optional; the edit form sends
 /// the full set so omitted-vs-cleared is unambiguous.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+// SPEC-3.15.16: parent_article_id, change_note and template_variables are omitted when None.
 pub struct UpdateKbArticleRequest {
     pub title: Option<String>,
     pub slug: Option<String>,
@@ -375,6 +393,7 @@ pub struct UpdateKbArticleRequest {
 /// PMS-485: one row of the `/kb/top-ticket-driving-articles` feed used
 /// by the KB landing-page widget.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.15.18: id, title and ticket_count are required.
 pub struct TopTicketDrivingArticle {
     pub id: Uuid,
     pub title: String,
@@ -390,6 +409,7 @@ pub struct TopTicketDrivingArticle {
 /// as a confident estimate is worse than the hand-written guess this replaces,
 /// so the card treats null as "no data yet" and says so.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.15.19: null measurements mean "no data yet", never zero.
 pub struct ArticleMeasuredDuration {
     /// Start of the window the figure covers. Always present, so the number
     /// is never ambiguous about what it measured.

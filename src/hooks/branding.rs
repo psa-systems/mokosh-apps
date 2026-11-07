@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 /// `Option<String>`; both sides of the merge falling through leaves
 /// `None` and the SPA supplies the coded fallback.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+// SPEC-4.10.1: the 19 optional fields; SPEC-4.10.2: None is never serialized.
 pub struct EffectiveBranding {
     // MAPPS-618 phase B: skip_serializing_if=Option::is_none on every
     // field. The BrandingEditor submits its FULL local state on
@@ -80,6 +81,7 @@ pub struct EffectiveBranding {
 
 /// Raw tenant defaults (staff-owned). Same shape as
 /// [`EffectiveBranding`] on purpose so the merge is a keys union.
+// SPEC-4.10.3: same shape so the merge is a key union.
 pub type TenantBranding = EffectiveBranding;
 
 /// Raw Company overrides (Company-owned). Same shape as
@@ -90,6 +92,7 @@ pub type CompanyBranding = EffectiveBranding;
 /// Powers the contact-plane editor's "Inherits from MSP default: X"
 /// hints per field.
 #[derive(Clone, Debug, Default, Deserialize)]
+// SPEC-4.10.4: each block defaults to empty.
 pub struct ContactOwnCompanyBranding {
     #[serde(default)]
     pub tenant: TenantBranding,
@@ -105,6 +108,7 @@ pub struct ContactOwnCompanyBranding {
 /// page so branding paints BEFORE the visitor signs in. Missing
 /// session leaves `EffectiveBranding::default()`; painters fall back
 /// to coded defaults on every `None` field.
+// SPEC-4.10.5: starts as the default block.
 pub static EFFECTIVE_BRANDING: dioxus::prelude::GlobalSignal<EffectiveBranding> =
     dioxus::prelude::GlobalSignal::new(EffectiveBranding::default);
 
@@ -113,6 +117,7 @@ pub static EFFECTIVE_BRANDING: dioxus::prelude::GlobalSignal<EffectiveBranding> 
 /// the branding editor's save action (to see the change immediately
 /// without waiting for the next refresh tick).
 pub fn set_effective_branding(next: EffectiveBranding) {
+    // SPEC-4.10.5: wholesale replace.
     *EFFECTIVE_BRANDING.write() = next;
 }
 
@@ -147,9 +152,11 @@ pub fn set_effective_branding(next: EffectiveBranding) {
 /// Empty in, empty out, so a caller with no logo renders nothing rather than
 /// a bare origin.
 pub fn absolute_versioned_asset_url(url: &str, brand: &EffectiveBranding) -> String {
+    // SPEC-4.11.3: blank in, empty out.
     if url.trim().is_empty() {
         return String::new();
     }
+    // SPEC-4.11.4: absolute URLs pass through; paths gain the API origin in app builds.
     let versioned = versioned_asset_url(url, brand);
     if versioned.starts_with("http://") || versioned.starts_with("https://") {
         return versioned;
@@ -165,12 +172,14 @@ pub fn absolute_versioned_asset_url(url: &str, brand: &EffectiveBranding) -> Str
 }
 
 pub fn versioned_asset_url(url: &str, brand: &EffectiveBranding) -> String {
+    // SPEC-4.11.1: empty and already-versioned URLs are not tagged.
     if url.is_empty() {
         return String::new();
     }
     if url.contains("v=") {
         return url.to_string();
     }
+    // SPEC-4.11.2: version is a hash of the whole branding block.
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
@@ -183,6 +192,7 @@ pub fn versioned_asset_url(url: &str, brand: &EffectiveBranding) -> String {
 /// Reset to the coded fallback. Called on sign-out so the next
 /// unauthenticated `AuthLayout` render paints the neutral default.
 pub fn clear_effective_branding() {
+    // SPEC-4.10.5: reset to default, then drop the brand CSS variables.
     *EFFECTIVE_BRANDING.write() = EffectiveBranding::default();
     #[cfg(target_arch = "wasm32")]
     clear_brand_css_vars();
@@ -217,6 +227,7 @@ pub fn apply_brand_css_vars(brand: &EffectiveBranding) {
     // / `border-accent` / `ring-accent` utility across the stylesheet
     // repaints. `--brand-primary` is a stable alias for consumers
     // that want the brand color independent of the theme picker.
+    // SPEC-4.12.1: primary colour drives --accent; none leaves --accent alone.
     if let Some(primary) = brand.primary_color.as_deref().filter(|s| !s.is_empty()) {
         let _ = style.set_property("--accent", primary);
         let _ = style.set_property("--brand-primary", primary);
@@ -225,6 +236,7 @@ pub fn apply_brand_css_vars(brand: &EffectiveBranding) {
     }
     // SECONDARY: paint as the `--secondary` design-token consumer
     // pattern. Also expose `--brand-secondary` for future utilities.
+    // SPEC-4.12.2: secondary colour variables.
     if let Some(secondary) = brand.secondary_color.as_deref().filter(|s| !s.is_empty()) {
         let _ = style.set_property("--secondary", secondary);
         let _ = style.set_property("--brand-secondary", secondary);
@@ -236,6 +248,7 @@ pub fn apply_brand_css_vars(brand: &EffectiveBranding) {
     // (the outer container of AuthLayout + the AppShell body) picks
     // up the brand background. Reverts to the theme value on
     // sign-out via `clear_brand_css_vars` -> `theme::apply_now`.
+    // SPEC-4.12.3: --bg is never removed here; the theme owns the base value.
     if let Some(bg) = brand.background_color.as_deref().filter(|s| !s.is_empty()) {
         let _ = style.set_property("--bg", bg);
         let _ = style.set_property("--brand-bg", bg);
@@ -251,6 +264,7 @@ pub fn apply_brand_css_vars(brand: &EffectiveBranding) {
     // are wrapped in url(). Cleared when the brand has no
     // `background_url` so a subsequent brand save that omits the
     // image reverts to the flat background color / theme.
+    // SPEC-4.12.4: body background image set from, or cleared with, background_url.
     if let Some(body) = doc.body() {
         let body_style = body.style();
         if let Some(url) = brand.background_url.as_deref().filter(|s| !s.is_empty()) {
@@ -274,6 +288,7 @@ pub fn apply_brand_css_vars(brand: &EffectiveBranding) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-4.12.6: no DOM outside wasm32.
 pub fn apply_brand_css_vars(_brand: &EffectiveBranding) {}
 
 /// Undo `apply_brand_css_vars` on sign-out so the theme-picker's
@@ -292,6 +307,7 @@ pub fn clear_brand_css_vars() {
         return;
     };
     let style = html.style();
+    // SPEC-4.12.5: remove every brand-owned variable, then re-apply the theme.
     let _ = style.remove_property("--brand-primary");
     let _ = style.remove_property("--brand-secondary");
     let _ = style.remove_property("--secondary");
@@ -314,6 +330,7 @@ pub fn clear_brand_css_vars() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-4.12.6: no DOM outside wasm32.
 pub fn clear_brand_css_vars() {}
 
 /// Root-mounted hook that repaints the brand's CSS custom
@@ -327,6 +344,7 @@ pub fn clear_brand_css_vars() {}
 pub fn use_apply_brand() {
     use dioxus::prelude::*;
     use_effect(move || {
+        // SPEC-4.12.7: tracked read on purpose so a brand change repaints.
         let brand = EFFECTIVE_BRANDING.read().clone();
         apply_brand_css_vars(&brand);
         apply_favicon(&brand);
@@ -349,6 +367,7 @@ pub fn use_apply_brand() {
 pub fn apply_document_title(brand: &EffectiveBranding) {
     let Some(win) = web_sys::window() else { return };
     let Some(doc) = win.document() else { return };
+    // SPEC-4.12.8: display_name, then company_name, then the vendor default.
     let title = brand
         .display_name
         .as_deref()
@@ -359,9 +378,11 @@ pub fn apply_document_title(brand: &EffectiveBranding) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-4.12.6: no DOM outside wasm32.
 pub fn apply_document_title(_brand: &EffectiveBranding) {}
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-4.12.6: no DOM outside wasm32.
 pub fn use_apply_brand() {}
 
 /// MAPPS-621: point every `<link rel="icon">` at
@@ -385,6 +406,7 @@ pub fn apply_favicon(brand: &EffectiveBranding) {
     let Ok(nodes) = doc.query_selector_all("link[rel~=\"icon\"]") else {
         return;
     };
+    // SPEC-4.12.9: brand favicon on every icon link, else the two coded defaults by index.
     let target = brand.favicon_url.as_deref().filter(|s| !s.is_empty());
     // Default hrefs restored on clear. Kept in sync with index.html.
     const DEFAULT_ICONS: &[(&str, &str)] = &[
@@ -418,6 +440,7 @@ pub fn apply_favicon(brand: &EffectiveBranding) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-4.12.6: no DOM outside wasm32.
 pub fn apply_favicon(_brand: &EffectiveBranding) {}
 
 /// MAPPS-767: a branding asset URL has to name the host that serves it.

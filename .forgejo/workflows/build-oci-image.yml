@@ -15,6 +15,7 @@ on:
       # merges; the list is empty because `mokosh-contact-login` has.
     tags:
       - "v*"
+    # SPEC-1.10.10: the path filter list.
     paths:
       - "src/**"
       - "assets/**"
@@ -38,6 +39,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
+        # SPEC-1.10.11: dry_run defaults to true.
         description: "Build, compute tags and print every registry action without pushing"
         type: boolean
         default: true
@@ -52,6 +54,7 @@ on:
 # version. The group includes the ref so tag runs are already isolated;
 # gating cancel-in-progress on the ref kind is a second guard against a
 # future group-key change silently taking tags with it.
+# SPEC-1.10.9: never cancel a release-tag run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -245,6 +248,7 @@ jobs:
       # that builds the image and already has it. --self-test first, so a
       # guard that has stopped guarding fails loudly rather than reporting
       # clean.
+      # SPEC-1.10.12: the guards run after the build, self-test first.
       - name: Link-preview guard
         run: |
           bash scripts/check-link-preview.sh --self-test
@@ -260,6 +264,7 @@ jobs:
           bash scripts/check-oci-runtime.sh --self-test
           bash scripts/check-oci-runtime.sh
 
+      # SPEC-1.10.13: mirror gating, dry-run printing and the skip warning below.
       - name: Mirror image to public registry
         # MAPPS-421: a branch tag is a staging-only artifact, so it is never
         # mirrored. The public owner carries main and release tags only.

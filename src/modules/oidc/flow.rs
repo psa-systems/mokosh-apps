@@ -48,6 +48,7 @@ pub enum FlowError {
 /// page is replaced.
 #[cfg(target_arch = "wasm32")]
 pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(), FlowError> {
+    // SPEC-3.8.6: a failed hand-off is a typed Redirect error, not a silent no-op.
     let url = authorize_url(cfg, return_to.into())?;
     crate::platform::location::set_href(&url).map_err(|e| {
         FlowError::Redirect(format!("could not hand off to the identity provider: {e}"))
@@ -76,6 +77,7 @@ pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(),
 /// port there, and the OP has to be given the same URI the token
 /// exchange will later present.
 pub(super) fn authorize_url(cfg: &OidcConfig, return_to: String) -> Result<String, FlowError> {
+    // SPEC-3.8.1, SPEC-3.8.4: PKCE S256, config errors before the flow is persisted.
     let verifier = generate_code_verifier();
     let challenge = s256_challenge(&verifier);
     let state = random_opaque();
@@ -97,6 +99,7 @@ pub(super) fn authorize_url(cfg: &OidcConfig, return_to: String) -> Result<Strin
     })
     .map_err(FlowError::Storage)?;
 
+    // SPEC-3.8.5: parameter order and form encoding of the authorize URL.
     // Build the authorize URL.
     let issuer = cfg.issuer.trim_end_matches('/');
     let mut url = format!("{issuer}/oauth2/authorize");
@@ -140,6 +143,7 @@ thread_local! {
 /// Capture `window.location.search` once. Call from `main()` before
 /// `dioxus::launch(App)` so the snapshot is taken before the Router
 /// has a chance to rewrite the URL.
+// SPEC-3.8.14: taken once before the router can rewrite the URL.
 pub fn snapshot_initial_search() {
     let s = crate::platform::location::search().unwrap_or_default();
     INITIAL_SEARCH.with(|cell| *cell.borrow_mut() = Some(s));
@@ -158,6 +162,7 @@ pub fn snapshot_initial_search() {
 /// nothing was ever captured, which is the target-not-wasm case);
 /// callers parse it as a query string themselves via
 /// `utils::url::QueryString::parse`, which handles the leading `?`.
+// SPEC-3.8.14: the snapshot verbatim, empty when none was taken.
 pub fn initial_search() -> String {
     INITIAL_SEARCH
         .with(|cell| cell.borrow().clone())
@@ -172,6 +177,7 @@ pub fn initial_search() -> String {
 /// check, the exchange, `classify_flow_error`) identical on both
 /// targets.
 fn current_search() -> String {
+    // SPEC-3.8.15: desktop capture, then boot snapshot, then live query string.
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(captured) = super::native_flow::captured_query() {
         return captured;
@@ -192,6 +198,7 @@ fn current_search() -> String {
 /// stage-A legacy alias for the platform-admin page. All three are
 /// login screens and must be excluded.
 fn is_auth_plumbing(path: &str) -> bool {
+    // SPEC-3.9.11: login screens and the callback must never be a return target.
     path.is_empty()
         || path == "/"
         || path.starts_with("/login")
@@ -222,6 +229,7 @@ fn sanitize_return_to(path: &str, search: &str) -> String {
 /// routes that must never be a return target, and off-wasm where there is
 /// no window.
 pub fn current_return_to() -> String {
+    // SPEC-3.9.11: empty string when there is no pathname or it is auth plumbing.
     let Some(path) = crate::platform::location::pathname() else {
         return String::new();
     };
@@ -251,6 +259,7 @@ pub enum ReturnTarget {
 /// (which passes `return_to = "/dashboard"`), since the callback is
 /// already a fresh boot.
 pub fn classify_return_to(return_to: &str) -> ReturnTarget {
+    // SPEC-3.9.12: guards against open redirects (`//host`, absolute URLs, schemes).
     let same_origin_path = return_to.starts_with('/') && !return_to.starts_with("//");
     if !same_origin_path || return_to == "/dashboard" || is_auth_plumbing(return_to) {
         ReturnTarget::Dashboard
@@ -271,6 +280,7 @@ pub enum CallbackRecovery {
 
 /// OP `?error=` codes that mean "send the user back to the OP to
 /// re-authenticate" (OIDC Core 3.1.2.6). A restart does exactly that.
+// SPEC-3.9.10: the only token endpoint error codes that restart the login flow.
 const REAUTH_ERROR_CODES: [&str; 4] = [
     "login_required",
     "interaction_required",
@@ -292,6 +302,7 @@ const REAUTH_ERROR_CODES: [&str; 4] = [
 /// (`invalid_grant`, `invalid_client`, `server_error`, …), which a retry would
 /// only loop on.
 pub fn classify_flow_error(e: &FlowError) -> CallbackRecovery {
+    // SPEC-3.9.10: exhaustive on purpose, so a new variant forces a decision.
     match e {
         FlowError::Storage(_) | FlowError::MissingCallbackParam(_) => CallbackRecovery::Restart,
         FlowError::TokenEndpoint { error, .. } if REAUTH_ERROR_CODES.contains(&error.as_str()) => {
@@ -314,6 +325,7 @@ pub fn classify_flow_error(e: &FlowError) -> CallbackRecovery {
 pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowError> {
     let search = current_search();
     let params = crate::utils::url::QueryString::parse(&search);
+    // SPEC-3.9.1: OP error first, SPEC-3.9.2: then code, then state.
     // Surface an OP error response before extracting code/state. An error
     // redirect carries no `code`, so checking code first masks the real
     // error as a generic "missing code".
@@ -334,6 +346,7 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         .get("state")
         .ok_or(FlowError::MissingCallbackParam("state"))?;
 
+    // SPEC-3.9.3: single-use pending flow, CSRF check on state.
     let pending = take_pending().map_err(FlowError::Storage)?;
     if pending.state != state {
         return Err(FlowError::StateMismatch);
@@ -346,6 +359,7 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         .require_client_id()
         .map_err(|e| FlowError::Config(e.to_string()))?;
 
+    // SPEC-3.9.4: token request shape and field order.
     // POST to /oauth2/token (form-encoded).
     let body = form_encode(&[
         ("grant_type", "authorization_code"),
@@ -365,6 +379,7 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         .await
         .map_err(|e| FlowError::Network(e.to_string()))?;
 
+    // SPEC-3.9.5: non-success maps to TokenEndpoint, undecodable success to Network.
     if !resp.ok() {
         // fetch-error-logging-allow: the token endpoint already refused and
         // that refusal is the returned error; an unreadable body only costs
@@ -384,6 +399,7 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         .await
         .map_err(|e| FlowError::Network(format!("token body: {e}")))?;
 
+    // SPEC-3.9.6: a code-grant response without an id_token is a protocol violation.
     // OIDC Core 3.1.3.3: the code-grant response MUST include an
     // id_token when `openid` was in the request scope. We always
     // request `openid`, so a missing field is a protocol violation.
@@ -392,6 +408,7 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         description: "id_token missing from authorization_code response".into(),
     })?;
 
+    // SPEC-3.9.7: nonce binds the id_token to this login attempt; claims are read unverified.
     // OIDC Core 3.1.3.7 step 11: the id_token's `nonce` claim MUST
     // equal the nonce we sent on the authorize request. State already
     // guards the redirect against CSRF; the nonce binds the *id_token*
@@ -407,9 +424,11 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         _ => return Err(FlowError::NonceMismatch),
     }
 
+    // SPEC-3.9.8: a narrowed scope is warned about, not fatal.
     let granted_scope = body.scope.unwrap_or_default();
     warn_on_dropped_scopes(cfg.scopes, &granted_scope);
 
+    // SPEC-3.9.9: expiry is now plus expires_in, floored at 0 seconds.
     let tokens = Tokens {
         access_token: body.access_token,
         id_token,
@@ -437,6 +456,7 @@ fn dropped_scopes<'a>(requested: &'a str, granted: &str) -> Vec<&'a str> {
 }
 
 fn warn_on_dropped_scopes(requested: &str, granted: &str) {
+    // SPEC-3.9.8: the warning text names every dropped scope.
     let dropped = dropped_scopes(requested, granted);
     if !dropped.is_empty() {
         tracing::warn!(
@@ -463,6 +483,7 @@ pub async fn refresh_tokens(
     refresh_token: &str,
     prior_id_token: &str,
 ) -> Result<Tokens, FlowError> {
+    // SPEC-3.10.1: refresh grant request; errors map as in the code exchange.
     let client_id = cfg
         .require_client_id()
         .map_err(|e| FlowError::Config(e.to_string()))?;
@@ -501,6 +522,7 @@ pub async fn refresh_tokens(
         .await
         .map_err(|e| FlowError::Network(format!("token body: {e}")))?;
 
+    // SPEC-3.10.2: prior id_token kept, expiry recomputed, scope defaults to empty.
     Ok(Tokens {
         access_token: body.access_token,
         // The OP omits id_token on a refresh response; carry the prior
@@ -528,6 +550,7 @@ pub async fn issuer_get_authed<T: serde::de::DeserializeOwned>(
     cfg: &OidcConfig,
     path: &str,
 ) -> Result<T, FlowError> {
+    // SPEC-3.10.4: bearer GET with Network errors; no production call sites by design.
     let token = crate::hooks::fetch::api::current_access_token()
         .ok_or_else(|| FlowError::Network("not signed in".into()))?;
     let issuer = cfg.issuer.trim_end_matches('/');
@@ -556,6 +579,7 @@ pub async fn issuer_post_authed<T: serde::de::DeserializeOwned, B: serde::Serial
     path: &str,
     body: &B,
 ) -> Result<T, FlowError> {
+    // SPEC-3.10.4: bearer POST; a non-success body is carried in the Network variant.
     let token = crate::hooks::fetch::api::current_access_token()
         .ok_or_else(|| FlowError::Network("not signed in".into()))?;
     let issuer = cfg.issuer.trim_end_matches('/');
@@ -586,6 +610,7 @@ pub async fn issuer_post_authed<T: serde::de::DeserializeOwned, B: serde::Serial
 /// the refresh-token family server-side before the browser navigates
 /// away.
 pub async fn revoke_refresh_token(cfg: &OidcConfig, refresh_token: &str) -> Result<(), FlowError> {
+    // SPEC-3.10.3: RFC 7009 revoke request; only config and transport errors are returned.
     let client_id = cfg
         .require_client_id()
         .map_err(|e| FlowError::Config(e.to_string()))?;
@@ -636,6 +661,7 @@ impl ErrorBody {
     }
 }
 
+// SPEC-3.10.5: names and values are both encoded, joined with `&`.
 fn form_encode(pairs: &[(&str, &str)]) -> String {
     pairs
         .iter()
@@ -644,6 +670,7 @@ fn form_encode(pairs: &[(&str, &str)]) -> String {
         .join("&")
 }
 
+// SPEC-3.10.5: spaces become `+`.
 fn urlencode(s: &str) -> String {
     // application/x-www-form-urlencoded percent-encoding. Spaces become
     // `+`. MAPPS-504: `encode_uri_component` is now ours (it was

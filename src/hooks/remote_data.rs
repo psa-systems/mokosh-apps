@@ -40,6 +40,7 @@ use dioxus::prelude::*;
 /// `Ready(T::default())`, preserving the previous `unwrap_or_default()`
 /// behavior so those call sites do not regress.
 #[derive(Clone, Debug)]
+// SPEC-4.24.1, SPEC-4.24.11
 pub enum RemoteData<T> {
     /// Request still in flight (resource not yet resolved once).
     Loading,
@@ -52,6 +53,7 @@ pub enum RemoteData<T> {
     Unavailable,
 }
 
+// SPEC-4.24.6
 impl<T> RemoteData<T> {
     /// `true` while the first request is still in flight.
     pub fn is_loading(&self) -> bool {
@@ -108,9 +110,13 @@ pub fn classify_remote<T: Default>(
     reachable: bool,
 ) -> RemoteData<T> {
     match outcome {
+        // SPEC-4.24.2
         None => RemoteData::Loading,
+        // SPEC-4.24.3
         Some(Ok(v)) => RemoteData::Ready(v),
+        // SPEC-4.24.4
         Some(Err(_)) if !reachable => RemoteData::Unavailable,
+        // SPEC-4.24.5
         Some(Err(_)) => RemoteData::Ready(T::default()),
     }
 }
@@ -146,6 +152,7 @@ where
     F: FnMut() -> Fut + 'static,
     Fut: std::future::Future<Output = Result<T, String>> + 'static,
 {
+    // SPEC-4.24.7
     let resource = use_resource(move || {
         let fut = fetcher();
         async move {
@@ -153,12 +160,14 @@ where
             // them as dependencies (same placement the hand-rolled
             // resources used for `active_tenant_generation`). A flip of
             // SERVER_REACHABLE back to `true` re-runs this and refetches.
+            // SPEC-4.24.8
             let _reachable = *crate::hooks::fetch::SERVER_REACHABLE.read();
             let _gen = crate::hooks::fetch::active_tenant_generation();
             fut.await
         }
     });
 
+    // SPEC-4.24.9
     let reachable = *crate::hooks::fetch::SERVER_REACHABLE.read();
     classify_remote(resource.read_unchecked().clone(), reachable)
 }
@@ -173,6 +182,7 @@ where
     F: FnMut() -> Fut + 'static,
     Fut: std::future::Future<Output = Result<T, String>> + 'static,
 {
+    // SPEC-4.24.10
     RemoteData::Ready(T::default())
 }
 

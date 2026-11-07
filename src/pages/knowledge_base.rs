@@ -23,6 +23,7 @@
 //! string-returning `*_authed` API helpers carry the bearer token, and
 //! loading / empty / error states match the contacts pages.
 
+// SPEC-12.7.1: the endpoints this file calls are listed there
 use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
 
@@ -44,6 +45,7 @@ use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// Rows per page for the article list (mirrors contacts `PER_PAGE`).
+// SPEC-12.3.1: list page size
 const PER_PAGE: usize = 25;
 
 /// The id of the body's source field. `MarkdownEditor` renders it as the
@@ -52,6 +54,7 @@ const PER_PAGE: usize = 25;
 const KB_SOURCE_ID: &str = "content";
 
 /// How many recent articles the home page surfaces.
+// SPEC-12.3.1, SPEC-12.1.1: recent-articles cap
 const RECENT_LIMIT: usize = 5;
 
 /// Client-side `maxlength` caps for the article form's text fields, mirroring
@@ -60,6 +63,7 @@ const RECENT_LIMIT: usize = 5;
 /// `length(min = 1, max = 255)` (see [`slugify`]); title and summary share the
 /// 255-char varchar cap; the body is a large TEXT column, capped here only to
 /// stop an absurd paste. The server stays the source of truth.
+// SPEC-12.3.1: the *_MAX caps below mirror server column limits
 const TITLE_MAX: usize = 255;
 const SLUG_MAX: usize = 255;
 const SUMMARY_MAX: usize = 255;
@@ -68,6 +72,7 @@ const BODY_MAX: usize = 100_000;
 /// Per-tag character cap. Tags render as inline chips and feed the tag
 /// taxonomy (search/filter), so a single tag longer than this is almost
 /// certainly garbage (MAPPS-218).
+// SPEC-12.3.1: per-tag cap
 const TAG_MAX: usize = 50;
 
 /// Split a comma-separated tag string into clean tags: strip markup (`<`/`>`)
@@ -79,6 +84,7 @@ const TAG_MAX: usize = 50;
 /// MAPPS-582: `is_control` is true only for `Cc`, so an invisible `Cf`
 /// character used to survive and split one tag into two that render
 /// identically. `clean_strict` removes those before this filter runs.
+// SPEC-12.3.2: tag cleaning
 fn sanitize_tags(raw: &str) -> Vec<String> {
     crate::utils::text::clean_strict(raw)
         .split(',')
@@ -106,6 +112,7 @@ fn sanitize_tags(raw: &str) -> Vec<String> {
 /// MAPPS-582: strip the invisibles first. Every non-alphanumeric collapses to a
 /// hyphen here, so an invisible character in the title would otherwise put a
 /// hyphen in the URL with nothing on screen to account for it.
+// SPEC-12.3.2: slug normalization
 fn slugify(input: &str) -> String {
     let input = crate::utils::text::clean_strict(input);
     let mut out = String::with_capacity(input.len());
@@ -130,6 +137,7 @@ fn slugify(input: &str) -> String {
 /// Decide the slug to apply as the title changes: follow the title
 /// (via `slugify`) until the user has manually edited the slug, after
 /// which leave it alone. Returns None to leave the slug untouched.
+// SPEC-12.3.3: slug follows the title until touched
 fn next_slug(new_title: &str, touched: bool) -> Option<String> {
     if touched {
         None
@@ -145,6 +153,7 @@ fn next_slug(new_title: &str, touched: bool) -> Option<String> {
 /// used to become `0` silently, so a typo reordered the category list and said
 /// nothing (MAPPS-703). Same convention as `settings.rs::parse_sort_order`
 /// (MAPPS-688).
+// SPEC-12.12.1: a bad sort order is reported, never defaulted
 fn parse_sort_order(raw: &str) -> Result<i32, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -164,6 +173,7 @@ fn parse_sort_order(raw: &str) -> Result<i32, String> {
 /// person to mistype. It is logged rather than left silent because if it ever
 /// does happen the substitution is a real loss (an article filed nowhere, a
 /// client that loses access) and the log is the only witness (MAPPS-703).
+// SPEC-12.11.2, SPEC-12.12.2: blank is none; a non-UUID is logged
 fn picked_uuid(raw: &str, field: &str) -> Option<uuid::Uuid> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -185,6 +195,7 @@ fn picked_uuid(raw: &str, field: &str) -> Option<uuid::Uuid> {
 /// for itself: an unfinished form forces the panel open, and only the author's
 /// own click closes it. Deriving both directions is what collapsed the panel
 /// around the focused input on the first character typed.
+// SPEC-12.3.5: forces the details panel open, never closes it
 fn meta_must_be_open(title: &str, slug: &str) -> bool {
     title.trim().is_empty() || slug.trim().is_empty()
 }
@@ -196,6 +207,7 @@ fn meta_must_be_open(title: &str, slug: &str) -> bool {
 /// MAPPS-740: the crumb an article with no category shows.
 const UNCATEGORISED_CRUMB: &str = "Uncategorised";
 
+// SPEC-12.2.2: root-first chain with a cycle guard
 fn resolve_category_path(category_id: Option<uuid::Uuid>, all: &[KbCategory]) -> Vec<KbCategory> {
     use std::collections::HashSet;
     let mut chain = Vec::new();
@@ -228,6 +240,7 @@ struct TreeNode {
 /// Build the category forest (root categories with nested children and
 /// their articles). Articles with no/unknown category go in a separate
 /// "uncategorized" bucket returned as the second element.
+// SPEC-12.2.2, SPEC-12.10.1: ordering and the uncategorized bucket
 fn build_kb_tree(
     categories: &[KbCategory],
     articles: &[KbArticle],
@@ -282,6 +295,7 @@ fn build_kb_tree(
 /// descendants survives while a leaf with no articles disappears. Categories
 /// stay fully visible on the KB home grid, which is where create / edit /
 /// delete live, so nothing becomes unreachable.
+// SPEC-12.10.1: the nav hides categories with no articles
 fn prune_empty_categories(nodes: &[TreeNode]) -> Vec<TreeNode> {
     nodes
         .iter()
@@ -302,6 +316,7 @@ fn prune_empty_categories(nodes: &[TreeNode]) -> Vec<TreeNode> {
 
 /// Title-case the server's lowercase visibility tag for display, and pick
 /// a badge color. Unknown values fall through unchanged / gray.
+// SPEC-12.10.6: visibility label and badge colour
 fn visibility_label(raw: &str) -> (String, BadgeVariant) {
     match raw {
         "public" => ("Public".to_string(), BadgeVariant::Green),
@@ -317,6 +332,7 @@ fn visibility_label(raw: &str) -> (String, BadgeVariant) {
 /// scoped article is distinguishable from a broken one without a second fetch.
 /// [`visibility_label`] stays the shared label source; only the count is added
 /// here.
+// SPEC-12.10.6: scoped-company count on the badge
 fn client_specific_badge_label(visibility: &str, count: usize) -> String {
     let (label, _) = visibility_label(visibility);
     if visibility == "client_specific" {
@@ -333,6 +349,7 @@ fn client_specific_badge_label(visibility: &str, count: usize) -> String {
 /// states that the parent could not be loaded rather than silently dropping
 /// the relationship, since a company version with no header back-reference
 /// looks like an unrelated duplicate of a procedure. Pure, unit-tested.
+// SPEC-12.13.7: company-version header and its fallback
 fn parent_header_label(parent_title: Option<&str>) -> String {
     match parent_title.map(str::trim).filter(|s| !s.is_empty()) {
         Some(title) => format!("Company version of {title}"),
@@ -344,6 +361,7 @@ fn parent_header_label(parent_title: Option<&str>) -> String {
 /// article form, by count. Same rule as the contact form's
 /// `add_company_label`: "add" here means add another company to the scope, and
 /// never create a company record.
+// SPEC-12.11.8: add-control label by count
 fn add_scope_company_label(selected: usize) -> &'static str {
     if selected == 0 {
         "Add a company"
@@ -355,6 +373,7 @@ fn add_scope_company_label(selected: usize) -> &'static str {
 /// MAPPS-515: display label for one scoped company. The resolved name, or the
 /// raw id when the name lookup failed, so a failed lookup is still a visible,
 /// removable row instead of a blank line.
+// SPEC-12.11.11, SPEC-12.13.4: the id stands in for a blank name
 fn company_label(id: &str, name: &str) -> String {
     if name.trim().is_empty() {
         id.to_string()
@@ -367,6 +386,7 @@ fn company_label(id: &str, name: &str) -> String {
 /// server 422s a `client_specific` article with an empty `company_ids`
 /// (`KbService::create_article`), so the form blocks it rather than sending a
 /// request it knows will be rejected.
+// SPEC-12.4.2: mirrors the server 422 for an empty scope
 fn company_scope_error(visibility: &str, companies: &[(String, String)]) -> Option<&'static str> {
     if visibility == "client_specific" && companies.is_empty() {
         Some("Select at least one company for a client-specific article.")
@@ -379,6 +399,7 @@ fn company_scope_error(visibility: &str, companies: &[(String, String)]) -> Opti
 /// selected companies, stated in the user's own values. The server clears the
 /// stored scope for any other visibility, so this note is what keeps that
 /// clear from being silent. Empty when there is nothing to lose.
+// SPEC-12.11.11: say what a non-client-specific save drops
 fn company_scope_clear_note(visibility: &str, companies: &[(String, String)]) -> String {
     if companies.is_empty() || visibility == "client_specific" {
         return String::new();
@@ -397,6 +418,7 @@ fn company_scope_clear_note(visibility: &str, companies: &[(String, String)]) ->
 /// One company row, the subset of the server's `CompanyResponse` the KB
 /// pages read when resolving a `client_specific` article's scope (MAPPS-515).
 #[derive(Clone, Debug, serde::Deserialize)]
+// SPEC-12.2.1: a missing name decodes as empty
 struct CompanyNameRow {
     id: uuid::Uuid,
     #[serde(default)]
@@ -417,6 +439,7 @@ struct CompanyNameRow {
 /// labels the row with the id and says the name is unavailable). Dropping the
 /// id instead would silently revoke that client's access to the article on
 /// the next save.
+// SPEC-12.13.5: one list call; an unresolved id is kept and logged
 async fn resolve_company_names(ids: &[uuid::Uuid]) -> Vec<(String, String)> {
     if ids.is_empty() {
         return Vec::new();
@@ -465,6 +488,7 @@ pub(crate) fn when_label(ts: &Option<DateTime<Utc>>) -> String {
 /// second half is left out when nobody has written the row since it was
 /// made, so an untouched article does not claim an editor. The formatter is
 /// passed in so the page uses the user's preference and a test a fixed one.
+// SPEC-12.13.6: author and editor line
 fn attribution_parts(
     author: Option<&str>,
     author_id: Option<uuid::Uuid>,
@@ -504,6 +528,7 @@ fn attribution_parts(
 /// are accepted, and anything that does not start with
 /// `template_variables` returns `None` so the message routes to the
 /// shared banner instead.
+// SPEC-12.5.3: both server field-path shapes
 fn parse_tplvar_index(field: &str) -> Option<usize> {
     let rest = field.strip_prefix("template_variables")?;
     // `[N]…` -> brackets form.
@@ -519,6 +544,7 @@ fn parse_tplvar_index(field: &str) -> Option<usize> {
     None
 }
 
+// SPEC-12.13.6: Unknown plus an unresolved-reference log
 fn resolve_person_label(surface: &str, name: Option<&str>, id: Option<uuid::Uuid>) -> String {
     match name.filter(|n| !n.trim().is_empty()) {
         Some(n) => n.to_string(),
@@ -537,6 +563,7 @@ fn resolve_person_label(surface: &str, name: Option<&str>, id: Option<uuid::Uuid
 
 /// Knowledge base home page: category grid + recent articles.
 #[component]
+// SPEC-12.1.1: home page layout
 pub fn KBHomePage() -> Element {
     use_page_title("Knowledge Base");
     // MAPPS-939: resolve once for the whole recent-articles list, not once
@@ -561,6 +588,7 @@ pub fn KBHomePage() -> Element {
     let mut delete_error = use_signal(String::new);
 
     let recent_resource = use_resource(move || async move {
+        // SPEC-12.6.1: re-fetch on org switch or token swap
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
         // No `sort`/`sort_dir`: the server `KbService::list_articles`
@@ -569,6 +597,7 @@ pub fn KBHomePage() -> Element {
         let path = format!("/kb/articles?page=1&per_page={RECENT_LIMIT}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
             .await
+            // SPEC-12.14.1: error-level load failure
             .inspect_err(|e| tracing::error!("kb recent article load failed: {e}"))
             .ok()
     });
@@ -577,6 +606,7 @@ pub fn KBHomePage() -> Element {
     // defaults to a 90-day window; we ask for the top 10 to fit the
     // landing-page card.
     let top_driving_resource = use_resource(move || async move {
+        // SPEC-12.6.1: re-fetch on org switch or token swap
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_with_auth::<Vec<TopTicketDrivingArticle>>(
@@ -586,6 +616,7 @@ pub fn KBHomePage() -> Element {
         .await
         // Best-effort: the card is omitted, the same as a window with no
         // ticket-driving article in it.
+        // SPEC-12.14.1: warn-level load failure
         .inspect_err(|e| tracing::warn!("kb top ticket-driving article load failed: {e}"))
         .ok()
     });
@@ -618,7 +649,9 @@ pub fn KBHomePage() -> Element {
     // Writes are blocked while down; `can_mutate` disables the create / edit /
     // delete category controls.
     let reachable = crate::hooks::use_server_reachable();
+    // SPEC-12.4.1: disabled while the server is unreachable
     let can_mutate = crate::hooks::use_can_mutate();
+    // SPEC-12.5.1: the home page shows the unavailable state when down
     if !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Knowledge Base".to_string() }
@@ -628,6 +661,7 @@ pub fn KBHomePage() -> Element {
     // Submitting the home search jumps to the full article list, which
     // owns the live `?q=` filter against the server. The typed term is
     // forwarded via the route's `?q=` query so the list opens pre-filtered.
+    // SPEC-12.1.1: forwards only the trimmed term
     let go_search = move |e: FormEvent| {
         e.prevent_default();
         let q = search.read().trim().to_string();
@@ -804,6 +838,7 @@ pub fn KBHomePage() -> Element {
                     .as_ref()
                     .map(|c| c.name.clone())
                     .unwrap_or_default();
+                // SPEC-12.9.1: articles in a deleted category become uncategorized
                 let mut msg = format!(
                     "Delete the \"{name}\" category? Articles filed under it are not deleted; \
                      they become uncategorized."
@@ -821,9 +856,11 @@ pub fn KBHomePage() -> Element {
                 delete_error.set(String::new());
             },
             onconfirm: move |_| {
+                // SPEC-12.12.3: category delete request
                 let Some(target) = deleting_category.read().clone() else {
                     return;
                 };
+                // SPEC-12.6.3: ignore a second concurrent delete
                 if *delete_busy.read() {
                     return;
                 }
@@ -871,6 +908,7 @@ struct CategoryCardProps {
 }
 
 #[component]
+// SPEC-12.10.2: card body navigates; icon buttons do not
 fn CategoryCard(props: CategoryCardProps) -> Element {
     let navigator = use_navigator();
     let category_id = props.category.id.to_string();
@@ -979,6 +1017,7 @@ fn ArticleItem(props: ArticleItemProps) -> Element {
 /// query so clicking a category card (or breadcrumb) lands on the list
 /// pre-filtered to that category.
 #[component]
+// SPEC-12.1.2: only tag and category re-sync from props
 pub fn KBArticleListPage(
     #[props(default)] initial_q: String,
     #[props(default)] initial_tag: String,
@@ -999,6 +1038,7 @@ pub fn KBArticleListPage(
     // `initial_tag` prop without remounting, so seeding the signal once is
     // not enough. `use_reactive` re-runs the effect whenever the prop
     // changes; `peek` reads the signal without subscribing the effect to it.
+    // SPEC-12.1.2: re-apply the tag prop and reset to page 1
     use_effect(use_reactive!(|initial_tag| {
         if *tag_filter.peek() != initial_tag {
             tag_filter.set(initial_tag.clone());
@@ -1009,6 +1049,7 @@ pub fn KBArticleListPage(
     // Keep the category filter in sync with the `?category=` route query for
     // the same reason: navigating from one category card to another re-renders
     // this component with a new `initial_category` prop without remounting.
+    // SPEC-12.1.2: re-apply the category prop and reset to page 1
     use_effect(use_reactive!(|initial_category| {
         if *category_filter.peek() != initial_category {
             category_filter.set(initial_category.clone());
@@ -1017,6 +1058,7 @@ pub fn KBArticleListPage(
     }));
 
     // Rail collapse state, persisted under the same key as the detail view.
+    // SPEC-12.3.6: rail flag is persisted
     let left_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_left_rail", false));
     let open_overlay = use_signal(|| None::<crate::components::RailSide>);
     use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
@@ -1035,6 +1077,7 @@ pub fn KBArticleListPage(
 
     // Article list feeding the tree rail (broader fetch than the paginated table).
     let tree_articles_resource = use_resource(move || async move {
+        // SPEC-12.6.1: re-fetch on org switch or token swap
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_all_with_auth::<KbArticle>("/kb/articles", &token)
@@ -1058,6 +1101,7 @@ pub fn KBArticleListPage(
     // This is also the tag view's fetch (the `tag_filter` branch below), so
     // debouncing here covers both the KB tag view's `get_all_with_auth` pull
     // of the whole corpus and the plain article search.
+    // SPEC-12.3.4: search debounce
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let articles_resource = use_resource(move || {
         let q = search_debounced.read().trim().to_string();
@@ -1065,6 +1109,7 @@ pub fn KBArticleListPage(
         let tag = tag_filter.read().trim().to_string();
         let current_page = (*page.read()).max(1);
         async move {
+            // SPEC-12.6.1: re-fetch on org switch or token swap
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-357: subscribe to reachability so the article list (this
             // page's primary resource) auto-refetches on reconnect.
@@ -1080,6 +1125,7 @@ pub fn KBArticleListPage(
                     urlencoding_minimal(&category_id)
                 ));
             }
+            // SPEC-12.1.3: tag view reads every page, otherwise one server page
             if tag.is_empty() {
                 let path = format!("/kb/articles?page={current_page}&per_page={PER_PAGE}{filters}");
                 crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
@@ -1127,6 +1173,7 @@ pub fn KBArticleListPage(
     // navigation link.) Kept as a use_resource handle rather than
     // use_remote_resource so the reachable-failure banner is preserved.
     let reachable = crate::hooks::use_server_reachable();
+    // SPEC-12.5.1: unavailable state only for a failed fetch while down
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Articles".to_string() }
@@ -1139,6 +1186,7 @@ pub fn KBArticleListPage(
 
     // With a tag filter active the fetch covers every page, so filter by tag
     // and paginate client-side here.
+    // SPEC-12.1.3: client-side tag filter and paging
     let (page_rows, total, current_page): (Vec<KbArticle>, u64, usize) = if tag_active {
         let matching: Vec<KbArticle> = fetched_rows
             .into_iter()
@@ -1157,6 +1205,7 @@ pub fn KBArticleListPage(
 
     // Heading reflects the active category filter: show the category name when
     // one is selected, otherwise the generic "All Articles".
+    // SPEC-12.10.3: heading follows the selected category
     let heading = if category_text.is_empty() {
         "All Articles".to_string()
     } else {
@@ -1212,6 +1261,7 @@ pub fn KBArticleListPage(
                                 let value = e.value();
                                 category_filter.set(value.clone());
                                 page.set(1);
+                                // SPEC-12.10.3: category change resets the page, pushes the route
                                 // Reflect the chosen category in the URL so the filtered
                                 // view is shareable and survives the back button. Clearing
                                 // to "All Categories" pushes an empty `?category=`.
@@ -1226,6 +1276,7 @@ pub fn KBArticleListPage(
                 }
 
                 if tag_active {
+                    // SPEC-12.10.4: active tag filter row
                     div { class: "mb-4 flex items-center flex-wrap gap-2 text-sm",
                         span { class: "text-muted", "Filtered by tag:" }
                         Badge { variant: BadgeVariant::Blue, "#{tag_text}" }
@@ -1237,6 +1288,7 @@ pub fn KBArticleListPage(
                     }
                 }
 
+                // SPEC-12.1.3: failed fetch banner
                 if fetch_failed {
                     ErrorBanner { class: "mb-3",
                         "Could not load articles. Refresh the page to retry."
@@ -1263,6 +1315,7 @@ pub fn KBArticleListPage(
                         if is_loading {
                             TableLoading { columns: 4, rows: 5 }
                         } else if page_rows.is_empty() {
+                            // SPEC-12.10.4: filtered-to-nothing versus empty list
                             if has_filters {
                                 // Filtered to nothing: no CTA (creating won't help);
                                 // guide the user back to the filters.
@@ -1317,6 +1370,7 @@ pub fn KBArticleListPage(
 /// record should be born); selecting a company navigates to that company's
 /// KB view.
 #[component]
+// SPEC-12.10.5: picker without inline company creation
 fn BrowseByCompanyCard() -> Element {
     let navigator = use_navigator();
     rsx! {
@@ -1352,6 +1406,7 @@ fn BrowseByCompanyCard() -> Element {
 /// name lookup renders an inline error banner naming the shortfall; the
 /// article list still renders.
 #[component]
+// SPEC-12.1.4: per-company article list
 pub fn KBCompanyPage(id: String) -> Element {
     use_page_title("Company Knowledge Base");
     let tz = crate::utils::datetime::user_timezone();
@@ -1368,6 +1423,7 @@ pub fn KBCompanyPage(id: String) -> Element {
     }
     let id_for_name = id.clone();
     let name_resource = use_resource(use_reactive!(|id_for_name| async move {
+        // SPEC-12.6.1: re-fetch on org switch or token swap
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<CompanyNameOnly>(&format!(
@@ -1382,6 +1438,7 @@ pub fn KBCompanyPage(id: String) -> Element {
 
     let id_for_articles = id.clone();
     let articles_resource = use_resource(use_reactive!(|id_for_articles, page| async move {
+        // SPEC-12.6.1: re-fetch on org switch or token swap
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
         let token = crate::hooks::fetch::api::current_access_token()?;
@@ -1404,6 +1461,7 @@ pub fn KBCompanyPage(id: String) -> Element {
     let articles_snap = articles_resource.read_unchecked();
     let is_loading = articles_snap.is_none();
     let fetch_failed = matches!(*articles_snap, Some(None));
+    // SPEC-12.5.1: unavailable state only for a failed fetch while down
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Company Knowledge Base".to_string() }
@@ -1415,6 +1473,7 @@ pub fn KBCompanyPage(id: String) -> Element {
     };
 
     let name_snap = name_resource.read_unchecked();
+    // SPEC-12.1.4, SPEC-12.10.5: a failed or blank name is reported
     let (header_title, name_error) = match &*name_snap {
         Some(Some(c)) if !c.name.trim().is_empty() => (c.name.clone(), None::<&'static str>),
         Some(Some(_)) => ("Company".to_string(), Some("The company has no name set.")),
@@ -1451,6 +1510,7 @@ pub fn KBCompanyPage(id: String) -> Element {
             ErrorBanner { class: "mb-3", "{msg}" }
         }
 
+        // SPEC-12.10.5: failed article fetch banner
         if fetch_failed {
             ErrorBanner { class: "mb-3",
                 "Could not load articles. Refresh the page to retry."
@@ -1476,6 +1536,7 @@ pub fn KBCompanyPage(id: String) -> Element {
                 }
                 if is_loading {
                     TableLoading { columns: 4, rows: 5 }
+                // SPEC-12.10.5: empty company list
                 } else if rows.is_empty() {
                     TableEmpty {
                         columns: 4,
@@ -1588,6 +1649,7 @@ pub struct KBArticleDetailPageProps {
 }
 
 #[component]
+// SPEC-12.1.5: detail page
 pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     let id_for_article = props.id.clone();
     let id_for_versions = props.id.clone();
@@ -1597,18 +1659,23 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // restarts the resource. A plain captured `String` is not reactive, so
     // without this the detail pane keeps showing the previous article even
     // though the URL changed (MAPPS-155).
+    // SPEC-12.6.1: the route id is bound reactively
     let mut article_resource = use_resource(use_reactive!(|id_for_article| async move {
+        // SPEC-12.6.1: re-fetch on org switch or token swap
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // MAPPS-357: subscribe to reachability so the article (this detail
         // page's primary resource) auto-refetches on reconnect.
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id_for_article}"))
             .await
+            // SPEC-12.14.1: error-level load failure
             .inspect_err(|e| tracing::error!("kb article load failed for {id_for_article}: {e}"))
             .ok()
     }));
 
+    // SPEC-12.6.1: the route id is bound reactively
     let mut versions_resource = use_resource(use_reactive!(|id_for_versions| async move {
+        // SPEC-12.6.1: re-fetch on org switch or token swap
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // MAPPS-528: every version, not the first page of them; a history
         // that stops at an arbitrary row reads as the whole history.
@@ -1624,14 +1691,17 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
 
     // MAPPS-739: a contact session reads the same page; the names in the
     // header and the version history are staff surfaces.
+    // SPEC-12.4.3: contact sessions get no staff surfaces
     let is_contact = crate::hooks::capabilities::use_is_contact_session();
 
     // MAPPS-742 / MAPPS-744: the comments, read once here and shared by the
     // stream at the foot and the inline marks in the body. Not fetched on a
     // contact session: the route refuses a contact bearer.
     let id_for_comments = props.id.clone();
+    // SPEC-12.6.1: the route id is bound reactively
     let mut comments_resource =
         use_resource(use_reactive!(|id_for_comments, is_contact| async move {
+            // SPEC-12.6.1: re-fetch on org switch or token swap
             let _gen = crate::hooks::fetch::active_tenant_generation();
             if is_contact {
                 return None;
@@ -1655,6 +1725,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
 
     // Article list feeding the left tree rail.
     let tree_articles_resource = use_resource(move || async move {
+        // SPEC-12.6.1: re-fetch on org switch or token swap
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_all_with_auth::<KbArticle>("/kb/articles", &token)
@@ -1704,6 +1775,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             None => (None, Vec::new()),
         };
 
+    // SPEC-12.13.2: article delete flow
     // MAPPS-309: delete-article state. `confirming_delete` drives the
     // ConfirmDialog; `delete_busy` mirrors the in-flight DELETE so the
     // dialog locks until the request returns. On success we navigate
@@ -1714,11 +1786,13 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     let nav_after_delete = use_navigator();
 
     // Reading-view UI state, persisted per user via the prefs store.
+    // SPEC-12.3.6: rail flag is persisted
     let left_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_left_rail", false));
     let right_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_right_rail", false));
     // MAPPS-740: set on /settings/appearance, read here. The toggle that
     // used to sit in the Actions card between Delete and Open ticket is
     // gone; a display preference is not an action on the article.
+    // SPEC-12.3.6: density is read from the appearance preference
     let comfortable = use_signal(|| crate::utils::prefs::get_bool("kb_density", true));
     let open_overlay = use_signal(|| None::<crate::components::RailSide>);
     use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
@@ -1729,6 +1803,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // view, secondary to the article fetch: a failure leaves `total` unknown
     // and simply hides the rating UI rather than rendering a broken control.
     let user_count = use_resource(move || async move {
+        // SPEC-12.6.1: re-fetch on org switch or token swap
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_with_auth::<Paginated<serde_json::Value>>(
@@ -1738,10 +1813,12 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         .await
         // Best-effort: an unknown count hides the rating UI, which is also
         // what a single-user tenant does.
+        // SPEC-12.14.1: warn-level load failure
         .inspect_err(|e| tracing::warn!("kb user count load failed, hiding the rating: {e}"))
         .ok()
         .map(|resp| resp.meta.total)
     });
+    // SPEC-12.13.11: rating needs at least two users
     let show_rating = matches!(&*user_count.read_unchecked(), Some(Some(total)) if *total >= 2);
 
     // Shared rating counts + my_vote: declared unconditionally (rules-of-hooks),
@@ -1772,6 +1849,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             scope_sent_names.set(a.company_names.clone());
         }
     });
+    // SPEC-12.13.4: server names first, else resolve by list
     let scoped_companies_resource = use_resource(move || {
         let ids = scope_ids();
         let sent = scope_sent_names();
@@ -1824,12 +1902,15 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         let serialized = serde_json::to_string(&picks).unwrap_or_default();
         picks_source_setter.set(serialized);
     });
+    // SPEC-12.3.4: picker debounce
     let picks_debounced = crate::hooks::use_debounced_signal(picks_source, 300);
     let id_for_render = props.id.clone();
     let nav_for_render = use_navigator();
+    // SPEC-12.13.3: render on each debounced pick change
     use_resource(use_reactive!(|id_for_render, picks_debounced| async move {
         #[cfg(feature = "app")]
         {
+            // SPEC-12.6.2: no render request without declared variables
             let declared = tpl_variables.read().clone();
             if declared.is_empty() {
                 return;
@@ -1851,6 +1932,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                     tpl_rendered.set(Some(resp.content));
                 }
                 Err(crate::hooks::fetch::api::ApiError::Status { code: 404, .. }) => {
+                    // SPEC-12.13.3: 404 means deleted
                     // The article was deleted while this reader held it
                     // open; the detail page is about to 404 on its own
                     // resource too. Say so and leave.
@@ -1870,6 +1952,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         let _ = (&id_for_render, &picks_debounced);
     }));
 
+    // SPEC-12.13.11: counts and my_vote come from the vote route
     // Seed my_vote (and refine counts) from GET /kb/articles/{id}/vote once
     // the article id is available. Declared unconditionally for rules-of-hooks.
     let id_for_vote = props.id.clone();
@@ -1904,8 +1987,10 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     let reachable = crate::hooks::use_server_reachable();
     // MAPPS-573: a task-list toggle in the body PUTs the whole article, so the
     // body needs the same reachability gate the other controls read.
+    // SPEC-12.4.1: disabled while the server is unreachable
     let can_mutate = crate::hooks::use_can_mutate();
     let article_fetch_failed = matches!(*article_snapshot, Some(None));
+    // SPEC-12.5.1: unavailable state only for a failed fetch while down
     if article_fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: header_title.clone() }
@@ -1926,6 +2011,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             open: confirming_delete(),
             title: "Delete article".to_string(),
             message: {
+                // SPEC-12.9.1, SPEC-12.13.2: article delete is permanent
                 let mut msg = if title_for_dialog.is_empty() {
                     "Delete this article? This cannot be undone.".to_string()
                 } else {
@@ -1947,6 +2033,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                 }
             },
             onconfirm: move |_| {
+                // SPEC-12.6.3: ignore a second concurrent delete
                 if delete_busy() { return; }
                 delete_busy.set(true);
                 delete_error.set(String::new());
@@ -2003,6 +2090,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                 // MAPPS-739: who and when, by name. Staff only: the contact
                 // projection carries no names, and a customer reading a
                 // published article does not need the editor's.
+                // SPEC-12.13.6: contacts see no names
                 let attribution = if is_contact {
                     let updated_iso = article.updated_at.map(|d| d.to_rfc3339()).unwrap_or_default();
                     rsx! {
@@ -2075,6 +2163,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                     ReadModeButton { left_collapsed, right_collapsed }
                                 }
                             }
+                            // SPEC-12.13.1: Knowledge Base trail above the title
                             // PMS-1339: this page draws its own title rather than
                             // using `PageHeader`, so it never got the trail either.
                             // Above the title, where a breadcrumb belongs, and
@@ -2101,6 +2190,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             // sees it is a variant of a more general one; a
                             // failed lookup names the fallback rather than
                             // hiding the relationship.
+                            // SPEC-12.13.7: link back to the generic parent
                             if let Some(parent_id) = article.parent_article_id {
                                 p { class: "mt-2 text-sm text-muted",
                                     if parent_title.is_some() {
@@ -2119,6 +2209,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                 div { class: "flex items-center gap-2 flex-wrap",
                                     Badge { variant: status_variant, "{status_label}" }
                                     Badge { variant: vis_variant, "{vis_label}" }
+                                    // SPEC-12.13.4: scoped-company badges
                                     // MAPPS-515: who a client-specific article is
                                     // for. An empty scope is only reachable for
                                     // data written before PMS-341 and makes the
@@ -2175,6 +2266,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                                 // write fail silently (MAPPS-357's rule,
                                                 // matching the ticket page).
                                                 interactive: can_mutate,
+                                                // SPEC-12.13.12: task toggle writes the whole body
                                                 on_toggle: move |i: usize| {
                                                     let Some(next) = crate::utils::markdown::toggle_task(&src, i) else {
                                                         return;
@@ -2194,6 +2286,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                                             {
                                                                 Ok(_) => ar.restart(),
                                                                 Err(e) => {
+                                                                    // SPEC-12.5.2: say it failed, then restore the box
                                                                     // The box has already flipped in the
                                                                     // DOM, so a silent failure leaves the
                                                                     // reader believing it saved. Say so,
@@ -2289,6 +2382,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             // history because it is the number the person
                             // about to do the work came here for.
                             MeasuredDurationCard { article_id: props.id.clone() }
+                            // SPEC-12.4.3: staff only; the route refuses a contact bearer
                             // MAPPS-741: which tickets lean on this article.
                             // Staff only: the route refuses a contact bearer.
                             if !is_contact {
@@ -2303,6 +2397,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             // that company versions exist. Hidden on a company
                             // version itself: the server one-level invariant
                             // means a child cannot have children.
+                            // SPEC-12.13.7: only a generic article lists company versions
                             if !is_contact && article.parent_article_id.is_none() {
                                 CompanyVersionsCard {
                                     parent_id: article.id,
@@ -2320,6 +2415,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                 VersionHistoryCard {
                                     article: article.clone(),
                                     versions_resource,
+                                    // SPEC-12.6.2: restart both resources after a restore
                                     on_restored: move |_| {
                                         article_resource.restart();
                                         versions_resource.restart();
@@ -2347,10 +2443,12 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
 /// does), and always states the period it covered, which is rendered here so
 /// the number is never ambiguous.
 #[component]
+// SPEC-12.5.4: failed is not the same as no data
 fn MeasuredDurationCard(article_id: String) -> Element {
     let measured = use_resource(move || {
         let id = article_id.clone();
         async move {
+            // SPEC-12.6.1: re-fetch on org switch or token swap
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _token = crate::hooks::fetch::api::current_access_token()?;
             crate::hooks::fetch::api::get_authed_typed::<ArticleMeasuredDuration>(&format!(
@@ -2359,6 +2457,7 @@ fn MeasuredDurationCard(article_id: String) -> Element {
             .await
             // Best-effort: the card is omitted, the same as an article nobody
             // has timed yet.
+            // SPEC-12.14.1: warn-level load failure
             .inspect_err(|e| tracing::warn!("kb measured duration load failed for {id}: {e}"))
             .ok()
         }
@@ -2387,6 +2486,7 @@ fn MeasuredDurationCard(article_id: String) -> Element {
                             }
                         },
                         Some(avg) => {
+                            // SPEC-12.13.13: populated duration display
                             let sample = m.ticket_count.unwrap_or(0);
                             let total = m.total_minutes.unwrap_or(0);
                             let avg_label = crate::utils::duration::fmt_duration(avg.round() as i64);
@@ -2429,6 +2529,7 @@ pub(crate) const KB_ARTICLE_BODY_ID: &str = "kbArticleBody";
 /// costs nothing to honour. Nothing renders for an article with no
 /// headings: an empty "On this page" would say the article has no shape.
 #[component]
+// SPEC-12.1.9: nothing without headings; click is intercepted
 fn ArticleToc(content: String) -> Element {
     let headings = crate::utils::markdown::headings(&content);
     let mut active = use_signal(|| None::<String>);
@@ -2474,6 +2575,7 @@ fn ArticleToc(content: String) -> Element {
                                         style: "padding-left: {indent}rem",
                                         "aria-current": if is_active { "true" } else { "false" },
                                         onclick: move |e: MouseEvent| {
+                                            // SPEC-12.4.4: keep the jump out of the router
                                             // The router must not see a hash
                                             // navigation; the jump is ours.
                                             e.prevent_default();
@@ -2495,11 +2597,13 @@ fn ArticleToc(content: String) -> Element {
 /// MAPPS-741: how far a heading is indented for its level, in rem, with
 /// the shallowest level in the article flush against the card's padding
 /// so an article that starts at `##` does not open with a gap.
+// SPEC-12.13.14: indent by heading depth
 fn toc_indent_rem(level: u8, min_level: u8) -> f32 {
     0.75 + 0.75 * f32::from(level.saturating_sub(min_level))
 }
 
 /// MAPPS-741: what a linked ticket's relation to the article means.
+// SPEC-12.13.8: relation wording
 fn relation_label(relation: &str) -> &str {
     match relation {
         "source" => "Opened from this article",
@@ -2514,8 +2618,10 @@ fn relation_label(relation: &str) -> &str {
 /// about whether the article is load-bearing, and a closed ticket is
 /// still evidence that it was.
 #[component]
+// SPEC-12.13.8: states and closed-ticket styling
 fn LinkedTicketsCard(article_id: String) -> Element {
     let tickets = use_resource(use_reactive!(|article_id| async move {
+        // SPEC-12.6.1: re-fetch on org switch or token swap
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<KbArticleTicket>(&format!(
             "/kb/articles/{article_id}/tickets"
@@ -2586,6 +2692,7 @@ fn LinkedTicketsCard(article_id: String) -> Element {
 /// Child rows come from the shared `tree_articles_resource` on the detail
 /// page, so this card itself issues no network request.
 #[component]
+// SPEC-12.13.7: children list and create link
 fn CompanyVersionsCard(parent_id: uuid::Uuid, versions: Vec<KbArticle>) -> Element {
     rsx! {
         Card { title: "Company versions",
@@ -2637,6 +2744,7 @@ fn CompanyVersionsCard(parent_id: uuid::Uuid, versions: Vec<KbArticle>) -> Eleme
 }
 
 /// MAPPS-739: what a version row leads with.
+// SPEC-12.13.9: version row wording
 pub(crate) fn change_kind_label(kind: &str, restored_from: Option<i32>) -> String {
     match (kind, restored_from) {
         ("create", _) => "Created".to_string(),
@@ -2658,6 +2766,7 @@ pub(crate) fn person_label(name: Option<&str>) -> String {
     person_label_logged(name, "kb.person")
 }
 
+// SPEC-12.13.9: Unknown plus an unresolved-reference log
 pub(crate) fn person_label_logged(name: Option<&str>, surface: &str) -> String {
     match name.map(str::trim).filter(|n| !n.is_empty()) {
         Some(n) => n.to_string(),
@@ -2747,6 +2856,7 @@ pub(crate) fn LineDiffView(old: String, new: String) -> Element {
 /// restore is reported inside the dialog (the MAPPS-574 rule) instead of
 /// being swallowed as it was before this.
 #[component]
+// SPEC-12.1.10: version list, compare and restore
 fn VersionHistoryCard(
     article: KbArticle,
     versions_resource: Resource<Option<Vec<KbArticleVersion>>>,
@@ -2759,6 +2869,7 @@ fn VersionHistoryCard(
     let mut restore_busy = use_signal(|| false);
     let mut restore_error = use_signal(String::new);
     // MAPPS-357: block version restore while the server is unreachable.
+    // SPEC-12.4.1: disabled while the server is unreachable
     let can_mutate = crate::hooks::use_can_mutate();
 
     let current_version = article.current_version;
@@ -2803,6 +2914,7 @@ fn VersionHistoryCard(
                                         (d.added, d.removed)
                                     });
                                     let title_changed = previous.is_some_and(|p| p.title != version.title);
+                                    // SPEC-12.13.9: version row content
                                     let kind = change_kind_label(&version.change_kind, version.restored_from_version);
                                     let who = person_label_logged(
                                         version.edited_by_name.as_deref(),
@@ -2873,6 +2985,7 @@ fn VersionHistoryCard(
             }
         }
 
+        // SPEC-12.13.10: compare modal
         // MAPPS-739: a version against the live article.
         if let Some(n) = comparing() {
             if let Some(version) = find(n) {
@@ -2897,10 +3010,12 @@ fn VersionHistoryCard(
             }
         }
 
+        // SPEC-12.13.10: restore dialog with diff and optional note
         // MAPPS-739: what the restore will change, before it changes it.
         if let Some(n) = restore_target() {
             if let Some(version) = find(n) {
                 {
+                    // SPEC-12.9.2: a restore records a new version
                     let next = current_version + 1;
                     let id = article_id.clone();
                     let target_content = version.content.clone();
@@ -2934,6 +3049,7 @@ fn VersionHistoryCard(
                                 }
                             },
                             onconfirm: move |_| {
+                                // SPEC-12.6.3: ignore a second concurrent restore
                                 if restore_busy() {
                                     return;
                                 }
@@ -3020,8 +3136,10 @@ enum ArticleFormMode {
 /// prefill". A pre-filled visibility stays editable in the form, so an
 /// author can override.
 #[component]
+// SPEC-12.1.6: create mode with query prefills
 pub fn KBArticleNewPage(parent_article_id: String, visibility: String) -> Element {
     use_page_title("New Article");
+    // SPEC-12.1.6: blank visibility seeds internal
     let seeded_visibility = if visibility.trim().is_empty() {
         "internal".to_string()
     } else {
@@ -3053,6 +3171,7 @@ pub struct KBArticleEditPageProps {
 }
 
 #[component]
+// SPEC-12.1.6: edit mode
 pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
     use_page_title("Edit Article");
     let id_for_resource = props.id.clone();
@@ -3060,6 +3179,7 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
     let article_resource = use_resource(move || {
         let id = id_for_resource.clone();
         async move {
+            // SPEC-12.6.1: re-fetch on org switch or token swap
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-357: subscribe to reachability so the article (this edit
             // page's primary resource) auto-refetches on reconnect.
@@ -3071,10 +3191,12 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
                 // the form mounts with its company rows already seeded (its
                 // signals seed once, from `initial`).
                 Ok(article) => {
+                    // SPEC-12.1.6: scope names resolved in the same pass
                     let companies = resolve_company_names(&article.company_ids).await;
                     Some((article, companies))
                 }
                 Err(err) => {
+                    // SPEC-12.14.1: warn-level load failure
                     tracing::warn!("edit article load failed for {id}: {err}");
                     None
                 }
@@ -3091,6 +3213,7 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
     // "Uncategorized"; ArticleForm disables its own submit via `can_mutate`.
     let reachable = crate::hooks::use_server_reachable();
     let edit_fetch_failed = matches!(*snap, Some(None));
+    // SPEC-12.5.1: unavailable state only for a failed fetch while down
     if edit_fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Edit Article".to_string() }
@@ -3148,6 +3271,7 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
                 }
             },
             Some(Some((article, companies))) => {
+                // SPEC-12.11.10: prefill from the loaded article
                 let initial = ArticleFormValues {
                     title: article.title.clone(),
                     slug: article.slug.clone(),
@@ -3308,6 +3432,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         ArticleFormMode::Create => None,
     };
     let inline_comments = use_resource(use_reactive!(|edit_id_for_comments| async move {
+        // SPEC-12.6.1: re-fetch on org switch or token swap
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let id = edit_id_for_comments?;
         crate::hooks::fetch::api::get_authed::<Vec<crate::modules::kb::KbComment>>(&format!(
@@ -3321,6 +3446,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let mut orphan_warning = use_signal(Vec::<String>::new);
     let saved_content = initial.content.clone();
 
+    // SPEC-12.11.6: preview highlights, edit only
     // MAPPS-745: the preview shows the inline highlights. The editor owns
     // the preview pane and re-renders it on every keystroke, which drops the
     // marks, so a loop re-places them: when the body or an anchor changed,
@@ -3408,6 +3534,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // blank-reads-as-default cases (visibility, status) handled so opening a
     // fresh form and leaving is not "unsaved changes".
     let initial_for_dirty = initial.clone();
+    // SPEC-12.11.4: dirty state
     let dirty = use_memo(move || {
         if is_submitting() {
             return false;
@@ -3429,6 +3556,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // The browser-level half: a tab close or reload still prompts. It does NOT
     // cover Cancel, because `beforeunload` never fires on an in-app route
     // change, which is why Cancel gets its own dialog below.
+    // SPEC-12.11.4: browser-level unsaved guard
     crate::hooks::use_unsaved_guard(dirty.into());
 
     let navigator = use_navigator();
@@ -3444,6 +3572,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         ArticleFormMode::Create => Route::KBHome {},
     };
     // MAPPS-357: block create / update while the server is unreachable.
+    // SPEC-12.4.1: disabled while the server is unreachable
     let can_mutate = crate::hooks::use_can_mutate();
 
     // MAPPS-587: take a file from the author's machine and put it in the body.
@@ -3460,6 +3589,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // means the preview shows a `blob:` URL that dies on reload and markdown
     // that has to be rewritten underneath the author. This way the URL in the
     // body is the real, permanent one from the moment it is inserted.
+    // SPEC-12.11.3: image upload, creating a draft when needed
     let mut upload_image = move |(file_name, mime, bytes): (String, String, Vec<u8>)| {
         upload_error.set(String::new());
         // Checked here as a courtesy so the author is not told after sending
@@ -3609,6 +3739,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let handle_submit = use_callback(move |ack: bool| {
         error.set(String::new());
 
+        // SPEC-12.5.3: one pass over title, body and scope
         // PMS-518: validate both required fields through the shared FormGuard so
         // a missing Title no longer masks a missing Body; each surfaces in its own
         // inline slot and the first invalid field is focused.
@@ -3638,6 +3769,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         // corrupt. Block rather than send the set without it: a dropped id
         // silently revokes that client's access to the article.
         let mut company_ids: Vec<uuid::Uuid> = Vec::new();
+        // SPEC-12.4.2: block rather than drop an unparsable scoped id
         let mut unparsable: Vec<String> = Vec::new();
         for (id, _) in companies.read().iter() {
             match id.parse::<uuid::Uuid>() {
@@ -3660,6 +3792,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
             return;
         }
 
+        // SPEC-12.11.5: first submit stops on an orphaning edit
         // MAPPS-745: say what this save will orphan before it does. Not a
         // block: orphaning is allowed, the point is that it is visible.
         if !ack {
@@ -3678,6 +3811,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
 
         is_submitting.set(true);
 
+        // SPEC-12.11.1: submit payload shaping
         // Slug: normalize through `slugify` so the stored value is always
         // URL-safe (lowercase, hyphen-separated, no spaces/`<>`/punctuation),
         // whether it was author-supplied or derived from the title when blank.
@@ -3708,6 +3842,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         let change_note_val = change_note.read().trim().to_string();
         let change_note_opt = (!change_note_val.is_empty()).then_some(change_note_val);
 
+        // SPEC-12.11.7: row cleaning on submit
         // Template variables: zip the row vector with the allowed_values
         // raw strings, split commas into chips (trimmed, empties
         // dropped), drop entirely-empty rows (no name AND no label AND
@@ -3756,6 +3891,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-12.11.2: update when an id exists, create otherwise
                 // MAPPS-587: keyed on `article_id()`, not on the mode. A new
                 // article whose first image upload created it already has a row,
                 // and POSTing again would leave a second, image-less copy behind.
@@ -3825,6 +3961,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             ..
                         } = err
                         {
+                            // SPEC-12.5.3: route 422 field errors to rows and banner
                             let mut row_errors = template_var_errors.read().clone();
                             if row_errors.len() < row_count {
                                 row_errors.resize(row_count, String::new());
@@ -3864,6 +4001,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let company_rows: Vec<(String, String)> = companies.read().clone();
     let visibility_now = visibility.read().clone();
     let show_company_block = visibility_now == "client_specific";
+    // SPEC-12.11.11: note what saving drops
     let scope_clear_note = company_scope_clear_note(&visibility_now, &company_rows);
     let unresolved_names = company_rows
         .iter()
@@ -3872,6 +4010,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // A name lookup that failed is reported, not hidden. The ids stay in the
     // list and still save, so the scope cannot silently shrink because a name
     // was missing.
+    // SPEC-12.11.11: report names that did not resolve
     let unresolved_note = if unresolved_names == 0 {
         String::new()
     } else {
@@ -4039,6 +4178,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
 
                     // MAPPS-515: the company scope. Only a `client_specific`
                     // article has one, and the server requires it to be non-empty.
+                    // SPEC-12.11.8: scope block only for client-specific
                     if show_company_block {
                         fieldset { class: "space-y-2",
                             legend { class: "block text-sm font-medium text-content", "Companies" }
@@ -4084,6 +4224,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                     // here, beside the control that fixes it.
                                     error: company_error.read().clone(),
                                     onselect: move |(id, name): (String, String)| {
+                                        // SPEC-12.11.8: refuse a duplicate company
                                         if companies.read().iter().any(|(existing, _)| existing == &id) {
                                             company_add_note
                                                 .set(format!("{name} is already scoped to this article."));
@@ -4256,6 +4397,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                 variant: ButtonVariant::Secondary,
                                 size: ButtonSize::Small,
                                 onclick: move |_| {
+                                    // SPEC-12.11.7: add an empty row
                                     template_vars.write().push(KbTemplateVariable::default());
                                     template_var_allowed_raw.write().push(String::new());
                                     template_var_errors.write().push(String::new());
@@ -4391,6 +4533,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         let to = cancel_route.clone();
                         move |_| {
                             confirming_cancel.set(false);
+                            // SPEC-12.5.5, SPEC-12.9.3: delete the auto-created draft; a failure warns
                             // MAPPS-587: clean up the row the upload created.
                             // Its attachments go with it (ON DELETE CASCADE).
                             //
@@ -4435,6 +4578,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     oncancel: move |_| confirming_cancel.set(false),
                 }
 
+                // SPEC-12.11.5: orphan dialog
                 // MAPPS-745: what this save orphans, before it does. Not
                 // destructive: the comments stay in the stream, labelled and
                 // quoting what they were attached to; the dialog exists so the
@@ -4467,6 +4611,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     }
                 }
 
+                // SPEC-12.11.9: change note, edit mode only
                 // MAPPS-739: why. Only on an edit: the creation snapshot has
                 // no "why" beyond existing, and the server keeps a note only
                 // on the version a save creates.
@@ -4487,6 +4632,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         onclick: {
                             let to = cancel_route.clone();
                             move |_| {
+                                // SPEC-12.11.4: cancel confirms when dirty or auto-created
                                 // MAPPS-587: `auto_created()` as well as
                                 // `dirty()`. An upload creates a real article,
                                 // and an author who then edited their way back
@@ -4597,6 +4743,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
 
     // Parent dropdown: "None" plus every other category. The category being
     // edited is excluded so it cannot be made its own parent.
+    // SPEC-12.12.2: parent list excludes the category being edited
     let mut parent_options = vec![SelectOption::new("", "None (top-level)")];
     for c in props.categories.iter() {
         if Some(c.id) == edit_id {
@@ -4618,6 +4765,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
     };
     let submit_label = if is_edit { "Save Changes" } else { "Create" };
     // MAPPS-357: block create / update while the server is unreachable.
+    // SPEC-12.4.1: disabled while the server is unreachable
     let can_mutate = crate::hooks::use_can_mutate();
 
     let on_saved = props.on_saved;
@@ -4631,6 +4779,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
         let name_val = name.read().trim().to_string();
         name_error.set(guard.field("name", &name_val, "Name", &[Rule::Required]));
 
+        // SPEC-12.12.1: sort order checked alongside Name
         // MAPPS-703: evaluated here rather than at the point of use, so a sort
         // order that will not parse is reported on its own field alongside a
         // missing Name instead of quietly becoming 0.
@@ -4652,6 +4801,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
 
         is_submitting.set(true);
 
+        // SPEC-12.12.2: category save payload
         // Slug normalized through `slugify`, derived from the name when blank.
         let slug_raw = slug.read().trim().to_string();
         let slug_source = if slug_raw.is_empty() {
@@ -4839,6 +4989,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
 /// for the article that has none, so "KB > title" says it is uncategorised
 /// rather than looking like a flat KB.
 #[component]
+// SPEC-12.13.1: ancestors, or an Uncategorised crumb
 fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
     rsx! {
         nav { class: "flex items-center flex-wrap gap-1 text-sm text-muted",
@@ -4862,6 +5013,7 @@ fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
 }
 
 #[component]
+// SPEC-12.10.1: pruned tree plus uncategorized list
 fn KbTreeNav(categories: Vec<KbCategory>, articles: Vec<KbArticle>, current_id: String) -> Element {
     let (roots, uncategorized) = build_kb_tree(&categories, &articles);
     // MAPPS-423: the nav lists what you can navigate to. An empty category is
@@ -4937,6 +5089,7 @@ fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
 /// Rendered in the right rail (inside an "Actions" card) and again inside the
 /// header overflow menu, so the same set is reachable when the rail is not.
 #[component]
+// SPEC-12.1.7: three controls in fixed order
 fn ArticleActions(
     article_id: String,
     article_title: String,
@@ -4947,6 +5100,7 @@ fn ArticleActions(
     let mut confirming_delete = confirming_delete;
     let mut delete_error = delete_error;
     // MAPPS-357: block delete while the server is unreachable.
+    // SPEC-12.4.1: disabled while the server is unreachable
     let can_mutate = crate::hooks::use_can_mutate();
     // PMS-482: "Open ticket about this article" carries the article id + title
     // + URL on the query string; the ticket-new form pre-fills its title /
@@ -4999,6 +5153,7 @@ fn ArticleActions(
 /// rail that normally carries them is not on screen: always while the rail is
 /// collapsed (read mode), and below the `sm` breakpoint regardless.
 #[component]
+// SPEC-12.1.7: same controls in the header overflow menu
 fn ArticleActionsMenu(
     article_id: String,
     article_title: String,
@@ -5052,6 +5207,7 @@ fn ArticleActionsMenu(
 }
 
 #[component]
+// SPEC-12.1.8: vote buttons
 fn RatingBar(
     article_id: String,
     counts: Signal<(i32, i32)>,
@@ -5061,6 +5217,7 @@ fn RatingBar(
     let mut my_vote = my_vote;
     let mut busy = use_signal(|| false);
     // MAPPS-357: block voting while the server is unreachable.
+    // SPEC-12.4.1: disabled while the server is unreachable
     let can_mutate = crate::hooks::use_can_mutate();
     let (h, n) = counts();
     let active_vote = my_vote();
@@ -5088,6 +5245,7 @@ fn RatingBar(
                 disabled: busy() || !can_mutate,
                 title: (!can_mutate).then(|| "Can't vote while the server is unreachable".to_string()),
                 onclick: move |_| {
+                    // SPEC-12.6.3: ignore a second concurrent vote
                     if busy() { return; }
                     busy.set(true);
                     let id = id_h.clone();
@@ -5119,6 +5277,7 @@ fn RatingBar(
                 disabled: busy() || !can_mutate,
                 title: (!can_mutate).then(|| "Can't vote while the server is unreachable".to_string()),
                 onclick: move |_| {
+                    // SPEC-12.6.3: ignore a second concurrent vote
                     if busy() { return; }
                     busy.set(true);
                     let id = id_n.clone();

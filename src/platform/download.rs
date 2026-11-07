@@ -12,6 +12,7 @@
 
 /// Save `bytes` as `filename`.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.35.1, SPEC-3.35.2
 pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>, String> {
     use wasm_bindgen::JsCast;
 
@@ -55,6 +56,7 @@ pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<S
 /// a browser does it, so re-running an export never destroys the
 /// previous one.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.35.3: Some(path) so the caller can tell the user where the file went.
 pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>, String> {
     save_bytes_into(resolved_download_dir()?, bytes, filename).await
 }
@@ -73,6 +75,7 @@ pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<S
 /// PC-94; a unit test should not have been reaching for a real user directory
 /// either way.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.35.3
 fn resolved_download_dir() -> Result<std::path::PathBuf, String> {
     dirs::download_dir()
         .or_else(dirs::document_dir)
@@ -87,6 +90,7 @@ fn resolved_download_dir() -> Result<std::path::PathBuf, String> {
 /// through `sanitize_filename` (MAPPS-1046) before any `join`, and
 /// `unique_path` then picks a non-colliding name inside the same directory.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.35.4
 async fn save_bytes_into(
     dir: std::path::PathBuf,
     bytes: &[u8],
@@ -114,6 +118,7 @@ async fn save_bytes_into(
 /// Keep only the final path component of `filename`, discarding any `..`
 /// or absolute-path prefix, so it is always safe to `dir.join` directly.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.35.5: keeps a server-sent name from escaping the target directory.
 fn sanitize_filename(filename: &str) -> String {
     std::path::Path::new(filename)
         .file_name()
@@ -134,6 +139,7 @@ pub struct PreviewTab;
 /// the browser blocked the tab (or none opened); the caller falls back to
 /// downloading rather than leaving the click with no visible result.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.35.7: opened before the fetch so the pop-up blocker ties it to the click.
 pub fn open_preview_tab() -> Result<PreviewTab, String> {
     let window = web_sys::window().ok_or_else(|| "no window available".to_string())?;
     let tab = window
@@ -146,6 +152,7 @@ pub fn open_preview_tab() -> Result<PreviewTab, String> {
 /// The desktop build opens the system PDF viewer once the bytes are in,
 /// instead of pre-opening a tab, so this always succeeds.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.35.7
 pub fn open_preview_tab() -> Result<PreviewTab, String> {
     Ok(PreviewTab)
 }
@@ -155,6 +162,7 @@ impl PreviewTab {
     /// Close a tab [`open_preview_tab`] opened but that will never be
     /// filled: the fetch behind it failed, so leaving it open would leave
     /// the user with a blank tab and no indication it will never populate.
+    // SPEC-3.35.8
     pub fn close(self) {
         let _ = self.0.close();
     }
@@ -164,12 +172,14 @@ impl PreviewTab {
 impl PreviewTab {
     /// The desktop build never pre-opens anything, so there is nothing to
     /// close.
+    // SPEC-3.35.8
     pub fn close(self) {}
 }
 
 /// Show `bytes` as a PDF: in the tab [`open_preview_tab`] opened on the
 /// browser, or in the system's PDF viewer on the desktop.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.35.9
 pub async fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
     use wasm_bindgen::{closure::Closure, JsCast};
 
@@ -201,6 +211,7 @@ pub async fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), Stri
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.35.10
 pub async fn show_bytes_in_tab(_tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -222,6 +233,7 @@ pub async fn show_bytes_in_tab(_tab: PreviewTab, bytes: &[u8]) -> Result<(), Str
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.35.5, SPEC-3.35.6: re-sanitizes so it never escapes `dir` even when called directly.
 fn unique_path(dir: &std::path::Path, filename: &str) -> std::path::PathBuf {
     let filename = sanitize_filename(filename);
     let candidate = dir.join(&filename);

@@ -87,6 +87,7 @@ enum Terminal {
 /// copy. Pick which one from the server-provided message. The retired message
 /// is spelled by `src/modules/forms/request_links.rs` and starts with "This
 /// form has been retired".
+// SPEC-9.44.3
 fn gone_terminal(message: &str) -> Terminal {
     if message.contains("form has been retired") {
         Terminal::Retired
@@ -108,16 +109,19 @@ async fn load_form(
     #[cfg(feature = "app")]
     {
         use crate::hooks::fetch::api::ApiError;
+        // SPEC-9.44.1: unauthenticated getter, the token is the credential
         match crate::hooks::fetch::api::get_typed::<PublicForm>(&format!(
             "/public/request-forms/{tok}"
         ))
         .await
         {
+            // SPEC-9.44.3
             Ok(f) => form.set(Some(f)),
             Err(ApiError::Status {
                 code: 410, message, ..
             }) => terminal.set(Some(gone_terminal(&message))),
             Err(ApiError::Status { code: 400, .. }) => terminal.set(Some(Terminal::Unusable)),
+            // SPEC-9.44.8, SPEC-9.44.9
             // Anything else (network, 5xx, 429) is not terminal: the link may
             // well work on a retry, so the visitor is told to try again
             // rather than that their link is dead.
@@ -148,7 +152,7 @@ pub fn RequestFormPage(token: String) -> Element {
     let mut form_error = use_signal(String::new);
     let submitting = use_signal(|| false);
 
-    // Load the form behind the link.
+    // Load the form behind the link. SPEC-9.44.2
     use_effect(move || {
         let tok = token.read().clone();
         spawn(load_form(form, loading, terminal, tok));
@@ -160,6 +164,7 @@ pub fn RequestFormPage(token: String) -> Element {
         let mut submitting = submitting;
         let mut terminal = terminal;
         move |_| {
+            // SPEC-9.46.1
             if submitting() {
                 return;
             }
@@ -173,6 +178,7 @@ pub fn RequestFormPage(token: String) -> Element {
             // short-circuit, or one missing field masks another. Whitespace is
             // not an answer, matching the server, which trims before deciding
             // whether a field was answered at all.
+            // SPEC-9.46.2
             let mut errs: HashMap<String, String> = HashMap::new();
             for f in &def.fields {
                 let answered = current
@@ -201,6 +207,7 @@ pub fn RequestFormPage(token: String) -> Element {
                 #[cfg(feature = "app")]
                 {
                     use crate::hooks::fetch::api::ApiError;
+                    // SPEC-9.46.5
                     let body = SubmitBody { payload };
                     match crate::hooks::fetch::api::post_typed::<Receipt, _>(
                         &format!("/public/request-forms/{tok}"),
@@ -208,6 +215,7 @@ pub fn RequestFormPage(token: String) -> Element {
                     )
                     .await
                     {
+                        // SPEC-9.46.6
                         Ok(r) => terminal.set(Some(Terminal::Submitted(
                             r.ticket_number,
                             r.submissions_remaining,
@@ -216,6 +224,7 @@ pub fn RequestFormPage(token: String) -> Element {
                         // option set, date-not-in-past) come back here and are
                         // routed to their inputs, so the client fixes the field
                         // rather than reading a banner.
+                        // SPEC-9.46.9
                         Err(e @ ApiError::Status { code: 422, .. }) => {
                             let mut routed = HashMap::new();
                             let mut unrouted = Vec::new();
@@ -238,6 +247,7 @@ pub fn RequestFormPage(token: String) -> Element {
                         Err(ApiError::Status { code: 400, .. }) => {
                             terminal.set(Some(Terminal::Unusable))
                         }
+                        // SPEC-9.46.10, SPEC-9.46.11
                         Err(e) => form_error.set(e.user_message()),
                     }
                 }
@@ -251,6 +261,7 @@ pub fn RequestFormPage(token: String) -> Element {
     };
 
     rsx! {
+        // SPEC-9.44.1, SPEC-9.44.7
         AuthLayout {
             max_w: "sm:max-w-xl",
             match terminal() {
@@ -265,6 +276,7 @@ pub fn RequestFormPage(token: String) -> Element {
                         // MAPPS-934: the link covers more people, so the page
                         // says so and offers the next one rather than leaving
                         // the client to wonder whether to use the link again.
+                        // SPEC-9.46.7
                         if remaining > 0 {
                             p { class: "mt-4 text-sm text-content",
                                 if remaining == 1 {
@@ -276,6 +288,7 @@ pub fn RequestFormPage(token: String) -> Element {
                             div { class: "mt-3",
                                 Button {
                                     onclick: move |_| {
+                                        // SPEC-9.46.8
                                         // Same link, empty form: the next
                                         // person starts from a clean page.
                                         answers.write().clear();
@@ -302,6 +315,7 @@ pub fn RequestFormPage(token: String) -> Element {
                         }
                     }
                 },
+                // SPEC-9.44.4
                 Some(Terminal::AlreadySubmitted) => rsx! {
                     div { class: "text-center", role: "status", aria_live: "polite",
                         h1 { class: "text-2xl font-semibold text-content", "Already submitted" }
@@ -310,6 +324,7 @@ pub fn RequestFormPage(token: String) -> Element {
                         }
                     }
                 },
+                // SPEC-9.44.5
                 Some(Terminal::Retired) => rsx! {
                     div { class: "text-center", role: "status", aria_live: "polite",
                         h1 { class: "text-2xl font-semibold text-content", "Form retired" }
@@ -318,6 +333,7 @@ pub fn RequestFormPage(token: String) -> Element {
                         }
                     }
                 },
+                // SPEC-9.44.6
                 Some(Terminal::Unusable) => rsx! {
                     div { class: "text-center", role: "status", aria_live: "polite",
                         h1 { class: "text-2xl font-semibold text-content", "Link expired" }
@@ -326,10 +342,12 @@ pub fn RequestFormPage(token: String) -> Element {
                         }
                     }
                 },
+                // SPEC-9.44.2
                 None if loading() => rsx! {
                     p { class: "text-center text-sm text-content", "Loading your form…" }
                 },
                 None => match form() {
+                    // SPEC-9.44.8
                     None => rsx! {
                         div { class: "text-center",
                             h1 { class: "text-2xl font-semibold text-content", "Something went wrong" }
@@ -368,6 +386,7 @@ pub fn RequestFormPage(token: String) -> Element {
 /// into it and a `required_if` rule lights up the same way it will for the
 /// client.
 #[component]
+// SPEC-9.45.1
 pub(crate) fn RequestFormBody(
     def: PublicForm,
     answers: Signal<HashMap<String, String>>,
@@ -381,6 +400,7 @@ pub(crate) fn RequestFormBody(
         // MAPPS-429: the MSP's logo, above their name. A client opening a link
         // from an email recognises a logo before they read anything, and this
         // page asks them for personal details.
+        // SPEC-9.45.2
         if let Some(logo) = def.logo_url.clone().filter(|l| !l.trim().is_empty()) {
             div { class: "mb-4",
                 img {
@@ -392,6 +412,7 @@ pub(crate) fn RequestFormBody(
         }
 
         div { class: "mb-6",
+            // SPEC-9.45.3
             // MAPPS-934: which person this is, on a link covering several.
             if def.people > 1 {
                 p { class: "text-sm font-medium text-muted",
@@ -404,6 +425,7 @@ pub(crate) fn RequestFormBody(
             }
         }
 
+        // SPEC-9.45.4
         if !form_error.is_empty() {
             div {
                 class: "mb-4 rounded-md border border-red-300 px-3 py-2 text-sm text-red-600 dark:border-red-600 dark:text-red-400",
@@ -430,6 +452,7 @@ pub(crate) fn RequestFormBody(
                 }
             }
 
+            // SPEC-9.45.9
             // MAPPS-445: the spinner is the busy signal, so the label stays
             // put. A swapped label on a greyed-out button reads as a dead
             // control on the slow upload it is meant to explain.
@@ -443,6 +466,7 @@ pub(crate) fn RequestFormBody(
             }
         }
 
+        // SPEC-9.45.10
         // PMS-748: who is asking. Someone typing a phone number into a page
         // they reached from an email is entitled to see whose page it is
         // before they send it, without going back to the message. Inside the
@@ -481,8 +505,10 @@ fn FieldInput(
     // A field the server will require because of a cross-field rule is marked
     // required as soon as its condition holds, so the asterisk appears the
     // moment the answer it depends on is given rather than only on submit.
+    // SPEC-9.45.7
     let required = field.is_required || required_by_rule(&rules, &name, &answers.read());
 
+    // SPEC-9.45.8
     let mut set = {
         let name = name.clone();
         move |v: String| {
@@ -491,6 +517,7 @@ fn FieldInput(
         }
     };
 
+    // SPEC-9.45.5, SPEC-9.45.6
     match field.field_type {
         FieldType::Textarea => rsx! {
             Textarea {
@@ -579,6 +606,7 @@ fn FieldInput(
 /// answers. Mirrors `required_by_rule` in mokosh-server's
 /// `src/modules/forms/validation.rs`; the server remains the authority, this
 /// only spares the client a round trip.
+// SPEC-9.46.3
 fn required_by_rule(rules: &[PublicRule], field: &str, answers: &HashMap<String, String>) -> bool {
     rules.iter().any(|r| match r {
         PublicRule::RequiredIf {
@@ -599,6 +627,7 @@ fn required_by_rule(rules: &[PublicRule], field: &str, answers: &HashMap<String,
 /// Convert the string-keyed answers into the JSON the server type-checks:
 /// booleans as real booleans, everything else as trimmed strings, and blanks
 /// omitted entirely rather than sent as `""`.
+// SPEC-9.46.4
 fn build_payload(def: &PublicForm, answers: &HashMap<String, String>) -> serde_json::Value {
     let mut out = serde_json::Map::new();
     for f in &def.fields {

@@ -42,6 +42,7 @@ pub struct EmailPreviewEntry {
     pub body_html: Option<String>,
     pub unresolved: Vec<String>,
 }
+// SPEC-5.22.17: the struct above is the deserialized response shape.
 
 /// What the modal shows for one entry's body.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,6 +57,7 @@ pub enum PreviewBody {
 
 /// Pick the body rendering for one entry. Text wins whenever there is any;
 /// HTML is only ever offered as source, never as markup.
+// SPEC-5.22.13: text wins, HTML only as source, else empty.
 pub fn preview_body(body_text: &str, body_html: Option<&str>) -> PreviewBody {
     if !body_text.trim().is_empty() {
         return PreviewBody::Text(body_text.to_string());
@@ -124,12 +126,15 @@ pub fn EmailPreview(
     let is_builtin = builtin.is_some();
 
     let on_open = move |_| {
+        // SPEC-5.22.3: reset state on every open.
         open.set(true);
         error.set(String::new());
         entries.set(Vec::new());
+        // SPEC-5.22.9: a built-in message makes no request.
         if is_builtin {
             return;
         }
+        // SPEC-5.22.4: context is evaluated once per open.
         let request =
             serde_json::json!({ "event_type": event_type.clone(), "context": context.call(()) });
         loading.set(true);
@@ -145,6 +150,7 @@ pub fn EmailPreview(
                     // Visible in the modal AND in the log: the operator is
                     // about to send, so "the preview is unavailable" is a
                     // thing they have to be told, not swallowed.
+                    // SPEC-5.22.6
                     tracing::warn!("email preview request failed: {e:?}");
                     error.set(e.user_message());
                 }
@@ -155,6 +161,7 @@ pub fn EmailPreview(
 
     let list = entries.read().clone();
 
+    // SPEC-5.22.1, SPEC-5.22.2: trigger and modal; nothing here touches the send control.
     rsx! {
         Button {
             variant: ButtonVariant::Link,
@@ -176,6 +183,7 @@ pub fn EmailPreview(
             },
 
             div { class: "space-y-4",
+                // SPEC-5.22.9: built-in branch first, then loading, error, empty, entries.
                 if let Some(mail) = builtin.as_ref() {
                     if !mail.notes.is_empty() {
                         crate::components::StatusBanner {
@@ -202,10 +210,13 @@ pub fn EmailPreview(
                         },
                     }
                 } else if loading() {
+                    // SPEC-5.22.5
                     p { class: "text-sm text-subtle", "Rendering what the recipient will see." }
                 } else if !error().is_empty() {
+                    // SPEC-5.22.6
                     ErrorBanner { "Could not render the preview: {error()}" }
                 } else if list.is_empty() {
+                    // SPEC-5.22.7
                     div {
                         p { class: "text-sm text-content",
                             "No email rule matches this action, so nothing will be sent."
@@ -215,6 +226,7 @@ pub fn EmailPreview(
                         }
                     }
                 } else {
+                    // SPEC-5.22.8: one view per entry, in response order.
                     for (i , entry) in list.iter().enumerate() {
                         EmailPreviewEntryView { key: "{i}", entry: entry.clone() }
                     }
@@ -228,11 +240,13 @@ pub fn EmailPreview(
 /// still to be filled in.
 #[component]
 fn EmailPreviewEntryView(entry: EmailPreviewEntry) -> Element {
+    // SPEC-5.22.10, SPEC-5.22.11: recipients line.
     let recipients = if entry.recipients.is_empty() {
         "No recipient resolves for this rule.".to_string()
     } else {
         entry.recipients.join(", ")
     };
+    // SPEC-5.22.12: blank subject reads "No subject".
     let subject = entry
         .subject
         .clone()
@@ -261,7 +275,7 @@ fn EmailPreviewEntryView(entry: EmailPreviewEntry) -> Element {
                 match body {
                     // Text nodes are escaped by Dioxus, which is the whole
                     // point for the HTML branch: the template's source is
-                    // read, never executed.
+                    // read, never executed. SPEC-5.22.14, SPEC-5.22.15.
                     PreviewBody::Text(text) => rsx! {
                         pre { class: "mt-1 whitespace-pre-wrap break-words text-sm text-content", "{text}" }
                     },
@@ -279,6 +293,7 @@ fn EmailPreviewEntryView(entry: EmailPreviewEntry) -> Element {
 
             if !entry.unresolved.is_empty() {
                 ul { class: "text-xs text-subtle space-y-1",
+                    // SPEC-5.22.16
                     for key in entry.unresolved.iter() {
                         li { key: "{key}", "filled in when sent: {key}" }
                     }

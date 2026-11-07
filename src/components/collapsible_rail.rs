@@ -28,6 +28,7 @@ pub fn CollapsibleRail(
     let mut collapsed = collapsed;
     let mut open_overlay = open_overlay;
     let is_overlay_open = open_overlay() == Some(side);
+    // SPEC-5.14.2
     let chevron_collapse = match side {
         RailSide::Left => "\u{2039}",  // single left-pointing angle quote
         RailSide::Right => "\u{203A}", // single right-pointing angle quote
@@ -48,6 +49,7 @@ pub fn CollapsibleRail(
         // existing aria-label. The chevron glyph alone was not announced
         // (it is a punctuation char, not a recognised symbol), so the
         // previous toggles told a screen-reader user nothing about state.
+        // SPEC-5.14.1
         div { class: "hidden lg:block relative",
             if collapsed() {
                 button {
@@ -80,7 +82,9 @@ pub fn CollapsibleRail(
                 class: "px-2 py-1 text-muted",
                 title: "Open panel",
                 aria_label: "Open panel",
+                // SPEC-5.14.3
                 aria_expanded: if is_overlay_open { "true" } else { "false" },
+                // SPEC-5.14.4: the shared signal makes opening one rail replace the other.
                 onclick: move |_| {
                     if is_overlay_open {
                         open_overlay.set(None);
@@ -90,6 +94,7 @@ pub fn CollapsibleRail(
                 },
                 "{chevron_expand}"
             }
+            // SPEC-5.14.5
             if is_overlay_open {
                 div {
                     class: "fixed inset-0 z-40 bg-black/30",

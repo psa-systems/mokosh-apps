@@ -32,6 +32,7 @@ struct RefreshBody {
 
 #[cfg(feature = "web")]
 #[derive(Deserialize)]
+// SPEC-4.9.2: tokens required, contact snapshot optional.
 struct RefreshResp {
     access_token: String,
     refresh_token: String,
@@ -45,6 +46,7 @@ struct RefreshResp {
 
 #[cfg(feature = "web")]
 #[derive(Deserialize, Default)]
+// SPEC-4.9.2: every field defaults when the server omits it.
 struct RefreshContactSnippet {
     #[serde(default)]
     caps: Vec<String>,
@@ -90,6 +92,7 @@ struct RefreshContactSnippet {
 /// visitor through repeated bootstrap attempts.
 #[cfg(feature = "web")]
 pub async fn refresh_contact_session() -> Result<(), String> {
+    // SPEC-4.9.1: empty token is sent on a cold load; the cookie carries the session.
     let body = RefreshBody {
         refresh_token: crate::hooks::fetch::api::current_contact_refresh_token()
             .unwrap_or_default(),
@@ -98,6 +101,7 @@ pub async fn refresh_contact_session() -> Result<(), String> {
         .await
     {
         Ok(resp) => {
+            // SPEC-4.9.3: tokens and caps are stored; caps are empty without a snippet.
             let caps = resp
                 .contact
                 .as_ref()
@@ -109,6 +113,7 @@ pub async fn refresh_contact_session() -> Result<(), String> {
             // from the refresh response, so a long-lived tab that has
             // never re-logged-in also picks up the Portal ID as soon as
             // PMS-928 starts returning it.
+            // SPEC-4.9.4: slug only when non-empty; other scope fields as received.
             if let Some(snippet) = resp.contact.as_ref() {
                 if !snippet.portal_slug.is_empty() {
                     crate::hooks::fetch::api::set_contact_last_slug(&snippet.portal_slug);
@@ -134,6 +139,7 @@ pub async fn refresh_contact_session() -> Result<(), String> {
             Ok(())
         }
         Err(e) => {
+            // SPEC-4.9.5: any failure drops session, caps and brand.
             crate::hooks::fetch::api::clear_contact_session();
             crate::hooks::capabilities::clear_contact_capabilities();
             // MAPPS-621: brand goes with the session; falling back to
@@ -149,6 +155,7 @@ pub async fn refresh_contact_session() -> Result<(), String> {
 /// feature still compile.
 #[cfg(not(feature = "web"))]
 pub async fn refresh_contact_session() -> Result<(), String> {
+    // SPEC-4.9.6: fixed error text outside web builds.
     Err("contact refresh unavailable outside web".to_string())
 }
 
@@ -177,6 +184,7 @@ pub fn use_contact_auto_refresh() {
     use_future(move || async move {
         #[cfg(target_arch = "wasm32")]
         loop {
+            // SPEC-4.9.7: wait first, then refresh only while a contact session is held.
             gloo_timers::future::TimeoutFuture::new(120_000).await;
             if crate::hooks::fetch::api::has_contact_session() {
                 let _ = refresh_contact_session().await;
@@ -207,6 +215,7 @@ fn install_focus_refresh_listener() {
     thread_local! {
         static FOCUS_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
+    // SPEC-4.9.8: at most one focus listener per page lifetime.
     if FOCUS_INSTALLED.with(|f| f.get()) {
         return;
     }
@@ -223,6 +232,7 @@ fn install_focus_refresh_listener() {
         });
     }) as Box<dyn FnMut(web_sys::Event)>);
     if let Err(err) = win.add_event_listener_with_callback("focus", cb.as_ref().unchecked_ref()) {
+        // SPEC-4.9.8: install failure is logged.
         tracing::warn!(error = ?err, "use_contact_auto_refresh: focus listener install failed");
         return;
     }

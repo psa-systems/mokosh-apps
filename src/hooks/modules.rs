@@ -21,6 +21,7 @@ use serde::Deserialize;
 /// The server's `gated_module!` table, copied: name, label, and what
 /// turning it off does, in the words the Modules page shows. Kept in step
 /// by hand; `GATED_MODULES_ARE_THE_SERVERS` pins the names.
+// SPEC-4.22.1, SPEC-4.22.2, SPEC-4.22.3
 pub const GATED_MODULES: &[GatedModule] = &[
     GatedModule { name: "billing", label: "Billing", off_means: "Invoices, payments, credit notes, statements and products answer not found." },
     GatedModule { name: "projects", label: "Projects", off_means: "Projects and tasks answer not found." },
@@ -44,6 +45,7 @@ pub struct GatedModule {
 /// One row of `GET /settings/modules` (`ModuleConfigResponse`), the fields
 /// the client reads.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-4.22.4
 pub struct ModuleConfig {
     #[serde(default)]
     pub module_name: String,
@@ -62,6 +64,7 @@ pub static MODULE_FLAGS: GlobalSignal<Option<ModuleFlags>> = Signal::global(|| N
 static LOADING_FOR: GlobalSignal<Option<u64>> = Signal::global(|| None);
 
 /// Is `name` on in `rows`? A missing row is off.
+// SPEC-4.22.5
 pub fn enabled_in(rows: &[ModuleConfig], name: &str) -> bool {
     rows.iter().any(|r| r.module_name == name && r.is_enabled)
 }
@@ -75,9 +78,11 @@ fn flags_after_load(
     generation: u64,
     result: Result<Vec<ModuleConfig>, crate::hooks::fetch::api::ApiError>,
 ) -> Option<ModuleFlags> {
+    // SPEC-4.22.7: an Err yields None so the caller leaves the cache untouched.
     let rows = result.ok()?;
     let enabled = rows
         .into_iter()
+        // SPEC-4.22.6
         .filter(|r| r.is_enabled)
         .map(|r| r.module_name)
         .collect();
@@ -90,18 +95,22 @@ fn flags_after_load(
 /// Read the flags for the active tenant into [`MODULE_FLAGS`]. Called by
 /// the hook when the cache is missing or from another tenant, and by the
 /// Modules page after a toggle.
+// SPEC-4.22.15: the Modules page calls this after a toggle.
 pub fn refresh_module_flags() {
     #[cfg(feature = "app")]
     {
         let generation = crate::hooks::fetch::active_tenant_generation();
+        // SPEC-4.22.9
         if *LOADING_FOR.read() == Some(generation) {
             return;
         }
         *LOADING_FOR.write() = Some(generation);
         spawn(async move {
+            // SPEC-4.22.4
             let result =
                 crate::hooks::fetch::api::get_all_authed_typed::<ModuleConfig>("/settings/modules")
                     .await;
+            // SPEC-4.22.8
             if let Err(e) = &result {
                 tracing::error!("module flags load failed, not caching every module as off: {e}");
                 crate::hooks::push_toast(
@@ -125,6 +134,7 @@ pub fn refresh_module_flags() {
 /// slot came next in the component's hook list, and the next render that
 /// reached that slot with a different hook panicked the app. Reading
 /// [`MODULE_FLAGS`] here still subscribes the closure.
+// SPEC-4.22.10, SPEC-4.22.14
 pub fn module_flags() -> Option<ModuleFlags> {
     #[cfg(feature = "app")]
     {
@@ -143,12 +153,14 @@ pub fn use_module_flags() -> Option<ModuleFlags> {
     #[cfg(feature = "app")]
     {
         let generation = crate::hooks::fetch::active_tenant_generation();
+        // SPEC-4.22.11
         let staff = crate::hooks::fetch::api::current_access_token().is_some()
             && !crate::hooks::fetch::api::has_contact_session();
         use_effect(use_reactive!(|generation, staff| {
             if !staff {
                 return;
             }
+            // SPEC-4.22.12
             let stale = MODULE_FLAGS
                 .read()
                 .as_ref()
@@ -167,6 +179,7 @@ pub fn use_module_flags() -> Option<ModuleFlags> {
 
 /// Is the gated module `name` on for the active tenant? Off until known,
 /// off for a contact session, off for a module with no row.
+// SPEC-4.22.13
 pub fn use_module_enabled(name: &str) -> bool {
     use_module_flags().is_some_and(|f| f.enabled.iter().any(|m| m == name))
 }

@@ -49,6 +49,7 @@ pub struct CardProps {
 /// Card container component
 #[component]
 pub fn Card(props: CardProps) -> Element {
+    // SPEC-5.10.7
     let base_class = if props.danger {
         "bg-surface rounded-lg shadow border border-red-300 dark:border-red-800"
     } else {
@@ -56,12 +57,14 @@ pub fn Card(props: CardProps) -> Element {
     };
     let class = format!("{} {}", base_class, props.class);
 
+    // SPEC-5.10.1
     let has_header = !props.title.is_empty();
     // The header always self-pads (px-6 pt-6 pb-4) so its title and
     // actions stay aligned with table cells below regardless of whether
     // the card body keeps its own padding. The body section is padded
     // separately, so a full-bleed table (padding: false) sits flush
     // edge-to-edge while the header stays neatly inset.
+    // SPEC-5.10.6
     let body_class = if props.padding {
         if has_header {
             "px-6 pb-6 pt-4"
@@ -114,6 +117,7 @@ pub fn CardHeader(props: CardHeaderProps) -> Element {
     // `items-start` rather than `items-center` once a subtitle is in play: with
     // two lines of heading, centring the actions against the pair leaves them
     // floating beside the description instead of level with the title.
+    // SPEC-5.10.5
     let align = if props.subtitle.is_empty() {
         "items-center"
     } else {
@@ -127,6 +131,7 @@ pub fn CardHeader(props: CardHeaderProps) -> Element {
     } else {
         ("border-line", "text-content")
     };
+    // SPEC-5.10.2
     let class = format!(
         "flex {align} flex-wrap justify-between gap-x-4 gap-y-2 px-6 pt-6 pb-4 border-b {rule} {}",
         props.class
@@ -138,6 +143,7 @@ pub fn CardHeader(props: CardHeaderProps) -> Element {
                 h3 { class: "text-lg font-medium {title_color}",
                     "{props.title}"
                 }
+                // SPEC-5.10.3, SPEC-5.10.4
                 if !props.subtitle.is_empty() {
                     p {
                         class: "mt-1 text-sm text-muted",
@@ -169,6 +175,7 @@ pub enum StatCardTone {
 }
 
 impl StatCardTone {
+    // SPEC-5.10.10
     fn icon_container_class(self) -> &'static str {
         match self {
             StatCardTone::Accent => "bg-accent-100 dark:bg-accent-900 text-accent",
@@ -210,6 +217,7 @@ pub struct StatCardProps {
 
 #[component]
 pub fn StatCard(props: StatCardProps) -> Element {
+    // SPEC-5.10.9
     let change_class = if props.change_positive {
         "text-green-600 dark:text-green-400"
     } else {
@@ -222,6 +230,7 @@ pub fn StatCard(props: StatCardProps) -> Element {
     );
     let icon_container = props.icon_tone.icon_container_class();
 
+    // SPEC-5.10.8
     rsx! {
         div { class: "{class}",
             div { class: "flex items-center",

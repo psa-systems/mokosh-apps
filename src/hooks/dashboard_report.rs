@@ -24,6 +24,7 @@ use crate::hooks::remote_data::{classify_remote, RemoteData};
 
 /// The subset of `GET /reports/dashboard` the two widgets read.
 #[derive(Clone, Debug, Default, serde::Deserialize)]
+// SPEC-4.14.4: every field defaults when absent.
 pub struct DashboardReportLite {
     #[serde(default)]
     pub open_by_priority: Vec<ReportBucket>,
@@ -34,6 +35,7 @@ pub struct DashboardReportLite {
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
+// SPEC-4.14.4: label and count default when absent.
 pub struct ReportBucket {
     #[serde(default)]
     pub label: String,
@@ -54,10 +56,12 @@ pub fn provide_dashboard_report() {
     use_context_provider::<DashboardReportWanted>(|| wanted);
 
     let resource = use_resource(move || async move {
+        // SPEC-4.14.5: both signals are read before the first await.
         // Read both signals BEFORE the first await, matching
         // `use_remote_resource`, so a flip of either re-runs this.
         let _reachable = *crate::hooks::fetch::SERVER_REACHABLE.read();
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // SPEC-4.14.6: no fetch until a consumer asks.
         if !*wanted.read() {
             return None;
         }
@@ -81,6 +85,7 @@ pub fn provide_dashboard_report() {
 /// the one underlying fetch; every consumer, including a later mount of the
 /// same or a different widget, reads the same cached outcome.
 pub fn use_dashboard_report() -> RemoteData<DashboardReportLite> {
+    // SPEC-4.14.7: asking sets wanted; the outcome is classified, not flattened to empty.
     let mut wanted = use_context::<DashboardReportWanted>();
     if !*wanted.read() {
         wanted.set(true);
@@ -101,6 +106,7 @@ mod tests {
     const WIDGETS_SRC: &str = include_str!("../pages/dashboards_view.rs");
 
     #[test]
+    // SPEC-4.14.8: the endpoint literal lives in the shared hook only.
     fn the_endpoint_lives_only_in_the_shared_hook() {
         let hook_code = &HOOK_SRC[..HOOK_SRC.find("mod tests").expect("tests are in this file")];
         assert_eq!(hook_code.matches("\"/reports/dashboard\"").count(), 1);
@@ -108,6 +114,7 @@ mod tests {
     }
 
     #[test]
+    // SPEC-4.14.8: widgets read through use_dashboard_report.
     fn both_widgets_call_the_shared_accessor() {
         assert_eq!(
             WIDGETS_SRC

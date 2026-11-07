@@ -15,12 +15,14 @@
 
 /// Path component of the current URL, e.g. `/onboarding/profile`.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.37.1
 pub fn pathname() -> Option<String> {
     web_sys::window()?.location().pathname().ok()
 }
 
 /// Query string of the current URL, leading `?` included.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.37.1
 pub fn search() -> Option<String> {
     web_sys::window()?.location().search().ok()
 }
@@ -40,6 +42,7 @@ pub fn search() -> Option<String> {
 /// prefill that quietly does not arrive looks exactly like a link that
 /// forgot to carry it.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.37.4, SPEC-3.37.5
 pub fn current_query() -> Option<String> {
     let Some(win) = web_sys::window() else {
         tracing::warn!("no window to read the current query string from");
@@ -55,6 +58,7 @@ pub fn current_query() -> Option<String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.4, SPEC-3.37.5
 pub fn current_query() -> Option<String> {
     router_route_string("current query string")
         .as_deref()
@@ -69,6 +73,7 @@ pub fn current_query() -> Option<String> {
 /// a prefill or a guard bypass that quietly does not resolve looks the
 /// same as an unset one.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.3, SPEC-3.37.5: warns instead of answering None silently.
 fn router_route_string(what: &str) -> Option<String> {
     // `try_router` consumes a context, and consuming one outside a
     // Dioxus runtime panics rather than answering `None`. The host test
@@ -88,6 +93,7 @@ fn router_route_string(what: &str) -> Option<String> {
 ///
 /// `None` for a route with no query or an empty one, so a caller cannot
 /// tell "no query" from "a query of nothing" and act on the difference.
+// SPEC-3.37.4
 fn query_of(route: &str) -> Option<String> {
     // A fragment ends the query, and the router's route strings can
     // carry one (`Route::from_str` splits `#` off before `?`).
@@ -107,6 +113,7 @@ fn query_of(route: &str) -> Option<String> {
 /// `router_route_string` decides when to answer `None` instead, and does
 /// so with a `warn`.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.3
 fn path_of(route: &str) -> String {
     let route = route.split('#').next().unwrap_or(route);
     route
@@ -120,6 +127,7 @@ fn path_of(route: &str) -> String {
 /// credential that arrived in the URL does not linger in browser history
 /// (MAPPS-336, MAPPS-919). Browser-only: a desktop window has no URL bar.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.37.6: replaces the entry so a credential in the URL does not linger in history.
 pub fn replace_state(url: &str) {
     if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
         let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(url));
@@ -127,11 +135,13 @@ pub fn replace_state(url: &str) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.6
 pub fn replace_state(_url: &str) {}
 
 /// Drop the query string from the address bar, keeping the path. For the
 /// routes whose token arrives as `?token=`.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.37.6
 pub fn strip_url_query() {
     if let Some(path) = pathname() {
         replace_state(&path);
@@ -139,16 +149,19 @@ pub fn strip_url_query() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.6
 pub fn strip_url_query() {}
 
 /// Scheme + host + port, e.g. `https://msp.example.com`.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.37.1
 pub fn origin() -> Option<String> {
     web_sys::window()?.location().origin().ok()
 }
 
 /// Host + port, e.g. `msp.example.com`.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.37.1
 pub fn host() -> Option<String> {
     web_sys::window()?.location().host().ok()
 }
@@ -156,6 +169,7 @@ pub fn host() -> Option<String> {
 /// Replace the current document with `url`, leaving no history entry.
 /// Used for the hand-off to the OP's logout endpoint.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.37.7
 pub fn replace(url: &str) {
     let Some(win) = web_sys::window() else {
         tracing::error!("no window to navigate to {url}");
@@ -175,6 +189,7 @@ pub fn replace(url: &str) {
 /// that cannot be navigated it has to fail rather than silently open
 /// something that can never return.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.37.9: fails on a host that cannot be navigated and returned to.
 pub fn set_href(url: &str) -> Result<(), String> {
     web_sys::window()
         .ok_or_else(|| "no window".to_string())?
@@ -187,6 +202,7 @@ pub fn set_href(url: &str) -> Result<(), String> {
 /// reloading, so the caller can offer something else instead of leaving
 /// a dead control on screen.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.37.11
 pub fn reload() -> bool {
     let Some(win) = web_sys::window() else {
         return false;
@@ -211,6 +227,7 @@ pub fn reload() -> bool {
 /// because a guard bypass (`on_onboarding_route`) that quietly does not
 /// resolve is the exact defect this closes.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.3
 pub fn pathname() -> Option<String> {
     router_route_string("current pathname")
         .as_deref()
@@ -218,16 +235,19 @@ pub fn pathname() -> Option<String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.2
 pub fn search() -> Option<String> {
     None
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.2
 pub fn origin() -> Option<String> {
     None
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.2
 pub fn host() -> Option<String> {
     None
 }
@@ -245,6 +265,7 @@ pub fn host() -> Option<String> {
 /// itself (MAPPS-815); a caller that needs that has to clear it before
 /// calling this.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.8
 pub fn replace(url: &str) {
     if let Err(e) = open::that_detached(url) {
         tracing::error!("could not open {url} in a browser: {e}");
@@ -256,6 +277,7 @@ pub fn replace(url: &str) {
 /// redirect, is an RFC 8252 loopback exchange here instead (MAPPS-505,
 /// `crate::platform::loopback`).
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.9
 pub fn set_href(_url: &str) -> Result<(), String> {
     Err("this build cannot follow a browser redirect".to_string())
 }
@@ -272,6 +294,7 @@ pub fn set_href(_url: &str) -> Result<(), String> {
 /// Native only. The browser build hands the OP the document itself, via
 /// [`set_href`].
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.10: the error is returned because the sign-in flow would otherwise wait forever.
 pub fn open_external(url: &str) -> Result<(), String> {
     open::that_detached(url).map_err(|e| format!("could not open {url} in a browser: {e}"))
 }
@@ -279,6 +302,7 @@ pub fn open_external(url: &str) -> Result<(), String> {
 /// There is no document to reload; the caller substitutes its own
 /// recovery (see the error screen in `lib.rs`, which navigates home).
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.37.11
 pub fn reload() -> bool {
     false
 }

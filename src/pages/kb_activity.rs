@@ -54,6 +54,7 @@ impl Tab {
         }
     }
 
+    // SPEC-12.1.11: an unrecognized stored key falls back to All activity.
     pub fn from_key(key: &str) -> Tab {
         match key {
             "comments" => Tab::Comments,
@@ -64,6 +65,7 @@ impl Tab {
 
     /// The tab an arrow key lands on: left goes back, right goes on, both
     /// wrapping, the WAI-ARIA tabs pattern.
+    // SPEC-12.1.11: arrow-key tab stepping wraps at both ends.
     pub fn step(self, forward: bool) -> Tab {
         let idx = Tab::ALL.iter().position(|t| *t == self).unwrap_or(0);
         let n = Tab::ALL.len();
@@ -77,6 +79,7 @@ impl Tab {
 }
 
 /// One thing in the stream.
+// SPEC-12.2.3: client-only union of fetched DTOs; no server schema of its own.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entry {
     /// A root comment with its replies.
@@ -100,6 +103,7 @@ impl Entry {
 /// Merge the two halves by time, oldest first, and apply the tab and the
 /// resolved filter. Versions come newest first from the card's fetch, so the
 /// previous version of each is the one after it in that order.
+// SPEC-12.1.12, SPEC-12.6.4: merge by time, tab and resolved filters, predecessor pairing.
 pub fn build_stream(
     comments: &[KbComment],
     versions_newest_first: &[KbArticleVersion],
@@ -127,6 +131,7 @@ pub fn build_stream(
     out
 }
 
+// SPEC-12.3.6: the only persisted state in this scope.
 const TAB_PREF: &str = "kb_activity_tab";
 const RESOLVED_PREF: &str = "kb_activity_show_resolved";
 
@@ -144,6 +149,7 @@ pub fn ArticleActivity(
 ) -> Element {
     let article_id = article.id.to_string();
     let mut comments_resource = comments_resource;
+    // SPEC-12.1.11, SPEC-12.20.1: restore the persisted tab and resolved preference.
     let mut tab = use_signal(|| Tab::from_key(&crate::utils::prefs::get_str(TAB_PREF, "all")));
     let mut show_resolved = use_signal(|| crate::utils::prefs::get_bool(RESOLVED_PREF, false));
     let mut settings_open = use_signal(|| false);
@@ -171,10 +177,12 @@ pub fn ArticleActivity(
     let comments_snap = comments_resource.read_unchecked().clone();
     let versions_snap = versions_resource.read_unchecked().clone();
     let comments: Vec<KbComment> = comments_snap.clone().flatten().unwrap_or_default();
+    // SPEC-12.20.12: not enforced here, see the tracked defect (a failed versions fetch shows an empty History tab, not "Could not load the history.").
     let versions: Vec<KbArticleVersion> = versions_snap.clone().flatten().unwrap_or_default();
     let stream = build_stream(&comments, &versions, tab(), show_resolved());
     let comments_failed = matches!(comments_snap, Some(None));
     let loading = comments_snap.is_none();
+    // SPEC-12.6.4: mutations restart the shared comments resource.
     let on_changed = EventHandler::new(move |_: ()| comments_resource.restart());
     let people = crate::hooks::mention_people(&mention_directory);
 
@@ -188,6 +196,7 @@ pub fn ArticleActivity(
                         role: "tablist",
                         "aria-label": "Activity",
                         class: "inline-flex gap-1 rounded-lg bg-surface-2 p-1",
+                        // SPEC-12.1.11: ArrowLeft/ArrowRight walk the tablist and move focus.
                         onkeydown: move |e: KeyboardEvent| {
                             let next = match e.key() {
                                 Key::Named(NamedKey::ArrowRight) => Some(tab().step(true)),
@@ -218,6 +227,7 @@ pub fn ArticleActivity(
                                         "aria-selected": if selected { "true" } else { "false" },
                                         tabindex: if selected { "0" } else { "-1" },
                                         class: "rounded-md px-3 py-1 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-accent {cls}",
+                                        // SPEC-12.20.1: clicking a tab selects and persists it.
                                         onclick: move |_| {
                                             tab.set(t);
                                             crate::utils::prefs::set_str(TAB_PREF, t.key());
@@ -246,6 +256,7 @@ pub fn ArticleActivity(
                                         checked: show_resolved(),
                                         onchange: move |e: FormEvent| {
                                             let on = e.checked();
+                                            // SPEC-12.20.1: persist the resolved-thread visibility.
                                             show_resolved.set(on);
                                             crate::utils::prefs::set_bool(RESOLVED_PREF, on);
                                         },
@@ -260,10 +271,12 @@ pub fn ArticleActivity(
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
                 }
+                // SPEC-12.5.6: a failed comments fetch is shown beside the history half.
                 if comments_failed {
                     ErrorBanner { "Could not load the comments." }
                 }
 
+                // SPEC-12.20.2: loading and per-tab empty states.
                 if loading && stream.is_empty() {
                     p { class: "text-sm text-subtle", "Loading…" }
                 } else if stream.is_empty() {
@@ -306,6 +319,7 @@ pub fn ArticleActivity(
 
                 // The composer: the same editor as everywhere, the reader's own
                 // disc beside it, Ctrl/Cmd+Enter to send.
+                // SPEC-12.20.3: no root composer on the History tab.
                 if tab() != Tab::History {
                     div { class: "mt-6 pt-4 border-t border-line",
                         CommentComposer {
@@ -318,6 +332,7 @@ pub fn ArticleActivity(
                             people: people.clone(),
                             placeholder: "Write a comment, @mention people".to_string(),
                             submit_label: "Comment".to_string(),
+                            // SPEC-12.20.11: a successful root post clears the page banner.
                             on_posted: move |_| {
                                 error.set(String::new());
                                 on_changed.call(());
@@ -334,6 +349,7 @@ pub fn ArticleActivity(
 /// A version as a stream line: what kind of change, by whom, when, the note,
 /// and a disclosure to the diff against the version before.
 #[component]
+// SPEC-12.20.4: version line, note, timestamp fallback and diff toggle.
 fn VersionEvent(version: KbArticleVersion, previous: Option<KbArticleVersion>) -> Element {
     let mut open = use_signal(|| false);
     let kind = change_kind_label(&version.change_kind, version.restored_from_version);
@@ -411,6 +427,7 @@ fn CommentThread(
     // MAPPS-1063: a resolved comment with no `resolved_by_name` is logged
     // through the shared helper (no id on the wire) so the "someone"
     // substitution is findable.
+    // SPEC-12.20.5: logged "someone" placeholder for a missing resolver name.
     let (resolver, resolver_title) = match root
         .resolved_by_name
         .clone()
@@ -424,6 +441,7 @@ fn CommentThread(
             (shown, Some(title))
         }
     };
+    // SPEC-12.6.3, SPEC-12.4.1: busy and can_mutate guard on resolve/unresolve.
     let set_resolved = use_callback(move |resolve: bool| {
         if busy() || !can_mutate {
             return;
@@ -432,6 +450,7 @@ fn CommentThread(
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-12.7.2: resolve/unresolve endpoints; failure text per SPEC-12.5.6.
                 let verb = if resolve { "resolve" } else { "unresolve" };
                 let path = format!("/kb/comments/{root_id}/{verb}");
                 match crate::hooks::fetch::api::post_authed_typed::<KbComment, _>(
@@ -454,6 +473,7 @@ fn CommentThread(
 
     // MAPPS-744: an anchored root quotes its passage; an orphan says the
     // passage is gone and keeps the quote, which is what it has left.
+    // SPEC-12.20.6: anchored root quotes its passage.
     let quote = root
         .anchor
         .as_ref()
@@ -484,6 +504,7 @@ fn CommentThread(
                     }
                 }
             }
+            // SPEC-12.1.13: a resolved root folds to one line with Unresolve.
             if resolved {
                 // Folded: one line, and the way back.
                 div { class: "flex items-center justify-between gap-3 text-sm",
@@ -601,6 +622,7 @@ fn CommentBody(
     let mut delete_error = use_signal(String::new);
     let id = comment.id;
     let mine = me == Some(comment.author_id);
+    // SPEC-12.4.5, SPEC-12.20.7: Edit/Delete only for author or admin.
     let may_change = !comment.deleted && (mine || is_admin);
     let when = fmt_relative(comment.created_at);
     let absolute = crate::utils::datetime::fmt_datetime_pref(comment.created_at);
@@ -615,6 +637,7 @@ fn CommentBody(
             destructive: true,
             loading: busy(),
             error: delete_error(),
+            // SPEC-12.20.8, SPEC-12.6.3: delete fires only from the confirm, guarded by busy.
             onconfirm: move |_| {
                 if busy() {
                     return;
@@ -624,6 +647,7 @@ fn CommentBody(
                     #[cfg(feature = "app")]
                     {
                         match crate::hooks::fetch::api::delete_authed(&format!("/kb/comments/{id}")).await {
+                            // SPEC-12.9.4: the row stays; the body becomes "Comment deleted" after refresh.
                             Ok(()) => {
                                 confirming_delete.set(false);
                                 on_changed.call(());
@@ -652,6 +676,7 @@ fn CommentBody(
                     }
                 }
                 if comment.deleted {
+                    // SPEC-12.9.4, SPEC-12.1.13: deleted placeholder keeps the thread position.
                     p { class: "mt-1 text-sm italic text-subtle", "Comment deleted" }
                 } else if editing() {
                     div { class: "mt-2 space-y-2",
@@ -676,6 +701,7 @@ fn CommentBody(
                                     spawn(async move {
                                         #[cfg(feature = "app")]
                                         {
+                                            // SPEC-12.20.9: PUT the trimmed draft; failure keeps the editor open.
                                             let path = format!("/kb/comments/{id}");
                                             match crate::hooks::fetch::api::put_authed::<KbComment, _>(&path, &UpdateKbCommentRequest { body }).await {
                                                 Ok(_) => {
@@ -701,6 +727,7 @@ fn CommentBody(
                         }
                     }
                 } else {
+                    // SPEC-12.20.7: shared Markdown renderer, no second render path.
                     // The same renderer and sanitizer as the article.
                     // MAPPS-856: `people` is the directory `ArticleActivity`
                     // already fetched once for the whole page, handed down
@@ -748,6 +775,7 @@ fn CommentBody(
 /// The editor plus a send button; a root composer shows the author's disc,
 /// a reply composer sits inside the thread and can be cancelled.
 #[component]
+// SPEC-12.20.10, SPEC-12.4.1: composer submit rules and guards.
 pub(crate) fn CommentComposer(
     article_id: String,
     parent_id: Option<uuid::Uuid>,
@@ -777,6 +805,7 @@ pub(crate) fn CommentComposer(
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-12.7.2, SPEC-12.20.10: create comment or reply, with optional anchor.
                 let path = format!("/kb/articles/{id}/comments");
                 let req = CreateKbCommentRequest {
                     body,
@@ -805,6 +834,7 @@ pub(crate) fn CommentComposer(
             }
             div {
                 class: "min-w-0 flex-1 space-y-2",
+                // SPEC-12.20.10: Ctrl/Cmd+Enter submits like the button.
                 // Ctrl/Cmd+Enter sends; the keydown bubbles up from the
                 // editor's textarea.
                 onkeydown: move |e: KeyboardEvent| {

@@ -35,6 +35,7 @@ pub fn UpdateAvailableBanner() -> Element {
     // Reading the flag subscribes this component, so the banner appears
     // the moment the update check confirms a mismatch. The flag is
     // one-way, so the banner never disappears short of a reload.
+    // SPEC-5.56.4: absent while the loaded bundle is current.
     if !use_update_pending() {
         return rsx! {};
     }
@@ -54,9 +55,11 @@ pub fn UpdateAvailableBanner() -> Element {
                 class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center justify-center gap-3 text-sm text-center",
                 // User-facing cause only: no build hashes, no version
                 // numbers, no operator instructions.
+                // SPEC-5.56.5: exact copy; SPEC-5.56.7: persistent bar, no build details.
                 span { class: "font-medium",
                     "A new version of {brand} has been deployed. Reload the page to get it."
                 }
+                // SPEC-5.56.6: same reload as the automatic path.
                 button {
                     r#type: "button",
                     class: "shrink-0 rounded px-3 py-1 font-medium border border-amber-300 dark:border-amber-800 bg-amber-100 dark:bg-amber-900/50 hover:bg-amber-200 dark:hover:bg-amber-900",
@@ -92,6 +95,7 @@ mod tests {
 
     /// The banner is the topmost row of the shell, above the server-status
     /// and admin update banners.
+    // SPEC-5.56.8: enforced by the source-order check below.
     #[test]
     fn mounted_at_the_top_of_the_app_shell() {
         let update = LAYOUT_SRC

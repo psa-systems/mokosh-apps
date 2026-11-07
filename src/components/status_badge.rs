@@ -23,6 +23,7 @@ use super::table::BadgeVariant;
 /// module can humanize server-side enum values that do not have their own
 /// badge helper (e.g. asset `asset_type`, contract `contract_type`, time-
 /// entry `entry_type`).
+// SPEC-5.59.1: empty becomes "-"; otherwise each underscore part is capitalised.
 pub fn humanize_enum_label(raw: &str) -> String {
     humanize_token(raw)
 }
@@ -48,6 +49,7 @@ fn humanize_token(raw: &str) -> String {
 /// normalizing case and spaces. Single source for the dashboard, ticket-list,
 /// and portal ticket tables, which each previously kept a divergent copy (some
 /// omitted the `closed` arm).
+// SPEC-5.59.3: case and space insensitive, variant only.
 pub fn ticket_status_badge(status: &str) -> BadgeVariant {
     match status.to_lowercase().replace(' ', "_").as_str() {
         "open" => BadgeVariant::Blue,
@@ -63,6 +65,7 @@ pub fn ticket_status_badge(status: &str) -> BadgeVariant {
 /// (badge variant, label) for a contract status. Previously duplicated as
 /// `status_variant` + `humanize_contract_status` in `contracts.rs` and as
 /// `contract_status_badge` in `contacts.rs`.
+// SPEC-5.59.4: contract mapping; SPEC-5.59.2: unknown values fall back to gray.
 pub fn contract_status_badge(raw: &str) -> (BadgeVariant, String) {
     match raw {
         "active" => (BadgeVariant::Green, "Active".to_string()),
@@ -76,6 +79,7 @@ pub fn contract_status_badge(raw: &str) -> (BadgeVariant, String) {
 
 /// (badge variant, label) for a project status. Previously duplicated as
 /// `status_badge` in `projects.rs` and `project_status_badge` in `contacts.rs`.
+// SPEC-5.59.5: project mapping.
 pub fn project_status_badge(raw: &str) -> (BadgeVariant, String) {
     match raw {
         "active" => (BadgeVariant::Green, "Active".to_string()),
@@ -89,6 +93,7 @@ pub fn project_status_badge(raw: &str) -> (BadgeVariant, String) {
 
 /// (badge variant, label) for an asset status. Previously duplicated as
 /// `status_badge` in `assets.rs` and `asset_status_badge` in `contacts.rs`.
+// SPEC-5.59.6: asset mapping.
 pub fn asset_status_badge(raw: &str) -> (BadgeVariant, String) {
     match raw {
         "active" => (BadgeVariant::Green, "Active".to_string()),
@@ -105,6 +110,7 @@ pub fn asset_status_badge(raw: &str) -> (BadgeVariant, String) {
 /// `invoice_status_badge` in `contacts.rs`, and an inline match in `portal.rs`
 /// (the only copy that knew `overdue`). `overdue` gets its own Orange hue so it
 /// reads distinctly from a written-off/void invoice (Red).
+// SPEC-5.59.7: invoice mapping; overdue is orange so it differs from void.
 pub fn invoice_status_badge(raw: &str) -> (BadgeVariant, String) {
     match raw {
         "draft" => (BadgeVariant::Gray, "Draft".to_string()),
@@ -122,6 +128,7 @@ pub fn invoice_status_badge(raw: &str) -> (BadgeVariant, String) {
 /// (badge variant, label) for a credit note (MAPPS-638). Two states and no
 /// editing: issued counts against its invoice, void is kept on record and
 /// counts for nothing, so it takes the same Red as a void invoice.
+// SPEC-5.59.8: credit note mapping.
 pub fn credit_note_status_badge(raw: &str) -> (BadgeVariant, String) {
     match raw {
         "issued" => (BadgeVariant::Green, "Issued".to_string()),
@@ -133,6 +140,7 @@ pub fn credit_note_status_badge(raw: &str) -> (BadgeVariant, String) {
 /// (badge variant, label) for a knowledge-base article status. Previously
 /// `status_variant` in `knowledge_base.rs` (which returned only the variant and
 /// left each call site to title-case the label by hand).
+// SPEC-5.59.9: knowledge-base article mapping.
 pub fn kb_article_status_badge(raw: &str) -> (BadgeVariant, String) {
     match raw {
         "published" => (BadgeVariant::Green, "Published".to_string()),

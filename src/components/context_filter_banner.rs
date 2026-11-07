@@ -43,6 +43,7 @@ pub enum ContextFilterScope {
 }
 
 impl ContextFilterScope {
+    // SPEC-5.18.4
     fn label(self) -> &'static str {
         match self {
             Self::Tickets => "tickets",
@@ -54,6 +55,7 @@ impl ContextFilterScope {
         }
     }
 
+    // SPEC-5.18.5
     fn clear_route(self) -> Route {
         match self {
             Self::Tickets => Route::TicketList {},
@@ -76,6 +78,7 @@ pub fn ContextFilterBanner(props: ContextFilterBannerProps) -> Element {
     // Read the URL once per mount. The list page's `use_resource`
     // already re-reads it on each remount (route change), so we
     // match its lifecycle by reading at the top of render.
+    // SPEC-5.18.1
     let company_id = crate::utils::url::current_query_param("company_id");
 
     let company_id_for_fetch = company_id.clone();
@@ -84,11 +87,13 @@ pub fn ContextFilterBanner(props: ContextFilterBannerProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let id = id?;
+            // SPEC-5.18.2
             crate::hooks::fetch::api::get_authed::<CompanyNameRow>(&format!(
                 "/contacts/companies/{id}"
             ))
             .await
             // Best-effort: the banner falls back to the bare filter chip.
+            // SPEC-5.18.3
             .inspect_err(|e| {
                 tracing::warn!("context filter company name load failed for {id}: {e}")
             })
@@ -115,12 +120,14 @@ pub fn ContextFilterBanner(props: ContextFilterBannerProps) -> Element {
     };
     // Name lookup failure: collapse to nothing rather than leave the
     // banner orphan-rendering "Filtered by company: " with no value.
+    // SPEC-5.18.3
     let Some(name) = resolved_name else {
         return rsx! {};
     };
 
     let label = props.scope.label();
     let clear_route = props.scope.clear_route();
+    // SPEC-5.18.4
     rsx! {
         div { class: "mb-4 flex items-center gap-3 rounded-md border border-line bg-surface-2/50 px-3 py-2",
             Badge { variant: BadgeVariant::Blue, "Scope" }
@@ -131,6 +138,7 @@ pub fn ContextFilterBanner(props: ContextFilterBannerProps) -> Element {
             Button {
                 variant: ButtonVariant::Link,
                 size: ButtonSize::Small,
+                // SPEC-5.18.5
                 aria_label: Some("Clear company filter".to_string()),
                 onclick: move |_| {
                     nav.push(clear_route.clone());

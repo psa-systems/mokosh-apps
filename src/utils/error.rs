@@ -8,6 +8,7 @@ use thiserror::Error;
 /// Result type alias for application errors
 pub type AppResult<T> = Result<T, AppError>;
 
+// SPEC-4.55.1 / SPEC-4.55.2: each variant's #[error] text is the wire message.
 /// Application error types
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum AppError {
@@ -113,6 +114,7 @@ impl AppError {
     /// Create a validation error for a single field
     pub fn validation_field(field: impl Into<String>, message: impl Into<String>) -> Self {
         Self::Validation {
+            // SPEC-4.55.3: fixed message and the code "invalid".
             message: "Validation failed".to_string(),
             errors: vec![FieldError::new(field, message, "invalid")],
         }
@@ -153,6 +155,7 @@ impl AppError {
 
     /// Get the HTTP status code for this error
     pub fn status_code(&self) -> u16 {
+        // SPEC-4.55.1 / SPEC-4.55.2: the status table.
         match self {
             Self::Unauthorized => 401,
             Self::Forbidden(_) => 403,
@@ -175,6 +178,7 @@ impl AppError {
 
     /// Get the error code for API responses
     pub fn error_code(&self) -> &'static str {
+        // SPEC-4.55.1 / SPEC-4.55.2: the error-code table.
         match self {
             Self::Unauthorized => "UNAUTHORIZED",
             Self::Forbidden(_) => "FORBIDDEN",
@@ -212,6 +216,7 @@ pub struct ErrorDetail {
 
 impl From<AppError> for ErrorResponse {
     fn from(error: AppError) -> Self {
+        // SPEC-4.55.4: field errors ride only on a Validation error.
         let errors = match &error {
             AppError::Validation { errors, .. } => Some(errors.clone()),
             _ => None,
@@ -228,6 +233,7 @@ impl From<AppError> for ErrorResponse {
 }
 
 // Server-side conversions.
+// SPEC-4.55.7 / SPEC-4.55.8: a mirror compiled only under the `server` feature.
 //
 // Parity record 2026-10-19 (MAPPS-884): this block stays in the client
 // crate deliberately. `AppError` is a shared type whose server-only
@@ -326,6 +332,7 @@ mod server_impl {
 
 impl From<validator::ValidationErrors> for AppError {
     fn from(errors: validator::ValidationErrors) -> Self {
+        // SPEC-4.55.5: one FieldError per failed rule; a missing message becomes empty.
         let field_errors: Vec<FieldError> = errors
             .field_errors()
             .iter()
@@ -349,12 +356,14 @@ impl From<validator::ValidationErrors> for AppError {
 
 impl From<serde_json::Error> for AppError {
     fn from(err: serde_json::Error) -> Self {
+        // SPEC-4.55.6: a JSON failure is a 400-class BadRequest.
         Self::BadRequest(format!("JSON error: {}", err))
     }
 }
 
 impl From<std::io::Error> for AppError {
     fn from(err: std::io::Error) -> Self {
+        // SPEC-4.55.6: an I/O failure is a File error carrying its text.
         Self::File(err.to_string())
     }
 }

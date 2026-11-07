@@ -7,11 +7,13 @@
 //!
 //! Never used for tokens. Those go to [`crate::platform::store`], which
 //! does not outlive the session.
+// SPEC-3.42.3: no token is stored through this module (see the session store).
 
 /// Read a raw value. `None` when unset or when the store is
 /// unreachable; the typed accessors in `crate::utils::prefs` fold that
 /// into their caller-supplied default.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.42.11
 pub fn get(key: &str) -> Option<String> {
     web_sys::window()?
         .local_storage()
@@ -29,6 +31,7 @@ pub fn set(key: &str, value: &str) {
         return;
     };
     if let Err(_e) = storage.set_item(key, value) {
+        // SPEC-3.42.12
         // Quota exceeded, or storage disabled mid-session. Best-effort:
         // a lost UI preference must not take the interaction with it.
         tracing::warn!("could not persist preference {key}");
@@ -58,15 +61,18 @@ mod native {
     /// equivalent elsewhere. `None` when the OS reports no config
     /// directory at all, in which case preferences stay in memory for
     /// the run and the reason is logged once at load.
+    // SPEC-3.42.1: file name and location, SPEC-3.42.7 when absent
     pub(super) fn path() -> Option<PathBuf> {
         Some(super::config_dir()?.join("prefs.json"))
     }
 
+    // SPEC-3.42.4
     fn cache() -> &'static Mutex<HashMap<String, String>> {
         static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
         CACHE.get_or_init(|| Mutex::new(load()))
     }
 
+    // SPEC-3.42.8: SPEC-3.42.7, 3.45.9, 3.45.10 for the error arms
     fn load() -> HashMap<String, String> {
         let Some(path) = path() else {
             tracing::warn!(
@@ -78,11 +84,13 @@ mod native {
             Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
                 // Corrupt file: start clean rather than refusing to run,
                 // but say so, because the user's settings just vanished.
+                // SPEC-3.42.9: logged at error, in-memory map empty, file overwritten at the next write.
                 tracing::error!("preferences at {} are unreadable: {e}", path.display());
                 HashMap::new()
             }),
             // A missing file is the first run, not a failure.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+            // SPEC-3.42.10: any other read failure is logged at error and treated as empty.
             Err(e) => {
                 tracing::error!("could not read preferences at {}: {e}", path.display());
                 HashMap::new()
@@ -90,6 +98,7 @@ mod native {
         }
     }
 
+    // SPEC-3.42.5: SPEC-3.42.6
     fn flush(map: &HashMap<String, String>) {
         let Some(path) = path() else {
             return;
@@ -142,6 +151,7 @@ mod native {
 /// preferences file and the runtime-config file that
 /// [`crate::platform::config`] reads.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.42.2
 pub fn config_dir() -> Option<std::path::PathBuf> {
     Some(dirs::config_dir()?.join("mokosh-apps"))
 }

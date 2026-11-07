@@ -23,6 +23,7 @@ use serde::Deserialize;
 /// Mirror of the server's `SearchResponse` envelope.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 struct SearchResponse {
+    // SPEC-5.29.15: every group and count defaults when absent.
     #[serde(default)]
     tickets: Vec<SearchHit>,
     #[serde(default)]
@@ -81,6 +82,7 @@ pub fn GlobalSearch() -> Element {
     #[cfg(feature = "app")]
     use_effect(move || {
         if expanded() {
+            // SPEC-5.29.2
             // MAPPS-503 made this failure loud; MAPPS-504 moved the call
             // itself behind the platform boundary, which is where the
             // logging now lives so every focus site gets it.
@@ -92,10 +94,12 @@ pub fn GlobalSearch() -> Element {
     // burst of keystrokes fires one request per pause in typing instead of
     // one per keystroke. `query` itself still updates immediately (the field
     // stays responsive); only the resource's dependency is debounced.
+    // SPEC-5.29.4: 300 ms debounce.
     let query_debounced = crate::hooks::use_debounced_signal(query, 300);
     let results = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let q = query_debounced.read().trim().to_string();
+        // SPEC-5.29.4: no request below two bytes.
         if q.len() < 2 {
             // Two-char minimum keeps the dropdown out of "I just clicked the
             // field" noise. The server tolerates short queries but the SPA
@@ -103,6 +107,7 @@ pub fn GlobalSearch() -> Element {
             // letter.
             return Ok(SearchResponse::default());
         }
+        // SPEC-5.29.5, SPEC-5.29.6: request, and the failure is logged and kept.
         let path = format!("/search?q={}", urlencoding_minimal(&q));
         // MAPPS-503: keep the failure. `unwrap_or_default()` here turned a
         // failed search into "no matches", with nothing logged.
@@ -127,6 +132,7 @@ pub fn GlobalSearch() -> Element {
     // MAPPS-503: the grouped panel is one flat list for the keyboard. Each
     // section knows where it starts, and the route for row `i` is
     // `targets[i]`, in the same order the sections render.
+    // SPEC-5.29.8, SPEC-5.29.11: group order is the keyboard order.
     let section_offsets = [
         0,
         response.tickets.len(),
@@ -137,6 +143,7 @@ pub fn GlobalSearch() -> Element {
             + response.companies.len()
             + response.assets.len(),
     ];
+    // SPEC-5.29.10: one detail route per group.
     let targets: Vec<Route> = response
         .tickets
         .iter()
@@ -168,6 +175,7 @@ pub fn GlobalSearch() -> Element {
             if expanded() {
                 div {
                     class: "fixed inset-0 z-10",
+                    // SPEC-5.29.14
                     onclick: move |_| {
                         nav.close();
                         if query.read().trim().is_empty() {
@@ -188,10 +196,12 @@ pub fn GlobalSearch() -> Element {
                     // rendering on the ticket-create form).
                     div {
                         class: "relative",
+                        // SPEC-5.29.3
                         role: "combobox",
                         aria_expanded: nav.expanded(),
                         aria_controls: nav.panel_id(),
                         aria_activedescendant: nav.active_descendant(),
+                        // SPEC-5.29.11: Enter commits only a highlighted row.
                         onkeydown: move |e: KeyboardEvent| {
                             let targets = targets.clone();
                             let action = nav
@@ -208,6 +218,7 @@ pub fn GlobalSearch() -> Element {
                             // MAPPS-347: Escape also drops the typed text and
                             // collapses the entry back to the icon, which is
                             // more than the shared hook's "close the list".
+                            // SPEC-5.29.12
                             if action == NavAction::Close {
                                 query.set(String::new());
                                 expanded.set(false);
@@ -219,6 +230,7 @@ pub fn GlobalSearch() -> Element {
                         // closed.
                         div {
                             class: "relative",
+                            // SPEC-5.29.13
                             onfocusin: move |_| nav.open(),
                             onclick: move |_| nav.open(),
                             div { class: "absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-subtle",
@@ -243,10 +255,12 @@ pub fn GlobalSearch() -> Element {
                                 // MAPPS-314: visually-hidden label via aria-label;
                                 // a placeholder alone leaves screen-reader users
                                 // with nothing once typing begins.
+                                // SPEC-5.29.3
                                 aria_label: "Search tickets, contacts, companies, assets, projects".to_string(),
                                 placeholder: "Search tickets, contacts, companies…",
                                 value: query.read().clone(),
                                 class: "pl-9".to_string(),
+                                // SPEC-5.29.13
                                 oninput: move |e: FormEvent| {
                                     query.set(e.value());
                                     nav.open_fresh();
@@ -258,6 +272,7 @@ pub fn GlobalSearch() -> Element {
                                 id: nav.panel_id(),
                                 role: "listbox",
                                 class: "dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-[32rem] overflow-y-auto",
+                                // SPEC-5.29.7: hint, failure, empty, groups.
                                 if query_text.trim().len() < 2 {
                                     div { class: "px-3 py-2 text-sm text-muted",
                                         "Type at least two characters to search."
@@ -271,6 +286,7 @@ pub fn GlobalSearch() -> Element {
                                         "No matches across tickets, contacts, companies, assets, or projects."
                                     }
                                 } else {
+                                    // SPEC-5.29.10: pointer picks close the panel and clear the query.
                                     SearchSection {
                                         label: "Tickets".to_string(),
                                         total: response.counts.tickets,
@@ -348,6 +364,7 @@ pub fn GlobalSearch() -> Element {
             button {
                 r#type: "button",
                 class: "relative z-30 p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2",
+                // SPEC-5.29.1: expands only, never collapses.
                 aria_label: "Search",
                 title: "Search",
                 aria_expanded: if expanded() { "true" } else { "false" },
@@ -391,6 +408,7 @@ fn SearchSection(props: SearchSectionProps) -> Element {
         return rsx! {};
     }
     let total = props.total;
+    // SPEC-5.29.8: "shown/total" only when the group is truncated.
     let count_hint = if total > props.hits.len() as i64 {
         format!("{}/{}", props.hits.len(), total)
     } else {
@@ -423,6 +441,7 @@ fn SearchSection(props: SearchSectionProps) -> Element {
                             li {
                                 key: "{key}",
                                 id: "{row_id}",
+                                // SPEC-5.29.9
                                 role: "option",
                                 aria_selected: if is_active { "true" } else { "false" },
                                 button {

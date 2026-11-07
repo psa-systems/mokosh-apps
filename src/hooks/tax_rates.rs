@@ -10,6 +10,7 @@
 
 use dioxus::prelude::*;
 
+// SPEC-4.39.2: one path constant shared by the list and the admin calls.
 /// `GET /tax-rates` and the admin table's create/update/delete calls all
 /// target this path.
 pub const ENDPOINT: &str = "/tax-rates";
@@ -18,6 +19,7 @@ pub const ENDPOINT: &str = "/tax-rates";
 /// `billing::RemoteTaxRate`. `rate` is a decimal string.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
 pub struct TaxRateRow {
+    // SPEC-4.39.2: id is required; the other fields default.
     pub id: uuid::Uuid,
     #[serde(default)]
     pub name: String,
@@ -32,6 +34,7 @@ pub struct TaxRateRow {
 /// Provide the shared tax-rates list at the App root (MAPPS-1001: see
 /// [`crate::hooks::shared_list`]).
 pub fn use_tax_rates_provider() {
+    // SPEC-4.39.5: provider mounted at the App root.
     crate::hooks::shared_list::use_shared_list_provider::<TaxRateRow>("tax rates", ENDPOINT);
 }
 

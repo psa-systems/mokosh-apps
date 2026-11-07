@@ -33,9 +33,11 @@
 //! and why the refresh token lives in the browser) is recorded in
 //! `docs/oidc-token-storage.md` (MAPPS-362).
 
+// SPEC-3.11.1: tab-scoped session store keys; nothing here goes to localStorage.
 const STATE_KEY: &str = "mokosh_oidc_flow_v1";
 const AUTH_KEY: &str = "mokosh_auth_bundle_v1";
 
+// SPEC-3.11.2: the persisted bundle shape.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct StoredTokens {
     pub access_token: String,
@@ -69,6 +71,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+// SPEC-3.11.5: process-wide on desktop so a save on one thread is seen on all.
 #[cfg(not(target_arch = "wasm32"))]
 static AUTH_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<Option<StoredTokens>>>> =
     std::sync::OnceLock::new();
@@ -111,6 +114,7 @@ fn auth_cache_set(value: Option<Option<StoredTokens>>) {
     *auth_cache().lock().unwrap_or_else(|e| e.into_inner()) = value;
 }
 
+// SPEC-3.11.3: writes JSON to the store and refreshes the cache.
 pub fn save_auth(t: &StoredTokens) {
     if let Ok(storage) = session_storage() {
         if let Ok(json) = serde_json::to_string(t) {
@@ -120,6 +124,8 @@ pub fn save_auth(t: &StoredTokens) {
     auth_cache_set(Some(Some(t.clone())));
 }
 
+// SPEC-3.11.3: cache hit returns directly; a miss parses the store once.
+// SPEC-3.11.2: the result is an unconfirmed cache, not proof of a live session.
 pub fn load_auth() -> Option<StoredTokens> {
     if let Some(cached) = auth_cache_get() {
         return cached;
@@ -134,6 +140,7 @@ pub fn load_auth() -> Option<StoredTokens> {
     parsed
 }
 
+// SPEC-3.11.4: also clears the standalone session so sign-out is complete on every path.
 pub fn clear_auth() {
     if let Ok(storage) = session_storage() {
         let _ = storage.remove_item(AUTH_KEY);
@@ -147,12 +154,14 @@ pub fn clear_auth() {
 
 /// MAPPS-368: standalone (non-OIDC) session key. Kept separate from `AUTH_KEY`
 /// so the two rehydrate paths never collide.
+// SPEC-3.11.1: separate key so the two rehydrate paths never collide.
 const STANDALONE_KEY: &str = "mokosh_standalone_session_v1";
 
 /// MAPPS-368: a persisted standalone username/password session. Unlike
 /// [`StoredTokens`] there is no `id_token` to rebuild the user from, so the
 /// `CurrentUser` view model is stored directly alongside the tokens. Rehydrated
 /// at boot by `crate::hooks::auth`.
+// SPEC-3.11.6: stores the CurrentUser directly because there is no id_token to rebuild it from.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct StandaloneSession {
     pub access_token: String,
@@ -170,6 +179,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+// SPEC-3.11.5: same process-wide rule as the token bundle cache.
 #[cfg(not(target_arch = "wasm32"))]
 static STANDALONE_CACHE: std::sync::OnceLock<std::sync::Mutex<Option<Option<StandaloneSession>>>> =
     std::sync::OnceLock::new();
@@ -202,6 +212,7 @@ fn standalone_cache_set(value: Option<Option<StandaloneSession>>) {
     *standalone_cache().lock().unwrap_or_else(|e| e.into_inner()) = value;
 }
 
+// SPEC-3.11.6: save, load and clear follow the token bundle's rules.
 pub fn save_standalone(s: &StandaloneSession) {
     if let Ok(storage) = session_storage() {
         if let Ok(json) = serde_json::to_string(s) {
@@ -233,16 +244,19 @@ pub fn clear_standalone() {
 /// MAPPS-432: consecutive login restarts kicked off by a recoverable
 /// `/auth/callback` failure. Tab-scoped like the flow state itself, so the
 /// budget dies with the tab it was spent in.
+// SPEC-3.11.1: the restart counter key, tab-scoped like the flow state.
 const CALLBACK_RETRY_KEY: &str = "mokosh_oidc_callback_retry_v1";
 
 /// MAPPS-432: restarts allowed before `/auth/callback` gives up and shows the
 /// underlying error. The 3rd consecutive recoverable failure renders instead of
 /// navigating, so a callback that keeps failing cannot loop the user forever.
+// SPEC-3.11.11: restart budget before the underlying error is shown.
 pub const MAX_CALLBACK_RETRIES: u32 = 2;
 
 /// Count this restart and return the number taken in this tab so far,
 /// including this one. `Err` when the counter cannot be read or written: the
 /// caller must not restart without a working guard, or the loop is unbounded.
+// SPEC-3.11.10: every failure is an Err, so the caller never restarts unguarded.
 pub fn bump_callback_retry() -> Result<u32, String> {
     let storage = session_storage()?;
     let previous = storage
@@ -263,6 +277,7 @@ pub fn bump_callback_retry() -> Result<u32, String> {
 
 /// Reset the restart budget. Called on a successful token exchange so a later
 /// legitimate reload starts with a full one.
+// SPEC-3.11.11: resets the restart budget after a successful exchange.
 pub fn clear_callback_retry() -> Result<(), String> {
     session_storage()?
         .remove_item(CALLBACK_RETRY_KEY)
@@ -289,6 +304,7 @@ pub struct PendingFlow {
 /// MAPPS-338: maximum age of a `PendingFlow` before `take_pending`
 /// rejects it. 10 minutes mirrors the upstream OIDC code TTL window; a
 /// flow older than that would fail the code-redemption side anyway.
+// SPEC-3.11.9: the 10-minute pending-flow lifetime enforced by `take_pending`.
 pub const PENDING_FLOW_TTL_MS: u64 = 10 * 60 * 1000;
 
 /// MAPPS-338: current epoch milliseconds, via
@@ -298,6 +314,7 @@ fn now_ms() -> u64 {
     crate::platform::clock::now_ms()
 }
 
+// SPEC-3.11.7: stamps the issue time at save and reports a write failure.
 pub fn save_pending(flow: &mut PendingFlow) -> Result<(), String> {
     // MAPPS-338: stamp issuance time at save so `take_pending` can age it.
     if flow.issued_at_ms == 0 {
@@ -311,6 +328,7 @@ pub fn save_pending(flow: &mut PendingFlow) -> Result<(), String> {
 }
 
 pub fn take_pending() -> Result<PendingFlow, String> {
+    // SPEC-3.11.8: the entry is removed before validation, so a flow is single-use.
     let storage = session_storage()?;
     let raw = storage
         .get_item(STATE_KEY)
@@ -320,6 +338,7 @@ pub fn take_pending() -> Result<PendingFlow, String> {
     let flow: PendingFlow =
         serde_json::from_str(&raw).map_err(|e| format!("corrupt flow state: {e}"))?;
     // MAPPS-338: reject stale flows. A week-old tab should not authenticate.
+    // SPEC-3.11.9: an unstamped (0) flow is ancient by construction, hence expired.
     let age = now_ms().saturating_sub(flow.issued_at_ms);
     if age > PENDING_FLOW_TTL_MS {
         return Err(format!(

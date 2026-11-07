@@ -24,6 +24,7 @@
 /// The classes a mark carries, by how many threads cover it: a dotted
 /// underline plus a tint (never colour alone), stepped thicker as anchors
 /// stack. Kept as literals so Tailwind sees them in source.
+// SPEC-3.30.1: literals so Tailwind sees them; never colour alone.
 pub fn mark_class(depth: usize) -> &'static str {
     match depth {
         0 | 1 => "kb-mark cursor-pointer rounded-sm bg-amber-200/60 underline decoration-amber-700 decoration-dotted decoration-2 underline-offset-2 focus:outline-none focus:ring-2 focus:ring-accent dark:bg-amber-500/30 dark:decoration-amber-300",
@@ -49,6 +50,7 @@ pub struct MarkPosition {
     pub top: f64,
 }
 
+// SPEC-3.30.2
 fn aria_label(n: usize) -> String {
     if n == 1 {
         "Inline comment".to_string()
@@ -74,6 +76,7 @@ fn container(id: &str) -> Option<web_sys::Element> {
 
 /// The container's rendered text: what the resolver runs over.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.30.3
 pub async fn text_of(container_id: &str) -> Option<String> {
     container(container_id).and_then(|c| c.text_content())
 }
@@ -81,6 +84,7 @@ pub async fn text_of(container_id: &str) -> Option<String> {
 /// Unwrap every mark in the container and merge the text back, so the
 /// next apply starts from the sanitizer's own text nodes.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.30.6
 pub fn clear_highlights(container_id: &str) {
     let Some(root) = container(container_id) else {
         return;
@@ -104,6 +108,7 @@ pub fn clear_highlights(container_id: &str) {
 /// Wrap each fragment in a `<mark>`. `specs` must be non-overlapping and in
 /// document order, which `utils::anchor::split_overlaps` guarantees.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.30.4, SPEC-3.30.5, SPEC-3.30.13: applied after the sanitizer, so no attribute must survive it.
 pub fn apply_highlights(container_id: &str, specs: &[MarkSpec]) {
     use wasm_bindgen::JsCast;
     let Some(root) = container(container_id) else {
@@ -167,6 +172,7 @@ pub fn apply_highlights(container_id: &str, specs: &[MarkSpec]) {
 
 /// UTF-16 units spanned by the first `chars` characters of `s`.
 #[cfg(any(target_arch = "wasm32", test))]
+// SPEC-3.30.5: splitText counts UTF-16 units while offsets are chars.
 fn utf16_len(s: &str, chars: usize) -> u32 {
     s.chars().take(chars).map(|c| c.len_utf16() as u32).sum()
 }
@@ -174,6 +180,7 @@ fn utf16_len(s: &str, chars: usize) -> u32 {
 /// Every mark's owners and its top relative to the container, one entry
 /// per distinct owner set (the first fragment of a stacked anchor).
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.30.7
 pub async fn mark_positions(container_id: &str) -> Vec<MarkPosition> {
     use wasm_bindgen::JsCast;
     let Some(root) = container(container_id) else {
@@ -210,6 +217,7 @@ pub async fn mark_positions(container_id: &str) -> Vec<MarkPosition> {
 /// The reader's current selection inside the container, as a `char` range
 /// into its text; `None` when there is none or it reaches outside.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.30.8
 pub async fn selection_in(container_id: &str) -> Option<std::ops::Range<usize>> {
     let root = container(container_id)?;
     let window = web_sys::window()?;
@@ -235,6 +243,7 @@ pub async fn selection_in(container_id: &str) -> Option<std::ops::Range<usize>> 
 
 /// Drop the reader's selection once it has become a comment.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.30.9
 pub fn clear_selection() {
     if let Some(selection) = web_sys::window().and_then(|w| w.get_selection().ok().flatten()) {
         let _ = selection.remove_all_ranges();
@@ -255,6 +264,7 @@ pub fn watch_mark_activation(
     let Some(root) = container(container_id) else {
         return;
     };
+    // SPEC-3.30.10: the flag keeps a re-run effect from installing a second listener pair.
     if root.get_attribute("data-kb-marks").is_some() {
         return;
     }
@@ -295,6 +305,7 @@ pub fn watch_mark_activation(
 
 /// Bring the first mark owned by `comment_id` into view and focus it.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.30.12
 pub fn focus_mark(container_id: &str, comment_id: &str) {
     use wasm_bindgen::JsCast;
     let Some(root) = container(container_id) else {
@@ -331,6 +342,7 @@ pub fn focus_mark(container_id: &str, comment_id: &str) {
 use super::dom::{in_runtime, js_string};
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.30.3
 pub async fn text_of(container_id: &str) -> Option<String> {
     if !in_runtime() {
         return None;
@@ -347,6 +359,7 @@ pub async fn text_of(container_id: &str) -> Option<String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.30.6
 pub fn clear_highlights(container_id: &str) {
     if !in_runtime() {
         return;
@@ -361,6 +374,7 @@ pub fn clear_highlights(container_id: &str) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.30.4, SPEC-3.30.5, SPEC-3.30.13
 pub fn apply_highlights(container_id: &str, specs: &[MarkSpec]) {
     if !in_runtime() {
         return;
@@ -405,6 +419,7 @@ pub fn apply_highlights(container_id: &str, specs: &[MarkSpec]) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.30.7
 pub async fn mark_positions(container_id: &str) -> Vec<MarkPosition> {
     if !in_runtime() {
         return Vec::new();
@@ -437,6 +452,7 @@ pub async fn mark_positions(container_id: &str) -> Vec<MarkPosition> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.30.8
 pub async fn selection_in(container_id: &str) -> Option<std::ops::Range<usize>> {
     if !in_runtime() {
         return None;
@@ -459,6 +475,7 @@ pub async fn selection_in(container_id: &str) -> Option<std::ops::Range<usize>> 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.30.9
 pub fn clear_selection() {
     if !in_runtime() {
         return;
@@ -471,6 +488,7 @@ pub fn watch_mark_activation(
     container_id: &str,
     on_open: dioxus::prelude::EventHandler<Vec<String>>,
 ) {
+    // SPEC-3.30.10, SPEC-3.30.11
     if !in_runtime() {
         return;
     }
@@ -490,6 +508,7 @@ pub fn watch_mark_activation(
             match eval.recv::<Vec<String>>().await {
                 Ok(ids) => on_open.call(ids),
                 Err(e) => {
+                    // SPEC-3.30.11
                     tracing::error!("stopped listening for inline comment marks: {e}");
                     return;
                 }
@@ -499,6 +518,7 @@ pub fn watch_mark_activation(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.30.12
 pub fn focus_mark(container_id: &str, comment_id: &str) {
     if !in_runtime() {
         return;

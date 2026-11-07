@@ -44,6 +44,7 @@ pub struct MarkdownProps {
     /// When true, task-list checkboxes are enabled and clicking one calls
     /// `on_toggle` with its 0-based document index (PMS-348).
     #[props(default = false)]
+    // SPEC-5.33.9
     interactive: bool,
     /// Fires with the toggled task index when `interactive`. No-op otherwise.
     #[props(default)]
@@ -52,6 +53,7 @@ pub struct MarkdownProps {
     /// default so a surface that renders untrusted or historical text can opt
     /// out; every in-app caller wants it on.
     #[props(default = true)]
+    // SPEC-5.33.4
     mentions: bool,
     /// MAPPS-856: a directory the host page already fetched once, handed
     /// down instead of this component fetching its own. A page that renders
@@ -67,6 +69,7 @@ pub struct MarkdownProps {
 pub fn Markdown(props: MarkdownProps) -> Element {
     // Stable per-instance id so the delegated click listener can find this
     // container. Atomic counter is deterministic and wasm is single-threaded.
+    // SPEC-5.33.1: unique md-<n> container id
     let dom_id = use_hook(|| {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -83,7 +86,9 @@ pub fn Markdown(props: MarkdownProps) -> Element {
     // `@` as the plain text it already was, so a technician who cannot read
     // `/auth/users` (it is manager-gated) sees exactly what shipped before
     // this.
+    // SPEC-5.33.4, SPEC-5.33.5, SPEC-5.33.6, SPEC-5.33.7: fetch only without a people prop
     let directory = crate::hooks::use_mention_directory(props.mentions && props.people.is_none());
+    // SPEC-5.33.5
     let people: Vec<Mention> = match &props.people {
         Some(people) => people.clone(),
         None => crate::hooks::mention_people(&directory),
@@ -95,7 +100,9 @@ pub fn Markdown(props: MarkdownProps) -> Element {
     // the SPA's own fallback with an HTML document and render as a broken
     // image. This component is the only place article markdown becomes HTML,
     // so it is the only place the join has to happen.
+    // SPEC-5.33.3
     let api_origin = crate::hooks::fetch::api::api_origin();
+    // SPEC-5.33.2
     let html = if props.interactive {
         crate::utils::markdown::render_markdown_interactive_with_mentions(
             &props.content,
@@ -134,6 +141,7 @@ pub fn Markdown(props: MarkdownProps) -> Element {
         let dom_id = dom_id.clone();
         let on_toggle = props.on_toggle;
         let interactive = props.interactive;
+        // SPEC-5.34.1: listener only when interactive
         use_effect(move || {
             if !interactive {
                 return;
@@ -145,6 +153,7 @@ pub fn Markdown(props: MarkdownProps) -> Element {
             // attach it and post each click back over the `eval` channel.
             #[cfg(target_arch = "wasm32")]
             install_click_listener(dom_id.clone(), interactive.then_some(on_toggle));
+            // SPEC-5.34.4: desktop host uses the platform watcher
             #[cfg(not(target_arch = "wasm32"))]
             crate::platform::dom::watch_task_toggles(&dom_id, on_toggle);
         });
@@ -152,6 +161,7 @@ pub fn Markdown(props: MarkdownProps) -> Element {
 
     rsx! {
         div {
+            // SPEC-5.33.1, SPEC-5.33.8: no mention click handling
             id: "{dom_id}",
             class: "prose dark:prose-invert max-w-none {props.class}",
             dangerous_inner_html: html,
@@ -182,12 +192,14 @@ pub fn Markdown(props: MarkdownProps) -> Element {
 fn install_click_listener(dom_id: String, on_toggle: Option<EventHandler<usize>>) {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
+    // SPEC-5.34.5
     let Some(container) = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.get_element_by_id(&dom_id))
     else {
         return;
     };
+    // SPEC-5.34.2, SPEC-5.34.3
     let cb = Closure::wrap(Box::new(move |evt: web_sys::Event| {
         let Some(el) = evt
             .target()
@@ -209,6 +221,7 @@ fn install_click_listener(dom_id: String, on_toggle: Option<EventHandler<usize>>
         .is_err()
     {
         // The checkboxes would render and then do nothing when clicked.
+        // SPEC-5.34.6
         tracing::error!("could not attach the markdown click listener");
         return;
     }

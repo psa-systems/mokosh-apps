@@ -23,17 +23,21 @@ use crate::utils::mentions::Mention;
 /// not a bare `Signal<bool>`: context is keyed by type, and the reference-list
 /// flags sharing that type overwrote each other (MAPPS-1001).
 #[derive(Clone, Copy)]
+// SPEC-4.21.3
 struct DirectoryWanted(Signal<bool>);
 
 /// Provide the shared mention-directory resource and its `enabled` flag at
 /// the App root. Call once, alongside
 /// [`crate::hooks::user_roster::use_user_roster_provider`].
 pub fn use_mention_directory_provider() {
+    // SPEC-4.21.3
     let wanted = use_signal(|| false);
     use_context_provider(|| DirectoryWanted(wanted));
 
     let resource = use_resource(move || async move {
+        // SPEC-4.21.6: generation read first so an org switch re-fetches.
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // SPEC-4.21.4
         if !*wanted.read() {
             return None;
         }
@@ -45,6 +49,7 @@ pub fn use_mention_directory_provider() {
 async fn fetch_directory() -> Option<Vec<Mention>> {
     #[cfg(feature = "app")]
     {
+        // SPEC-4.21.8
         #[derive(serde::Deserialize)]
         struct DirectoryEntry {
             id: uuid::Uuid,
@@ -53,14 +58,17 @@ async fn fetch_directory() -> Option<Vec<Mention>> {
             #[serde(default)]
             handle: String,
         }
+        // SPEC-4.21.1, SPEC-4.21.2
         let rows = crate::hooks::fetch::api::get_all_authed::<DirectoryEntry>("/auth/directory")
             .await
             // Best-effort: the autocomplete offers no names and the
             // typed handle is submitted as written.
+            // SPEC-4.21.9
             .inspect_err(|e| tracing::warn!("mention directory load failed: {e}"))
             .ok()?;
         Some(
             rows.into_iter()
+                // SPEC-4.21.7
                 .map(|u| Mention {
                     id: u.id.to_string(),
                     // The KB editor's copy fell back to the handle for a row
@@ -77,6 +85,7 @@ async fn fetch_directory() -> Option<Vec<Mention>> {
                 .collect(),
         )
     }
+    // SPEC-4.21.11
     #[cfg(not(feature = "app"))]
     None
 }
@@ -105,6 +114,7 @@ async fn fetch_directory() -> Option<Vec<Mention>> {
 /// consumer already cached.
 pub fn use_mention_directory(enabled: bool) -> Resource<Option<Vec<Mention>>> {
     let DirectoryWanted(mut wanted) = use_context::<DirectoryWanted>();
+    // SPEC-4.21.5: the flag only ever goes true.
     if enabled && !*wanted.read() {
         wanted.set(true);
     }
@@ -119,6 +129,7 @@ pub(crate) fn directory_wanted_flag() -> Signal<bool> {
 
 /// The list itself, flattened: a failed or still-running fetch is an empty
 /// directory, which is the degrade every caller wants.
+// SPEC-4.21.10
 pub fn mention_people(directory: &Resource<Option<Vec<Mention>>>) -> Vec<Mention> {
     directory
         .read_unchecked()

@@ -17,11 +17,13 @@
 
 use crate::utils::prefs;
 
+// SPEC-4.44.1 / SPEC-4.44.2: stable preference keys.
 const TV_VIEW_KEY: &str = "mokosh_tv_view";
 const TV_TEAM_KEY: &str = "mokosh_tv_team";
 
 /// Whether the TV-view entry point is enabled. Defaults to `false`.
 pub fn is_enabled() -> bool {
+    // SPEC-4.44.1: default off.
     prefs::get_bool(TV_VIEW_KEY, false)
 }
 
@@ -33,11 +35,13 @@ pub fn set_enabled(value: bool) {
 /// The single team the TV view is pinned to, or an empty string when the
 /// view should use the "my teams" union instead.
 pub fn selected_team() -> String {
+    // SPEC-4.44.2: empty string means no single team.
     prefs::get_str(TV_TEAM_KEY, "")
 }
 
 /// Persist the pinned team id. Pass an empty string to clear it (back to
 /// the "my teams" union).
 pub fn set_selected_team(team_id: &str) {
+    // SPEC-4.44.3: trimmed, empty clears the pin, no UUID check.
     prefs::set_str(TV_TEAM_KEY, team_id.trim());
 }

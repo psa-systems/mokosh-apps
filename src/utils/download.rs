@@ -14,6 +14,7 @@
 ///
 /// `Ok(None)`: the host told the user where it went. `Ok(Some(path))`:
 /// it did not, and `path` is where the file is.
+// SPEC-4.53.1 / SPEC-4.53.2: caller supplies fetched bytes; the result says who reports the path.
 pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>, String> {
     crate::platform::download::save_bytes_as_file(bytes, filename).await
 }
@@ -27,12 +28,14 @@ pub type PreviewTab = crate::platform::download::PreviewTab;
 /// the PDF is fetched, so a browser's pop-up blocker sees it as a direct
 /// result of the click rather than of an async callback. `Err` means the
 /// tab could not be opened; the caller should fall back to downloading.
+// SPEC-4.53.3: called synchronously in the click handler; Err means fall back to download.
 pub fn open_preview_tab() -> Result<PreviewTab, String> {
     crate::platform::download::open_preview_tab()
 }
 
 /// Show `bytes` as a PDF in `tab`: the browser displays it in place, with
 /// no file saved; the desktop build opens it in the system's PDF viewer.
+// SPEC-4.53.4: shows the PDF in place (web) or in the system viewer (desktop).
 pub async fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
     crate::platform::download::show_bytes_in_tab(tab, bytes).await
 }

@@ -26,6 +26,7 @@ use crate::Route;
 pub fn ServerStatusBanner() -> Element {
     // Reading the flag subscribes this component, so it re-renders (and the
     // banner appears / disappears) on every reachability transition.
+    // SPEC-5.56.1: absent while reachable.
     if use_server_reachable() {
         return rsx! {};
     }
@@ -42,6 +43,7 @@ pub fn ServerStatusBanner() -> Element {
                 class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center justify-center gap-2 text-sm text-center",
                 // User-facing copy only: never the raw CORS / "Failed to
                 // fetch" internals the console may show (MAPPS-333).
+                // SPEC-5.56.2: fixed copy and link; SPEC-5.56.3: no dismiss control.
                 span { class: "font-medium", "Server unreachable. Reconnecting\u{2026}" }
                 // Optional detail affordance: bold + underlined link to the
                 // System Status page, where the live /version + /ready

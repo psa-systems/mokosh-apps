@@ -16,6 +16,7 @@ const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
 /// MAPPS-518: is the platform-admin bearer present in sessionStorage?
 /// Used to gate the Tenants nav item (and any other UI that requires
 /// a platform-admin session, distinct from a tenant admin session).
+// SPEC-5.43.13, SPEC-5.43.14: non-blank platform token in session storage
 fn platform_bearer_present() -> bool {
     #[cfg(target_arch = "wasm32")]
     {
@@ -54,6 +55,7 @@ pub struct PageTitle(pub String);
 
 /// Provide the page-title signal at the App root. Mirrors
 /// [`crate::hooks::use_sidebar_provider`]; mount once in `App`.
+// SPEC-5.41.8
 pub fn use_page_title_provider() -> Signal<PageTitle> {
     let state = use_signal(PageTitle::default);
     use_context_provider(|| state);
@@ -71,6 +73,7 @@ pub fn use_current_page_title() -> Signal<PageTitle> {
 /// changes so it never loops on the render it runs in; a page that swaps a
 /// "Loading…" placeholder for the real record name just calls it again with
 /// the new value.
+// SPEC-5.41.7
 pub fn use_page_title(title: impl Into<String>) {
     let mut sig = use_context::<Signal<PageTitle>>();
     let title = title.into();
@@ -91,7 +94,9 @@ pub fn use_page_title(title: impl Into<String>) {
 /// this shell or the routed page below (which would otherwise loop when a page
 /// and its `ContentUnavailable` / `PermissionRequired` branch set the title).
 #[component]
+// SPEC-5.41.1, SPEC-5.41.6
 pub fn AppShell() -> Element {
+    // SPEC-5.41.3
     let mut sidebar_open = use_signal(|| false);
 
     // MAPPS-635 D8: staff users signed into their own MSP tenant get
@@ -107,6 +112,7 @@ pub fn AppShell() -> Element {
     // browser session because MAPPS-630 makes the planes mutually
     // exclusive per origin).
     #[cfg(feature = "web")]
+    // SPEC-5.41.5
     use_effect(|| {
         if crate::hooks::fetch::api::current_access_token().is_none() {
             return;
@@ -147,6 +153,7 @@ pub fn AppShell() -> Element {
                 on_menu_click: move |_| sidebar_open.set(true),
             }
             div { class: "flex flex-1 overflow-hidden",
+                // SPEC-5.41.4
                 if *sidebar_open.read() {
                     div {
                         class: "fixed inset-0 z-40 bg-gray-600/75 lg:hidden", // theme-guard-allow: mobile nav overlay scrim
@@ -165,6 +172,7 @@ pub fn AppShell() -> Element {
                 // on each route component in `src/lib.rs`, so how wide a page
                 // renders is that page's own choice; `KBArticleDetail` is the
                 // first to opt out and fill the window.
+                // SPEC-5.41.2
                 main { class: "flex-1 overflow-y-auto overscroll-contain py-6 px-4 sm:px-6 lg:px-8 @container",
                     Outlet::<crate::Route> {}
                 }
@@ -194,6 +202,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
     // survives the per-navigation AppLayout re-mount, exactly like the
     // scroll offset and per-section collapse. Only the desktop rail honors
     // it; the mobile drawer is unchanged.
+    // SPEC-5.42.4
     let mut rail_collapsed = crate::hooks::use_sidebar_collapsed();
     let collapsed = rail_collapsed.read().0;
     // Expanded keeps today's lg:w-64; collapsed shrinks to a narrow
@@ -224,6 +233,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
         // `Drawer` and HeadlessUI's `Dialog.Panel` use.
         aside {
             class: "fixed inset-y-0 left-0 z-50 w-64 bg-surface-2 border-r border-line transform transition-transform duration-300 ease-in-out flex flex-col lg:hidden {mobile_class}",
+            // SPEC-5.42.2
             aria_hidden: if props.open { "false" } else { "true" },
             div { class: "flex items-center justify-end h-12 px-2",
                 button {
@@ -237,6 +247,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
             // Mobile drawer closes on every navigation (its open state
             // lives in the re-mounting AppLayout), so there is no scroll
             // position worth preserving here.
+            // SPEC-5.42.1, SPEC-5.42.3
             SidebarContent { persist_scroll: false, collapsed: false }
         }
 
@@ -258,6 +269,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
             button {
                 class: "absolute top-1/2 right-0 -translate-y-1/2 translate-x-full z-30 flex h-10 w-5 items-center justify-center rounded-r-full border border-l-0 border-line bg-surface-2 text-subtle shadow-sm hover:text-content focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
                 aria_label: "{toggle_title}",
+                // SPEC-5.42.5
                 aria_expanded: if collapsed { "false" } else { "true" },
                 title: "{toggle_title}",
                 onclick: move |_| {
@@ -286,6 +298,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 /// record its scroll offset across re-mounts (MAPPS-203). Only the
 /// persistent desktop instance carries this id, so `getElementById` is
 /// unambiguous even though the mobile drawer renders the same component.
+// SPEC-5.42.6
 const SIDEBAR_NAV_ID: &str = "mokosh-sidebar-nav";
 
 /// Read the current scroll offset of the sidebar nav from the DOM.
@@ -313,6 +326,7 @@ fn restore_sidebar_scroll(top: i32) {
 /// Dashboard link) should render. Factored out as a pure function so the
 /// down / recovery transitions are unit-testable without a renderer, mirroring
 /// [`crate::hooks::classify_remote`].
+// SPEC-5.43.1
 pub(crate) fn full_nav_visible(server_reachable: bool) -> bool {
     server_reachable
 }
@@ -329,6 +343,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // admin/super_admin users (reactive on sign-in). The pages re-check
     // server-side, so this is a UX affordance, not a security boundary.
     let auth = crate::hooks::use_auth();
+    // SPEC-5.43.15: affordance only, the server enforces
     let is_admin = auth
         .read()
         .user
@@ -369,12 +384,14 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // session gets a trimmed sidebar based on their `caps` claim.
     // `STAFF_ONLY` is the client-side sentinel for entries no
     // contact ever sees (see `hooks::capabilities`).
+    // SPEC-5.43.2
     let show_dashboard = crate::hooks::capabilities::use_any_capability(&[
         "tickets:read",
         "invoices:read",
         "quotes:read",
     ]);
 
+    // SPEC-5.43.3
     let show_time_entries =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let show_timesheets =
@@ -382,6 +399,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // MAPPS-748: the two timesheet entries follow the tenant's module flag
     // the way the server does (every timesheet route 404s with it off), so
     // a switched-off feature is not listed. Off until the flags are known.
+    // SPEC-5.43.6
     let timesheets_on = crate::hooks::modules::use_module_enabled("timesheets");
     let show_projects = crate::hooks::capabilities::use_capability("projects:read");
     let show_companies =
@@ -407,6 +425,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // the page now explains the gap and offers to ask. Projects and Assets
     // stay trimmed on purpose: most customers never need them, and a locked
     // tab in every customer's sidebar invites requests nobody wants.
+    // SPEC-5.43.4
     let show_tickets = crate::hooks::capabilities::use_capability("tickets:read") || portal_contact;
     let show_contracts =
         crate::hooks::capabilities::use_capability("contracts:read") || portal_contact;
@@ -417,6 +436,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         crate::hooks::capabilities::use_capability("invoices:read") || portal_contact;
     let show_payments =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
+    // SPEC-5.43.5
     let show_assets = crate::hooks::capabilities::use_capability("assets:read");
     let show_kb = crate::hooks::capabilities::use_capability("kb:read");
     let show_reports =
@@ -429,6 +449,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // fail closed for them, so combine the cap check with a
     // has-contact-session guard so this entry only surfaces for a
     // portal admin.
+    // SPEC-5.43.7
     let branding_link_visible = {
         #[cfg(feature = "web")]
         {
@@ -441,6 +462,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         }
     };
     // MAPPS-782: contact sessions only, whatever they hold. See the entry.
+    // SPEC-5.43.8
     let payment_methods_link_visible = {
         #[cfg(feature = "web")]
         {
@@ -456,6 +478,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // same contact-session AND cap shape as the branding link: staff
     // reach the queue through the top-bar badge and their navigation
     // does not change.
+    // SPEC-5.43.9
     let contact_approvals_visible = {
         #[cfg(feature = "web")]
         {
@@ -471,6 +494,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // vanishes when every item under it is gated out for a contact.
     // Precomputed so the `if` right around the `NavSection` renders
     // no header for a contact whose caps are empty for that group.
+    // SPEC-5.43.11
     let show_service_desk_section = show_tickets
         || show_time_entries
         || show_timesheets
@@ -489,6 +513,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // (super_admin / admin / finance). Its Invoices and Payments siblings are
     // not gated today and render a locked state on the page instead; aligning
     // them is filed separately.
+    // SPEC-5.43.12
     let has_finance = auth
         .read()
         .user
@@ -503,6 +528,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     let mut sidebar_scroll = crate::hooks::use_sidebar_scroll();
     // Carry the id only on the persistent instance so the two SidebarContent
     // mounts (mobile + desktop) never share a DOM id.
+    // SPEC-5.42.6
     let nav_id = if persist_scroll { SIDEBAR_NAV_ID } else { "" };
 
     rsx! {
@@ -527,6 +553,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 // to the offset recorded before the last navigation so the
                 // re-mount is invisible. `peek` so reading it here never
                 // subscribes this component to its own scroll writes.
+                // SPEC-5.42.7
                 onmounted: move |_| {
                     if persist_scroll {
                         let top = sidebar_scroll.peek().0;
@@ -536,6 +563,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     }
                 },
                 // Record every scroll so the next re-mount can restore it.
+                // SPEC-5.42.7
                 onscroll: move |_| async move {
                     if persist_scroll {
                         if let Some(top) = read_sidebar_scroll().await {
@@ -576,6 +604,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 // MAPPS-453: surface the docs subdomain in the main menu, not
                 // buried under Applications. External link (new tab), shown
                 // only when a docs base is configured.
+                // SPEC-5.43.10
                 if cfg.has_docs() {
                     DocsNavItem { href: cfg.docs_url(""), collapsed }
                 }
@@ -584,9 +613,11 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
             // unreachable, leaving Dashboard as the only navigable
             // destination. The links return the instant the recovery poll
             // marks the server reachable again.
+            // SPEC-5.43.1
             if show_full_nav {
 
             if show_service_desk_section {
+                // SPEC-5.44.1, SPEC-5.44.2: section order and items
                 NavSection { title: "Service Desk", rail_collapsed: collapsed, color: SectionColor::Blue,
                     if show_tickets {
                         NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets", collapsed }
@@ -740,6 +771,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
             // accept a platform bearer (mirroring the MAPPS-518
             // `TenantOrPlatformCaller` pattern already on the 5
             // dual-check tenant handlers) is tracked separately.
+            // SPEC-5.43.13
             if is_admin || is_platform_admin {
                 NavSection { title: "Admin", rail_collapsed: collapsed, color: SectionColor::Violet,
                     // Unified Members nav. Was `TeamsNavItem` pointing
@@ -747,6 +779,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // redirect stub and the full roster + sharing +
                     // teams surface lives at `/settings/members`. Org
                     // tenants only.
+                    // SPEC-5.43.13, SPEC-5.44.3
                     MembersNavItem { visible: is_org_tenant, collapsed }
                     NavItem { to: Route::Invitations {}, icon: rsx!(MailIcon {}), label: "Invitations", collapsed }
                     // "Logs" groups every log-flavoured destination
@@ -754,6 +787,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // a future error-logs page lands next to Audit Log rather
                     // than a second flat item. Audit Log is the only child
                     // for now.
+                    // SPEC-5.44.3
                     NavSubcategory {
                         title: "Logs".to_string(),
                         icon: rsx!(ClipboardDocumentListIcon {}),
@@ -773,6 +807,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
             // holding a platform bearer, independent of `is_admin`, since a
             // pure platform admin with no tenant `users` row still owns this
             // account.
+            // SPEC-5.43.14
             if is_platform_admin {
                 NavSection { title: "Platform", rail_collapsed: collapsed, color: SectionColor::Sky,
                     NavItem { to: Route::PlatformAccount {}, icon: rsx!(UserCircleIcon {}), label: "Platform Account", collapsed }
@@ -785,6 +820,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
             // Hide the build-info line in the narrow collapsed strip: it
             // wraps illegibly at lg:w-16. It returns when the rail expands.
             if !collapsed {
+                // SPEC-5.42.8
                 VersionFooter {}
             }
         }
@@ -809,6 +845,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
 fn VersionFooter() -> Element {
     use crate::utils::version::VERSION;
     let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+    // SPEC-5.49.7
     let docs_href = cfg.has_docs().then(|| cfg.docs_url(""));
     rsx! {
         p {
@@ -817,6 +854,7 @@ fn VersionFooter() -> Element {
                 to: Route::SystemStatus {},
                 class: "hover:text-content transition-colors",
                 title: "View system status and build details",
+                // SPEC-5.49.6
                 "v{VERSION}"
             }
             if let Some(href) = docs_href {
@@ -854,6 +892,7 @@ struct NavSectionProps {
     /// MAPPS-359: this category's accent hue. Colors the section header and
     /// is handed down to each child [`NavItem`] via context to tint its
     /// icon.
+    // SPEC-5.44.4
     color: SectionColor,
     /// MAPPS-250: when the WHOLE rail is collapsed to the icon-only strip,
     /// the section header (title + per-section chevron) is hidden and the
@@ -875,12 +914,14 @@ fn NavSection(props: NavSectionProps) -> Element {
     // still colors its icons.
     use_context_provider(|| NavCategoryColor(props.color));
     let title = props.title.clone();
+    // SPEC-5.42.9
     let collapsed = crate::hooks::is_section_collapsed(&state.read(), &title);
 
     // Outer rail collapsed: drop the section header entirely and show the
     // child icons. The inner per-section collapse state is preserved (we
     // never touch it here) so re-expanding the rail restores each section's
     // prior open/closed state.
+    // SPEC-5.42.8, SPEC-5.42.9
     if props.rail_collapsed {
         // MAPPS-346: `display: contents` so this section's icons become
         // direct flex children of the nav. That lets the nav's
@@ -894,6 +935,7 @@ fn NavSection(props: NavSectionProps) -> Element {
     }
 
     let toggle_title = title.clone();
+    // SPEC-5.42.10
     let toggle = move |_| {
         let mut s = state.write();
         let new_value = !s.collapsed.get(&toggle_title).copied().unwrap_or(false);
@@ -903,12 +945,14 @@ fn NavSection(props: NavSectionProps) -> Element {
     // MAPPS-359: tint the header label with the category hue (accent), with a
     // lighter dark-mode shade. Hover still lifts to the primary content color
     // so the toggle affordance stays obvious.
+    // SPEC-5.44.4
     let header_color = props.color.heading_class();
 
     rsx! {
         div { class: "pt-4",
             button {
                 class: "w-full flex items-center justify-between px-3 py-1 text-xs font-semibold {header_color} uppercase tracking-wider hover:text-content focus:outline-none",
+                // SPEC-5.42.10
                 aria_expanded: if collapsed { "false" } else { "true" },
                 onclick: toggle,
                 span { "{props.title}" }
@@ -933,6 +977,7 @@ fn NavSection(props: NavSectionProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 struct NavItemProps {
     to: Route,
+    // SPEC-5.44.6: guarded by a source-scan test
     icon: Element,
     label: String,
     /// MAPPS-250: render as an icon-only link (label hidden, label moved to
@@ -945,6 +990,7 @@ struct NavItemProps {
 /// Map a route to the nav list it lives under, so a detail page keeps its
 /// parent section highlighted (PMS-312). Routes without a list parent map to
 /// themselves, preserving exact-match highlighting for top-level pages.
+// SPEC-5.44.8
 fn section_route(route: &Route) -> Route {
     match route {
         Route::TicketDetail { .. } => Route::TicketList {},
@@ -975,12 +1021,14 @@ fn NavItem(props: NavItemProps) -> Element {
     // detail page as its parent list (PMS-312) so e.g. RateCardDetail keeps
     // "Rate Cards" highlighted.
     let current_route: Route = use_route();
+    // SPEC-5.44.7
     let is_active = section_route(&current_route) == props.to;
 
     // MAPPS-359: tint the icon with the enclosing category's accent hue
     // (provided by NavSection). Items rendered outside any NavSection
     // (Dashboard) have no NavCategoryColor in context, so they fall back to
     // the neutral subtle icon that lifts to the content color on hover.
+    // SPEC-5.44.5
     let icon_color = try_use_context::<NavCategoryColor>()
         .map(|c| c.0.heading_class())
         .unwrap_or("text-subtle group-hover:text-content");
@@ -988,6 +1036,7 @@ fn NavItem(props: NavItemProps) -> Element {
     // Collapsed rail: icon-only link, centered in the narrow strip, with the
     // label exposed as a `title` tooltip for discoverability (AC4). The link
     // stays a working router `Link` so navigation works from the strip.
+    // SPEC-5.44.9
     if props.collapsed {
         let class = if is_active {
             "group flex items-center justify-center px-2 py-1 rounded-md bg-surface text-content border-l-2 border-accent"
@@ -1015,6 +1064,7 @@ fn NavItem(props: NavItemProps) -> Element {
 
     rsx! {
         Link {
+            // SPEC-5.44.10
             to: props.to,
             class: "{class}",
             span { class: "mr-3 {icon_color}",
@@ -1062,6 +1112,7 @@ fn NavSubcategory(props: NavSubcategoryProps) -> Element {
     let mut state = crate::hooks::use_sidebar_state();
     // Prefix the state key so a section and a nested subcategory sharing a
     // title cannot collide (unlikely today, but the map is shared).
+    // SPEC-5.42.11
     let state_key = format!("subcategory:{}", props.title);
     // Default OPEN, mirroring NavSection: a first-time visitor sees every
     // navigable destination without having to hunt for it.
@@ -1099,6 +1150,7 @@ fn NavSubcategory(props: NavSubcategoryProps) -> Element {
             button {
                 r#type: "button",
                 class: "group flex items-center px-3 py-2 text-sm font-medium rounded-md text-muted hover:bg-surface hover:text-content w-full",
+                // SPEC-5.42.11
                 aria_expanded: if collapsed { "false" } else { "true" },
                 onclick: toggle,
                 span { class: "mr-3 {icon_color}",
@@ -1145,6 +1197,7 @@ struct MembersNavItemProps {
 #[cfg(feature = "multi-tenant")]
 #[component]
 fn MembersNavItem(props: MembersNavItemProps) -> Element {
+    // SPEC-5.43.13
     let MembersNavItemProps { visible, collapsed } = props;
     if !visible {
         return rsx! {};
@@ -1165,6 +1218,7 @@ fn MembersNavItem(props: MembersNavItemProps) -> Element {
 /// router `Link`; this is its visual twin for an off-site link (the docs
 /// subdomain), so it opens in a new tab and carries no active state.
 #[component]
+// SPEC-5.43.10
 fn DocsNavItem(href: String, collapsed: bool) -> Element {
     let icon_color = "text-subtle group-hover:text-content";
     if collapsed {
@@ -1210,15 +1264,18 @@ pub fn TopBar(props: TopBarProps) -> Element {
     // companies, CRM entities a contact must not enumerate), so a
     // contact session never sees the box; every keystroke would be a
     // 401. Same `STAFF_ONLY` sentinel as the CRM and reports nav.
+    // SPEC-5.45.5, SPEC-5.45.6
     let show_search =
         crate::hooks::capabilities::use_capability(crate::hooks::capabilities::STAFF_ONLY);
     let auth = crate::hooks::use_auth();
+    // SPEC-5.45.2
     let active_org = auth.read().active_org_name().map(str::to_string);
     // MAPPS-366: the page title lives in a shared signal each page sets via
     // use_page_title. Reading it HERE (in TopBar, a child of AppShell) rather
     // than in AppShell means a title change re-renders only the top bar, not
     // the Outlet/page - so a page and its ContentUnavailable / PermissionRequired
     // branch can both call use_page_title without fighting into a render loop.
+    // SPEC-5.45.3
     let title = use_current_page_title().read().0.clone();
     // MAPPS-509: the deployment's brand, from runtime config, so an
     // operator renames the tab and the wordmark without a rebuild.
@@ -1230,6 +1287,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
     // ASCII spelling; scripts/check-ellipsis-glyph.sh keeps it gone.
     #[cfg(feature = "app")]
     {
+        // SPEC-5.45.4
         let t = title.trim();
         let next = if t.is_empty() || t == "Loading…" {
             brand.clone()
@@ -1242,6 +1300,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
         crate::platform::dom::set_title(&next);
     }
     rsx! {
+        // SPEC-5.45.1
         header { class: "h-16 flex items-center bg-surface-2 border-b border-line shrink-0 z-20",
             // Brand block - same width as the sidebar below it.
             // Includes the mobile hamburger so the brand area also opens
@@ -1249,6 +1308,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
             div { class: "flex items-center h-full lg:w-64 px-4 lg:px-6",
                 button {
                     class: "lg:hidden p-2 mr-2 rounded-md text-subtle hover:text-content hover:bg-surface-2",
+                    // SPEC-5.45.1
                     aria_label: "Open navigation",
                     title: "Open navigation",
                     onclick: move |_| props.on_menu_click.call(()),
@@ -1286,6 +1346,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
             }
 
             // Right side actions
+            // SPEC-5.45.7: a child with nothing to show returns an empty rsx, never a placeholder
             div { class: "flex items-center px-4 sm:px-6 lg:px-8 space-x-4",
                 // MAPPS-346: global search, collapsed to a magnifier icon
                 // that expands the text entry leftward. Sits to the left of
@@ -1317,6 +1378,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 // vanished on switching and came back on a hard refresh. Gating
                 // the component rather than its trigger also unmounts the
                 // create-team modal it hosts.
+                // SPEC-5.45.5
                 if crate::modules::feature_flags::organizations_enabled() {
                     TenantSwitcher {}
                 }
@@ -1339,6 +1401,7 @@ fn UserMenu() -> Element {
     let mut nav = crate::hooks::dropdown_nav::use_dropdown_nav("user-menu").menu();
     // Five menu rows: Profile, Account Settings, System Status, Create
     // new team, Logout. Keep in step with the rsx! block below.
+    // SPEC-5.46.3
     const USER_MENU_ROWS: usize = 5;
     // MAPPS-384: dismiss the dropdown on navigation. UserMenu lives in the
     // persistent AppShell (MAPPS-366), so a route change re-renders the routed
@@ -1346,6 +1409,7 @@ fn UserMenu() -> Element {
     // stay open across screens. `use_reactive!` re-runs the effect whenever the
     // current route changes, and only then.
     let route: Route = use_route();
+    // SPEC-5.46.1: close on every route change
     use_effect(use_reactive!(|route| {
         // `route` is the reactive dependency: every navigation changes it
         // and re-fires this effect to close the menu.
@@ -1379,6 +1443,7 @@ fn UserMenu() -> Element {
     // this origin) lives in `modules::auth::sign_out`, shared with the portal
     // menu and the account-deleted overlay. It runs on a task so the closure
     // stays sync; every step is awaited before it navigates away.
+    // SPEC-5.46.5, SPEC-5.46.8
     let logout = move |_| {
         nav.close();
         // MAPPS-605: a contact-plane session goes through its own
@@ -1395,6 +1460,7 @@ fn UserMenu() -> Element {
                 // but the local clear below still signs the user out
                 // client-side.
                 spawn(async move {
+                    // SPEC-5.46.6
                     let body = serde_json::json!({ "refresh_token": rt });
                     let _ = crate::hooks::fetch::api::post_typed_no_content(
                         "/contact/auth/logout",
@@ -1412,6 +1478,7 @@ fn UserMenu() -> Element {
             // sign into by re-typing all three fields. Read these hints
             // before clearing the session below: clear_contact_session()
             // invalidates the storage they read from.
+            // SPEC-5.46.6, SPEC-5.46.7
             let dest = if let Some(pid) = crate::hooks::fetch::api::current_contact_last_portal_id()
             {
                 format!("/portal/{pid}/login")
@@ -1435,6 +1502,7 @@ fn UserMenu() -> Element {
         // off origin - MAPPS-522). Runs on a task so the closure stays
         // sync.
         spawn(async move {
+            // SPEC-5.46.5
             crate::modules::auth::sign_out::sign_out().await;
         });
     };
@@ -1448,6 +1516,7 @@ fn UserMenu() -> Element {
         // meant to sit beside, so matching the sibling convention wins.
         Popover {
             open: nav.is_open(),
+            // SPEC-5.46.1
             label: "User menu",
             trigger_class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
             trigger: rsx! {
@@ -1476,6 +1545,7 @@ fn UserMenu() -> Element {
                     // SPA. Use the router `Link` so the SPA does an
                     // internal transition instead of a full reload.
                     Link {
+                        // SPEC-5.46.2
                         to: Route::Profile {},
                         role: "menuitem",
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
@@ -1517,6 +1587,7 @@ fn UserMenu() -> Element {
                     // would set and nothing would render; and a create action
                     // that works while the switcher is hidden leaves the
                     // operator holding a team they cannot reach.
+                    // SPEC-5.46.2
                     if crate::modules::feature_flags::organizations_enabled() {
                         div { class: "border-t border-line my-1", role: "separator" }
                         button {
@@ -1524,6 +1595,7 @@ fn UserMenu() -> Element {
                             role: "menuitem",
                             class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                             onclick: move |_| {
+                                // SPEC-5.46.4
                                 *crate::components::tenant_switcher::SHOW_CREATE_ORG.write() = true;
                                 nav.close();
                             },
@@ -1574,6 +1646,7 @@ struct NotificationItem {
 /// table-name plural the KB event stamps, so a new server event that picks
 /// either spelling lands. `None` is a row with nowhere to go, which keeps
 /// today's mark-read-only behaviour.
+// SPEC-5.47.9, SPEC-5.47.10
 fn notification_route(entity_type: &str, entity_id: uuid::Uuid) -> Option<Route> {
     let id = entity_id.to_string();
     match entity_type {
@@ -1601,6 +1674,7 @@ struct NotificationPage {
 /// delegates. The instant is rendered in the user's profile timezone
 /// (MAPPS-208); users without a format preference get a locale
 /// rendering still pinned to that timezone.
+// SPEC-5.47.6
 fn format_local_datetime(
     dt: chrono::DateTime<chrono::Utc>,
     pref: Option<&str>,
@@ -1622,6 +1696,7 @@ fn NotificationBell() -> Element {
     // `use_resource` runs on mount and whenever `.restart()` is called
     // (after marking an item read). A failed fetch degrades to an empty
     // inbox rather than surfacing an error in the top bar.
+    // SPEC-5.47.1
     let mut inbox = use_resource(|| async {
         // Subscribe to the active-tenant generation so the inbox
         // refetches when the user switches org (notifications are
@@ -1637,6 +1712,7 @@ fn NotificationBell() -> Element {
                 }
             })
             .inspect_err(|e| {
+                // SPEC-5.47.2
                 tracing::error!("notification load failed, the bell will read empty: {e}")
             })
             .ok()
@@ -1645,6 +1721,7 @@ fn NotificationBell() -> Element {
     });
 
     let items = inbox.read_unchecked().clone().unwrap_or_default();
+    // SPEC-5.47.3
     let unread = items.iter().filter(|i| i.read_at.is_none()).count();
     let row_count = items.len();
     // MAPPS-939: resolve once for the whole dropdown, not once per row.
@@ -1667,6 +1744,7 @@ fn NotificationBell() -> Element {
                     }
                 }
             },
+            // SPEC-5.47.4
             width: "w-80 max-h-96 overflow-y-auto",
             ontoggle: move |_| {
                 if nav.is_open() {
@@ -1677,16 +1755,19 @@ fn NotificationBell() -> Element {
             },
             onclose: move |_| nav.close(),
             onkeydown: move |e: KeyboardEvent| {
+                // SPEC-5.47.11
                 nav.keydown_menu(&e, row_count);
             },
             div { class: "px-4 py-2 border-b border-line text-sm font-semibold text-content",
                 "Notifications"
             }
+            // SPEC-5.47.4
             if items.is_empty() {
                 div { class: "px-4 py-6 text-sm text-muted text-center",
                     "No notifications yet"
                 }
             } else {
+                // SPEC-5.47.5
                 for item in items.iter().cloned() {
                     NotificationRow {
                         item,
@@ -1713,6 +1794,7 @@ fn NotificationBell() -> Element {
 /// that only ever renders a number does not deserialize and clone the
 /// full pending-approvals list on every layout render.
 #[component]
+// SPEC-5.48.1, SPEC-5.48.2, SPEC-5.48.3, SPEC-5.48.4, SPEC-5.48.5
 fn ApprovalsBadge() -> Element {
     // MAPPS-737: the server's contact arm requires `approvals:decide`, so
     // a contact without it must not fire a 403 on every mount; staff
@@ -1799,6 +1881,7 @@ fn NotificationRow(
     } else {
         ""
     };
+    // SPEC-5.47.10
     let target = item
         .entity_type
         .as_deref()
@@ -1811,6 +1894,7 @@ fn NotificationRow(
             r#type: "button",
             class: "block w-full text-left px-4 py-3 border-b border-line hover:bg-surface-2 {unread_bg}",
             onclick: move |_| {
+                // SPEC-5.47.7, SPEC-5.47.8: only an unread row posts mark-read
                 if is_unread {
                     spawn(async move {
                         if let Err(err) = crate::hooks::fetch::api::post_authed_no_content(
@@ -1818,16 +1902,19 @@ fn NotificationRow(
                             )
                             .await
                         {
+                            // SPEC-5.47.7
                             tracing::warn!("failed to mark notification {id} read: {err}");
                         }
                         on_read.call(());
                     });
                 }
+                // SPEC-5.47.9
                 if let Some(target) = target.clone() {
                     on_navigate.call(());
                     navigator.push(target);
                 }
             },
+            // SPEC-5.47.5
             if !subject.is_empty() {
                 div { class: "text-sm font-medium text-content", "{subject}" }
             }
@@ -1854,6 +1941,7 @@ pub struct AuthLayoutProps {
     /// default. Applied to the wordmark, the card and the footer together so
     /// the three stay aligned.
     #[props(default = "sm:max-w-md".to_string())]
+    // SPEC-5.49.3
     max_w: String,
     children: Element,
 }
@@ -1868,12 +1956,14 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
     // full CSS-custom-property pipeline in a follow-up commit.
     let width = format!("sm:mx-auto sm:w-full {}", props.max_w);
     let brand = crate::hooks::branding::EFFECTIVE_BRANDING.read();
+    // SPEC-5.49.1
     let wordmark = brand
         .display_name
         .clone()
         .filter(|s| !s.is_empty())
         .or_else(|| brand.company_name.clone().filter(|s| !s.is_empty()))
         .unwrap_or_else(crate::branding::product_name);
+    // SPEC-5.49.2
     let logo_url = brand
         .logo_url
         .clone()
@@ -1928,8 +2018,10 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
             // form on every login / set-password / reset-password
             // page so the visitor knows who to call when the flow
             // dead-ends.
+            // SPEC-5.49.5
             if support_email.is_some() || support_phone.is_some() {
                 div { class: "mt-6 {width} text-center text-xs text-muted space-y-1",
+                    // SPEC-5.49.4
                     if let Some(name) = support_contact.clone() {
                         p { "Need help? Contact {name}." }
                     } else {
@@ -1985,9 +2077,11 @@ pub struct PageHeaderProps {
 }
 
 #[component]
+// SPEC-5.50.1
 pub fn PageHeader(props: PageHeaderProps) -> Element {
     rsx! {
         div { class: "mb-6",
+            // SPEC-5.50.3
             if let Some(ref breadcrumbs) = props.breadcrumbs {
                 div { class: "mb-2",
                     {breadcrumbs}
@@ -2003,6 +2097,7 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
                     // page title at sm and up. Bump line-height to
                     // `leading-9` (36px) at the same breakpoint as the
                     // larger font so descenders sit inside the line box.
+                    // SPEC-5.50.2
                     if let Some(slot) = props.title_slot.clone() {
                         {slot}
                     } else {
@@ -2047,6 +2142,7 @@ pub struct BreadcrumbsProps {
 ///
 /// Kept as a plain function, not a component, so a page's trail can be
 /// asserted in a unit test without standing up a router.
+// SPEC-5.50.5
 pub fn detail_breadcrumbs(list_label: &str, list_route: Route, title: &str) -> Vec<BreadcrumbItem> {
     vec![
         BreadcrumbItem {
@@ -2061,6 +2157,7 @@ pub fn detail_breadcrumbs(list_label: &str, list_route: Route, title: &str) -> V
 }
 
 #[component]
+// SPEC-5.50.4
 pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
     rsx! {
         nav { class: "flex", aria_label: "Breadcrumb",
@@ -2099,6 +2196,7 @@ pub struct EmptyStateProps {
 }
 
 #[component]
+// SPEC-5.50.6
 pub fn EmptyState(props: EmptyStateProps) -> Element {
     rsx! {
         div { class: "text-center py-12",

@@ -58,11 +58,13 @@ thread_local! {
 pub fn use_capability(cap: &str) -> bool {
     #[cfg(feature = "web")]
     {
+        // SPEC-4.8.1: a live contact session shadows any staff or platform bearer.
         if crate::hooks::fetch::api::has_contact_session() {
             return current_contact_capabilities()
                 .map(|caps| caps.iter().any(|c| c == cap))
                 .unwrap_or(false);
         }
+        // SPEC-4.8.2: staff and platform bearers bypass the cap check.
         if crate::hooks::fetch::api::current_access_token().is_some() {
             return true;
         }
@@ -73,6 +75,7 @@ pub fn use_capability(cap: &str) -> bool {
     }
     #[cfg(not(feature = "web"))]
     {
+        // SPEC-4.8.9: non-web builds grant nothing.
         let _ = cap;
         false
     }
@@ -86,6 +89,7 @@ pub fn use_capability(cap: &str) -> bool {
 pub fn use_any_capability(caps: &[&str]) -> bool {
     #[cfg(feature = "web")]
     {
+        // SPEC-4.8.3: same plane precedence as use_capability.
         if crate::hooks::fetch::api::has_contact_session() {
             return current_contact_capabilities()
                 .map(|held| caps.iter().any(|want| held.iter().any(|c| c == want)))
@@ -101,6 +105,7 @@ pub fn use_any_capability(caps: &[&str]) -> bool {
     }
     #[cfg(not(feature = "web"))]
     {
+        // SPEC-4.8.9: non-web builds grant nothing.
         let _ = caps;
         false
     }
@@ -116,6 +121,7 @@ pub fn use_any_capability(caps: &[&str]) -> bool {
 pub fn set_contact_capabilities(caps: Option<Vec<String>>) {
     #[cfg(feature = "web")]
     {
+        // SPEC-4.8.5: in-memory per-thread snapshot, never persisted.
         CONTACT_CAPABILITIES.with(|slot| *slot.borrow_mut() = caps);
     }
     #[cfg(not(feature = "web"))]
@@ -128,6 +134,7 @@ pub fn set_contact_capabilities(caps: Option<Vec<String>>) {
 pub fn current_contact_capabilities() -> Option<Vec<String>> {
     #[cfg(feature = "web")]
     {
+        // SPEC-4.8.5: None before any contact login.
         CONTACT_CAPABILITIES.with(|slot| slot.borrow().clone())
     }
     #[cfg(not(feature = "web"))]
@@ -139,6 +146,7 @@ pub fn current_contact_capabilities() -> Option<Vec<String>> {
 /// Drop the caps snapshot. Called from every path that also clears
 /// the contact refresh token (logout, refresh failure).
 pub fn clear_contact_capabilities() {
+    // SPEC-4.8.5: clearing means None.
     set_contact_capabilities(None);
 }
 
@@ -157,6 +165,7 @@ fn platform_bearer_present() -> bool {
     {
         if let Some(win) = web_sys::window() {
             if let Ok(Some(store)) = win.session_storage() {
+                // SPEC-4.8.4: a blank (trimmed) value is not a bearer.
                 if let Ok(Some(token)) = store.get_item(PLATFORM_TOKEN_KEY) {
                     return !token.trim().is_empty();
                 }
@@ -173,6 +182,7 @@ fn platform_bearer_present() -> bool {
 /// it. Staff and platform-admin sessions bypass the cap check in
 /// `use_capability` unconditionally, so this constant renders as true
 /// for them and false for every contact.
+// SPEC-4.8.6: true for staff and platform sessions, false for every contact.
 pub const STAFF_ONLY: &str = "__staff_only__";
 
 /// MAPPS-707: true only when a contact session is active. Distinct
@@ -184,6 +194,7 @@ pub const STAFF_ONLY: &str = "__staff_only__";
 pub fn use_is_contact_session() -> bool {
     #[cfg(feature = "web")]
     {
+        // SPEC-4.8.7: plane check only; no staff bypass.
         crate::hooks::fetch::api::has_contact_session()
     }
     #[cfg(not(feature = "web"))]
@@ -201,6 +212,7 @@ pub fn use_is_contact_session() -> bool {
 pub fn contact_has_no_capabilities() -> bool {
     #[cfg(feature = "web")]
     {
+        // SPEC-4.8.8: only a contact session with no caps (or none loaded) counts.
         if !crate::hooks::fetch::api::has_contact_session() {
             return false;
         }

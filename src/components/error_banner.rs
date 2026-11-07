@@ -17,6 +17,7 @@ use dioxus::prelude::*;
 /// Which state an inline banner reports.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BannerTone {
+    // SPEC-5.23.2, SPEC-5.23.3: four tones, Error is the default.
     #[default]
     Error,
     Success,
@@ -39,6 +40,7 @@ impl BannerTone {
     /// `alert` interrupts the screen reader, which only the error state earns.
     /// The other outcomes are announced politely as `status`, matching how
     /// `portal_set_password.rs` and `request_form.rs` already mark them.
+    // SPEC-5.23.4
     fn role(self) -> &'static str {
         match self {
             Self::Error => "alert",
@@ -65,6 +67,7 @@ pub fn StatusBanner(props: StatusBannerProps) -> Element {
     let base = props.tone.class();
     let role = props.tone.role();
     let class = props.class;
+    // SPEC-5.23.1
     rsx! {
         div { role, class: "{base} {class}", {props.children} }
     }
@@ -82,6 +85,7 @@ pub struct ErrorBannerProps {
 /// [`BannerTone::Error`], kept as its own name for the existing call sites.
 #[component]
 pub fn ErrorBanner(props: ErrorBannerProps) -> Element {
+    // SPEC-5.23.5
     rsx! {
         StatusBanner { tone: BannerTone::Error, class: props.class, {props.children} }
     }

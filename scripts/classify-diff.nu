@@ -13,6 +13,7 @@
 # $c_family_exts or $hash_family_exts below. Any other file is ignored by
 # this classifier and the existing path-based filters handle it.
 #
+# SPEC-2.12.1: CLI shape and the single-word stdout verdict.
 # Usage:
 #   nu scripts/classify-diff.nu <base-ref> <head-ref>
 #   nu scripts/classify-diff.nu --self-test
@@ -25,6 +26,7 @@
 # C-family comment syntax: `//` or `/* ... */`, plus `--` for SQL. The
 # `*` and `*/` prefixes cover block-comment continuation lines that
 # follow the conventional `/* ... \n * ... \n */` layout.
+# SPEC-2.12.2: the suffix lists below define what counts as a code file.
 const C_FAMILY_EXTS = [
     ".rs" ".ts" ".tsx" ".js" ".jsx" ".mjs" ".cjs"
     ".css" ".scss" ".sql"
@@ -57,6 +59,7 @@ def file_family [path: string] {
 
 # True when `content` (one changed line, minus its leading +/- marker) is
 # a comment or whitespace in a file of the given `family` ("c" or "hash").
+# SPEC-2.12.3: per-line comment/blank rule.
 def is_comment_line [content: string, family: string] {
     let trimmed = ($content | str trim)
     if ($trimmed | is-empty) { return true }
@@ -94,6 +97,7 @@ def classify_file [base: string, head: string, path: string, family: string] {
 }
 
 # Classify the whole diff between $base and $head.
+# SPEC-2.12.4: verdict aggregation; SPEC-2.12.5: git failure answers `code`.
 def classify_diff [base: string, head: string] {
     let changed_paths = (
         do { ^git diff --name-only $base $head } | complete
@@ -124,6 +128,7 @@ def classify_diff [base: string, head: string] {
 # Self-test: build a fresh tempdir with a tiny git repo, make a comment-only
 # change, a code change, a docs-only change, and assert the classifier
 # returns the expected verdict each time.
+# SPEC-2.12.6: six-case self-test in a throwaway repository.
 def self_test [] {
     let dir = (^mktemp --directory --tmpdir classify-diff-test.XXXXXX | str trim)
     cd $dir

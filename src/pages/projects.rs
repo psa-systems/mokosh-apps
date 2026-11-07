@@ -19,6 +19,7 @@ use crate::Route;
 /// A project (`GET /api/v1/projects`). Money/hours are decoded with a
 /// number-or-string tolerant reader because the server's `Decimal` wire
 /// form depends on rust_decimal's serde feature set.
+// SPEC-13.2.6: money and hours decode number-or-string via de_flex_f64
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteProject {
     id: uuid::Uuid,
@@ -78,6 +79,7 @@ fn project_company(p: &RemoteProject) -> crate::utils::unresolved_person::Compan
 }
 
 /// A task (`GET /api/v1/projects/:id/tasks`).
+// SPEC-13.2.6, SPEC-13.2.7: actual_hours is approved-only, logged_hours is all non-rejected
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteTask {
     id: uuid::Uuid,
@@ -158,6 +160,7 @@ type RemoteUser = crate::hooks::UserRow;
 
 /// Resolve a task status id to a (badge colour, label). Completed
 /// statuses are green; everything else is blue (in-flight).
+// SPEC-13.13.3: badge colour and Unknown fallback
 fn task_status_badge(
     statuses: &[RemoteTaskStatus],
     id: &Option<uuid::Uuid>,
@@ -187,6 +190,7 @@ fn task_status_badge(
 /// variant still depends on `is_completed`, which is only in the cached
 /// row, so a server-sent name with no matching cache row renders as
 /// `BadgeVariant::Blue` (in-flight) rather than guessing.
+// SPEC-13.13.3: server-sent name wins over the cached name
 fn task_status_badge_prefer(
     statuses: &[RemoteTaskStatus],
     id: &Option<uuid::Uuid>,
@@ -203,6 +207,7 @@ fn task_status_badge_prefer(
 /// and fall back to the roster lookup when the server did not join it.
 /// `Unassigned` still comes from `id.is_none()`; the server-sent name
 /// never overrides it.
+// SPEC-13.5.21, SPEC-13.13.4: server name, then roster, then Unknown; Unassigned for no id
 fn user_name_with_tooltip_prefer(
     users: &[RemoteUser],
     id: &Option<uuid::Uuid>,
@@ -255,6 +260,7 @@ fn change_lines(changes: &[FieldChange]) -> Vec<ChangeLine> {
 
 /// Resolve a history entry's actor (MAPPS-1037): the server-sent name, then
 /// the roster. PMS-184.
+// SPEC-13.12.6: server name, roster, Someone, System
 fn history_actor(
     users: &[RemoteUser],
     e: &HistoryEntry,
@@ -274,6 +280,7 @@ fn history_actor(
 /// which only ever emit a valid date or empty, so the real gap this guards is
 /// an out-of-range year (e.g. `0007`); the inputs carry matching min/max so
 /// the picker rejects it natively too. `label` names the field in the message.
+// SPEC-13.5.20: optional date range 2000-2100
 fn validate_opt_date(raw: &str, label: &str) -> Result<(), String> {
     // MAPPS-582: a date has no room for a character that renders as nothing.
     let s = crate::utils::text::clean_strict(raw);
@@ -293,6 +300,7 @@ fn validate_opt_date(raw: &str, label: &str) -> Result<(), String> {
 
 /// Insert a date field, sending `null` (leaves the column unchanged under the
 /// server's COALESCE update) when the input is blank. PMS-184 edit forms.
+// SPEC-13.11.4, SPEC-13.13.6: blank date goes out as null
 fn insert_opt_date(body: &mut serde_json::Map<String, serde_json::Value>, key: &str, v: &str) {
     let v = v.trim();
     body.insert(
@@ -308,22 +316,26 @@ fn insert_opt_date(body: &mut serde_json::Map<String, serde_json::Value>, key: &
 /// Insert a numeric field as a JSON number, or `null` when blank/unparseable.
 /// Max length for a project name. Mirrors the server's PMS-324 cap so the
 /// client rejects over-long names inline instead of waiting for a 422.
+// SPEC-13.5.18: project name cap
 const PROJECT_NAME_MAX: usize = 80;
 
 /// Maximum project budget amount (MAPPS-212). Mirrors the server's
 /// `DECIMAL(14, 2)` budget columns (12 integer digits) so an over-large amount
 /// is rejected inline with a field message instead of overflowing opaquely
 /// server-side. Assumed precision; revise if the server column differs.
+// SPEC-13.5.18: budget amount cap
 const BUDGET_AMOUNT_MAX: f64 = 999_999_999_999.99;
 
 /// Maximum project description length (MAPPS-212). Caps the textarea client-side
 /// so over-long text is blocked inline instead of failing later server-side.
 /// Assumed to match the server's project description column; revise if it differs.
+// SPEC-13.11.6: browser maxlength only
 const PROJECT_DESCRIPTION_MAX: usize = 2000;
 
 /// Validate a project name (MAPPS-176): required, trimmed, at most
 /// [`PROJECT_NAME_MAX`] characters. Returns the trimmed name or an inline
 /// error message for the Name field.
+// SPEC-13.5.18: name required and capped
 fn validate_project_name(raw: &str) -> Result<String, String> {
     let name = raw.trim();
     if name.is_empty() {
@@ -342,6 +354,7 @@ fn validate_project_name(raw: &str) -> Result<String, String> {
 /// (matching the server's `DECIMAL(_, 2)` budget columns). Returns the parsed
 /// value or an inline error message for that field. `label` names the field in
 /// the message (e.g. "Budget amount").
+// SPEC-13.5.18, SPEC-13.11.5: non-negative, 2 decimals, capped; invisibles stripped
 fn validate_budget(raw: &str, label: &str) -> Result<Option<f64>, String> {
     // MAPPS-582: strip the invisibles so a pasted amount is not reported as
     // "must be a number" for a character the user cannot see.
@@ -372,6 +385,7 @@ fn validate_budget(raw: &str, label: &str) -> Result<Option<f64>, String> {
 /// value greater than zero. Distinguishes a well-formed but out-of-range value
 /// (e.g. `-9`, `0`) from genuinely non-numeric input, so a negative number is
 /// no longer misreported as "must be a number".
+// SPEC-13.5.18, SPEC-13.11.5: positive hours; negative reported as out of range
 fn validate_budget_hours(raw: &str) -> Result<Option<f64>, String> {
     // MAPPS-582: same as `validate_budget`; the H:MM parser is ASCII-only.
     let s = crate::utils::text::clean_strict(raw);
@@ -423,6 +437,7 @@ fn fmt_hours(v: Option<f64>) -> String {
 
 /// Deserialize an optional `Decimal`-ish field that may arrive as a JSON
 /// number, a string, or null.
+// SPEC-13.2.6: number, string or null
 fn de_flex_f64<'de, D>(d: D) -> Result<Option<f64>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -435,6 +450,7 @@ where
 }
 
 /// (badge colour, label) for a project status.
+// SPEC-13.10.3: project status badge mapping
 fn status_badge(status: &str) -> (BadgeVariant, &'static str) {
     match status {
         "active" => (BadgeVariant::Green, "Active"),
@@ -450,6 +466,7 @@ fn status_badge(status: &str) -> (BadgeVariant, &'static str) {
 use crate::utils::money::format_money_f64;
 
 /// MAPPS-546: rows per page on the project list, sent to the server.
+// SPEC-13.3.1: 25 rows per page
 const PER_PAGE: usize = 25;
 
 /// "Feb 28, 2025" from an ISO date string; raw string on parse failure,
@@ -469,6 +486,7 @@ fn fmt_date(s: &Option<String>) -> String {
 /// and a status no project holds is absent rather than zero, so every read
 /// below defaults.
 #[derive(Clone, Debug, Deserialize, Default)]
+// SPEC-13.10.4: absent status counts as zero
 struct ProjectSummary {
     #[serde(default)]
     counts_by_status: std::collections::BTreeMap<String, i64>,
@@ -478,6 +496,7 @@ struct ProjectSummary {
 }
 
 #[component]
+// SPEC-13.1.15: project list page
 pub fn ProjectListPage() -> Element {
     use_page_title("Projects");
     let mut search = use_signal(String::new);
@@ -512,12 +531,14 @@ pub fn ProjectListPage() -> Element {
     // MAPPS-855: debounce the search dependency so a burst of keystrokes
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke.
+    // SPEC-13.6.1: 300 ms search debounce
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let projects_resource = crate::hooks::use_remote_resource(move || {
         let q = search_debounced.read().trim().to_string();
         let status = status_filter.read().clone();
         let current_page = (*page.read()).max(1);
         async move {
+            // SPEC-13.6.3, SPEC-13.6.4, SPEC-13.10.5: tenant generation; page, status, q and company_id sent to the server
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let mut path = format!("/projects?page={current_page}&per_page={PER_PAGE}");
             if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
@@ -534,6 +555,7 @@ pub fn ProjectListPage() -> Element {
             }
             // MAPPS-604: contact-first bearer selection so a signed-in
             // contact sees only their Company's projects.
+            // SPEC-13.4.10: contact bearer first
             crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteProject>>(&path).await
         }
     });
@@ -541,6 +563,7 @@ pub fn ProjectListPage() -> Element {
     // server's aggregate (PMS-894) rather than from the rows on screen. They
     // used to be computed from the fetched projects, which meant they reported
     // one page as soon as a tenant had more than one.
+    // SPEC-13.5.17, SPEC-13.6.3: summary failure is logged
     let summary_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<ProjectSummary>("/projects/summary")
@@ -550,6 +573,7 @@ pub fn ProjectListPage() -> Element {
     });
     // MAPPS-357: primary resource unavailable (failed while the server is
     // flagged down) -> explicit outage body. Placed after every hook.
+    // SPEC-13.5.17: unreachable server shows the unavailable state
     if projects_resource.is_unavailable() {
         return rsx! {
             crate::components::ContentUnavailable { title: "Projects".to_string() }
@@ -567,6 +591,7 @@ pub fn ProjectListPage() -> Element {
         .clone()
         .flatten()
         .unwrap_or_default();
+    // SPEC-13.10.4: stat counts from the summary
     let count_of = |status: &str| {
         summary
             .counts_by_status
@@ -587,6 +612,7 @@ pub fn ProjectListPage() -> Element {
     };
     // PMS-365: route through the shared formatter so the stat matches the
     // project card / budget panel ($1,234.00) instead of a bare $1234.
+    // SPEC-13.10.4: total budget through the shared formatter
     let total_value_label = format_money_f64(Some(total_value));
 
     // MAPPS-546: the search and status filter are the server's now, so these
@@ -631,6 +657,7 @@ pub fn ProjectListPage() -> Element {
                         value: search.read().clone(),
                         placeholder: "Search projects…",
                         oninput: move |e: FormEvent| {
+                            // SPEC-13.10.5: page resets on search change
                             search.set(e.value());
                             page.set(1);
                         },
@@ -641,6 +668,7 @@ pub fn ProjectListPage() -> Element {
                     options: status_options,
                     value: status_filter.read().clone(),
                     onchange: move |e: FormEvent| {
+                        // SPEC-13.10.5: page resets on status change
                         status_filter.set(e.value());
                         page.set(1);
                     },
@@ -654,6 +682,7 @@ pub fn ProjectListPage() -> Element {
                 // PMS-353: card-grid skeleton matching the populated layout,
                 // instead of a bare "Loading projects…" line.
                 crate::components::CardGridSkeleton {}
+            // SPEC-13.10.6: empty states
             } else if filtered.is_empty() {
                 if projects.is_empty() {
                     crate::components::EmptyState {
@@ -693,9 +722,11 @@ pub fn ProjectListPage() -> Element {
                     for p in filtered.iter() {
                         {
                             let (variant, label) = status_badge(&p.status);
+                            // SPEC-13.10.1: company line from the response name
                             let company = project_company(p);
                             let cname = company.text(NO_COMPANY).to_string();
                             let cname_title = company.tooltip().map(str::to_string);
+                            // SPEC-13.10.2: budget used percentage and bar colour
                             let util = match (p.actual_amount, p.budget_amount) {
                                 (Some(a), Some(b)) if b > 0.0 => {
                                     Some(((a / b) * 100.0).clamp(0.0, 100.0).round() as u32)
@@ -774,6 +805,7 @@ pub fn ProjectListPage() -> Element {
             // MAPPS-546: the list is a card grid, not a DataTable, so it gets the
             // standalone pager rather than the table's built-in one. `total` is
             // the server's count of every match, not of the cards above it.
+            // SPEC-13.10.5: pager from the server's total
             crate::components::Pagination {
                 current_page: (*page.read()).max(1),
                 total_items: total,
@@ -787,12 +819,14 @@ pub fn ProjectListPage() -> Element {
 
 /// New project page
 #[component]
+// SPEC-13.11.1: project create page
 pub fn ProjectNewPage() -> Element {
     use_page_title("New Project");
     let name = use_signal(String::new);
     // MAPPS-300: pre-fill `company` from the URL so the Company detail
     // "New Project" CTA lands on a form already scoped to that company.
     let mut company =
+        // SPEC-13.11.1: company pre-fill from the URL
         use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     // PMS-367: `company` holds the selected company UUID; CompanyPicker reports
     // the display name back here so the autocomplete renders the chosen company.
@@ -901,6 +935,7 @@ pub fn ProjectNewPage() -> Element {
                     // reports every offending field at once. Per-field
                     // signals still drive the inline error rendering and
                     // the styled red border.
+                    // SPEC-13.5.18: collect every field error before blocking
                     let project_name_res = validate_project_name(&name.read());
                     let amount_res = validate_budget(&budget_amount.read(), "Budget amount");
                     let hours_res = validate_budget_hours(&budget_hours.read());
@@ -957,6 +992,7 @@ pub fn ProjectNewPage() -> Element {
                     spawn(async move {
                         #[cfg(feature = "app")]
                         {
+                            // SPEC-13.11.1, SPEC-13.8.2, SPEC-13.3.6: create body; optional fields only when set
                             let mut body = serde_json::json!({
                                 "name": project_name,
                                 "description": desc,
@@ -996,6 +1032,7 @@ pub fn ProjectNewPage() -> Element {
                                     // persists after a failed submit; unmatched
                                     // fields or a non-422 failure fall back to
                                     // the top-of-form banner.
+                                    // SPEC-13.11.2: server field errors to inline slots, rest to the banner
                                     let fields = err.field_errors();
                                     if fields.is_empty() {
                                         error
@@ -1141,6 +1178,7 @@ pub fn ProjectNewPage() -> Element {
                     Button {
                         r#type: "submit",
                         variant: ButtonVariant::Primary,
+                        // SPEC-13.11.3, SPEC-13.4.9: loading and unreachable-server gating
                         loading: *is_submitting.read(),
                         // MAPPS-357: no writes while the server is down.
                         disabled: !can_mutate,
@@ -1160,6 +1198,7 @@ pub struct ProjectDetailPageProps {
 }
 
 #[component]
+// SPEC-13.1.16: project detail page
 pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     // MAPPS-939: resolve once for the whole render pass (the "Edited" line
     // plus the change-history rows below), not once per timestamp.
@@ -1172,6 +1211,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     // edit / checklist flows call `.restart()`; `.ok()` preserves a failed
     // load so an outage renders ContentUnavailable instead of a blank detail.
     // Subscribe to reachability so it auto-refetches on reconnect.
+    // SPEC-13.12.1, SPEC-13.6.4: detail load is logged and tracks reachability
     let project_resource = use_resource(move || {
         let id = id_for_project.clone();
         async move {
@@ -1184,6 +1224,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         }
     });
     let id_for_tasks = props.id.clone();
+    // SPEC-13.12.10: failed task load is logged, then empty
     let mut tasks_resource = use_resource(move || {
         let id = id_for_tasks.clone();
         async move {
@@ -1200,6 +1241,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     // MAPPS-940: shared task-statuses cache, not a per-page fetch.
     // Mut so the Add Task button can restart the cache on open and
     // pick up a row created out-of-band.
+    // SPEC-13.7.9: statuses and roster come from the shared hooks
     let mut statuses_resource = crate::hooks::use_task_statuses(true);
     // MAPPS-860: shared roster cache, not a per-page fetch.
     let users_resource = crate::hooks::use_user_roster(true);
@@ -1227,6 +1269,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     let mut selected_task = use_signal(|| None::<RemoteTask>);
     // PMS-205: the project's own change history (who/when + before/after).
     let id_for_proj_history = props.id.clone();
+    // SPEC-13.12.10, SPEC-13.7.8: project audit log, failure logged then empty
     let project_history_resource = use_resource(move || {
         let id = id_for_proj_history.clone();
         async move {
@@ -1250,6 +1293,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     // MAPPS-245: a cancelled project does not accept new items. Gate the
     // add-task control once the project has loaded, using the same literal
     // the status badge/filter/edit selects use ("cancelled").
+    // SPEC-13.12.8: cancelled project takes no new tasks
     let is_cancelled = project
         .as_ref()
         .map(|p| p.status == "cancelled")
@@ -1265,6 +1309,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         .clone()
         .unwrap_or_default();
     // "Edited" marker for the project Overview: most recent recorded edit.
+    // SPEC-13.12.5: Edited marker from the first update entry
     let project_edited = project_history
         .iter()
         .find(|e| e.action == "update")
@@ -1339,6 +1384,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     // MAPPS-574: the server's reason for refusing this delete.
     let mut delete_error = use_signal(String::new);
 
+    // SPEC-13.12.7, SPEC-13.6.5: delete guarded against double submit
     let on_confirm_delete = move |_: ()| {
         if *deleting.read() {
             return;
@@ -1355,6 +1401,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                 // so a server that declined and a button that did nothing
                 // looked identical.
                 match crate::hooks::fetch::api::delete_authed(&path).await {
+                    // SPEC-13.12.7, SPEC-13.5.19, SPEC-13.8.2, SPEC-13.3.6: success toast; failure shows the server reason
                     Ok(()) => {
                         crate::hooks::toast::push_toast(
                             crate::components::AlertType::Success,
@@ -1370,6 +1417,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         });
     };
 
+    // SPEC-13.12.2: page title fallbacks
     let header_title = match project.as_ref() {
         Some(p) if !p.name.trim().is_empty() => p.name.clone(),
         Some(_) => format!("Project {}", props.id),
@@ -1385,6 +1433,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     // disables the Add Task / Edit / Delete / save controls while down.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // SPEC-13.12.1: unreachable server shows the unavailable state
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: header_title.clone() }
@@ -1405,6 +1454,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         .count();
     // `checked_div` yields None on a zero divisor, which is the same "no
     // tasks means no progress" answer the explicit guard gave.
+    // SPEC-13.12.3: percent of completed tasks, zero with no tasks
     let progress = (completed_tasks * 100)
         .checked_div(total_tasks)
         .unwrap_or(0) as u32;
@@ -1413,6 +1463,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         crate::components::ConfirmDialog {
             open: confirming_delete(),
             title: "Delete project".to_string(),
+            // SPEC-13.9.5: irreversible-delete wording
             message: "Delete this project? This cannot be undone.".to_string(),
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
@@ -1450,6 +1501,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     // Task modal cannot be opened; the native tooltip and the
                     // banner below explain why (MAPPS-217 pattern).
                     // MAPPS-357: also disable while the server is unreachable.
+                    // SPEC-13.12.8, SPEC-13.4.9: cancelled and unreachable gating
                     disabled: is_cancelled || !can_mutate,
                     title: if is_cancelled {
                         Some("This project is cancelled and does not accept new tasks.".to_string())
@@ -1468,6 +1520,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         // sibling (admin page, API client, test harness)
                         // appears in the Status select without a page
                         // reload.
+                        // SPEC-13.12.8: refresh the status cache on open
                         statuses_resource.restart();
                         show_task_modal.set(true);
                     },
@@ -1541,6 +1594,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                 // server had not joined read "Unknown" while the name sat in
                 // `users`. The helper is where that order lives, and the task
                 // assignee below has always used it.
+                // SPEC-13.5.21: project manager through the shared helper with the loaded roster
                 let (pm, pm_title) = user_name_with_tooltip_prefer(
                     &users,
                     &p.project_manager_id,
@@ -1549,6 +1603,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                 );
                 let spent = p.actual_amount.unwrap_or(0.0);
                 let budget = p.budget_amount.unwrap_or(0.0);
+                // SPEC-13.12.4: remaining budget, absent amounts count as zero
                 let remaining = budget - spent;
                 let util = if budget > 0.0 {
                     ((spent / budget) * 100.0).clamp(0.0, 100.0).round() as u32
@@ -1556,6 +1611,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     0
                 };
                 let logged_h = p.actual_hours.unwrap_or(0.0);
+                // SPEC-13.12.4: remaining hours
                 let remaining_h = p.budget_hours.unwrap_or(0.0) - logged_h;
                 let description = p.description.clone().filter(|d| !d.trim().is_empty());
                 rsx! {
@@ -1584,8 +1640,10 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                 // MAPPS-357: toggling a checklist item persists a
                                                 // PUT, so make the checkboxes non-interactive while
                                                 // the server is unreachable (no silent failed write).
+                                                // SPEC-13.12.9, SPEC-13.4.9: checkboxes inert while the server is unreachable
                                                 interactive: can_mutate,
                                                 on_toggle: move |i: usize| {
+                                                    // SPEC-13.12.9: no-op when the index does not exist
                                                     let Some(new_desc) =
                                                         crate::utils::markdown::toggle_task(&d_src, i)
                                                     else {
@@ -1609,6 +1667,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                             Err(e) => {
                                                                 crate::hooks::push_toast(
                                                                     crate::components::AlertType::Error,
+                                                                    // SPEC-13.5.19, SPEC-13.6.7: failure toast, project still restarted
                                                                     format!("Could not update checklist: {e}"),
                                                                 );
                                                                 pr.restart();
@@ -1721,6 +1780,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     p { class: "text-sm text-subtle italic", "No edits yet." }
                                 } else {
                                     div { class: "space-y-3 text-sm",
+                                        // SPEC-13.1.16, SPEC-13.12.6: 20 most recent entries
                                         for e in project_history.iter().take(20) {
                                             {
                                                 let who = history_actor(&users, e);
@@ -1768,6 +1828,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     loading: *t_submitting.read(),
                     // MAPPS-357: no task creation while the server is down.
                     disabled: !can_mutate,
+                    // SPEC-13.4.9: unreachable-server gating
                     title: (!can_mutate).then(|| "Can't create a task while the server is unreachable".to_string()),
                     onclick: move |_| {
                         t_error.set(String::new());
@@ -1787,6 +1848,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             "Status",
                             &[Rule::Required],
                         ));
+                        // SPEC-13.5.20: title and status required, both shown at once
                         if guard.blocked() {
                             return;
                         }
@@ -1795,6 +1857,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         let due = t_due.read().clone();
                         let assignee = t_assignee.read().clone();
                         // Reject a partial/invalid due date (PMS-317).
+                        // SPEC-13.5.20: due date range
                         if let Err(e) = validate_opt_date(&due, "Due date") {
                             t_error.set(e);
                             return;
@@ -1809,6 +1872,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 Some(h) => Some(h),
                                 None => {
                                     t_error.set(
+                                        // SPEC-13.5.20: estimate as number or H:MM
                                         "Estimated hours must be a number (2.5) or H:MM (1:30)."
                                             .to_string(),
                                     );
@@ -1822,6 +1886,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         spawn(async move {
                             #[cfg(feature = "app")]
                             {
+                                // SPEC-13.13.1, SPEC-13.8.2, SPEC-13.3.6: Add Task body; optional fields only when set
                                 let mut body = serde_json::json!({
                                     "title": title,
                                     "status_id": status_id,
@@ -1849,9 +1914,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                         t_due.set(String::new());
                                         t_assignee.set(String::new());
                                         show_task_modal.set(false);
+                                        // SPEC-13.13.1, SPEC-13.6.7: tasks resource restarted
                                         tr.restart();
                                     }
                                     Err(e) => {
+                                        // SPEC-13.13.1: failure keeps the modal open
                                         t_error.set(format!("Could not create task: {e}"));
                                     }
                                 }
@@ -1933,6 +2000,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             let mut proj_res = project_resource;
             let mut proj_hist_res = project_history_resource;
             let save_id = props.id.clone();
+            // SPEC-13.11.4, SPEC-13.6.5: project edit guarded against double submit
             let on_save = move |_| {
                 if pe_submitting() {
                     return;
@@ -1983,6 +2051,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                 let save_id = save_id.clone();
                 spawn(async move {
                     pe_submitting.set(true);
+                    // SPEC-13.11.4: edit body; blank optional values go out as null
                     let mut body = serde_json::Map::new();
                     body.insert("name".into(), serde_json::json!(project_name));
                     body.insert("description".into(), serde_json::json!(pe_description()));
@@ -2008,6 +2077,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         Ok(_) => {
                             pe_submitting.set(false);
                             show_proj_modal.set(false);
+                            // SPEC-13.6.7: project and history resources restarted
                             proj_res.restart();
                             proj_hist_res.restart();
                         }
@@ -2017,6 +2087,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             // their inline fields so the cue persists after a
                             // failed submit; unmatched fields or a non-422
                             // failure fall back to the modal's banner.
+                            // SPEC-13.11.4: server field errors to inline slots, rest to the modal banner
                             let fields = err.field_errors();
                             if fields.is_empty() {
                                 pe_error.set(err.user_message());
@@ -2191,6 +2262,7 @@ struct ProjectTaskTableProps {
 }
 
 #[component]
+// SPEC-13.13.2: shared task table for the detail and tasks pages
 fn ProjectTaskTable(props: ProjectTaskTableProps) -> Element {
     let tasks = props.tasks;
     let statuses = props.statuses;
@@ -2251,6 +2323,7 @@ fn ProjectTaskTable(props: ProjectTaskTableProps) -> Element {
                                 // Logged = all non-rejected time (PMS-329),
                                 // visible before approval; approved = the
                                 // approval-gated total; est = the estimate.
+                                // SPEC-13.13.2, SPEC-13.2.7: logged, approved and estimate shown separately
                                 let logged_h = fmt_hours(t.logged_hours);
                                 let approved_h = fmt_hours(t.actual_hours);
                                 let est_h = fmt_hours(t.estimated_hours);
@@ -2311,6 +2384,7 @@ pub struct ProjectTasksPageProps {
 }
 
 #[component]
+// SPEC-13.1.17: tasks page, no task creation
 pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
     use_page_title("Project Tasks");
     let id_for_tasks = props.id.clone();
@@ -2320,6 +2394,7 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
     // `.restart()`; `.ok()` preserves a failed load so an outage renders
     // ContentUnavailable instead of an empty task table. Subscribe to
     // reachability so it auto-refetches on reconnect.
+    // SPEC-13.13.5, SPEC-13.6.4: failed load is logged and tracks reachability
     let mut tasks_resource = use_resource(move || {
         let id = id_for_tasks.clone();
         async move {
@@ -2356,6 +2431,7 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
     // below. Placed after every hook so the hook order stays fixed. Task
     // edits are gated inside TaskEditModal via its own `can_mutate`.
     let reachable = crate::hooks::use_server_reachable();
+    // SPEC-13.13.5: unreachable server shows the unavailable state
     if load_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Project Tasks".to_string() }
@@ -2445,6 +2521,7 @@ struct TaskEditModalProps {
 }
 
 #[component]
+// SPEC-13.13.6: task edit modal
 fn TaskEditModal(props: TaskEditModalProps) -> Element {
     // MAPPS-939: resolve once for the whole render pass (the "Edited" line
     // plus the change-history rows below), not once per timestamp.
@@ -2540,6 +2617,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
             .map(|u| SelectOption::new(u.id.to_string(), u.full_name.clone())),
     );
 
+    // SPEC-13.13.6, SPEC-13.6.5: task edit guarded against double submit
     let on_save = move |_| {
         if te_submitting() {
             return;
@@ -2548,10 +2626,12 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
         // field's own inline slot (and focuses) instead of the top-of-modal banner.
         let mut guard = FormGuard::new();
         let title_v = te_title().trim().to_string();
+        // SPEC-13.5.20: title required
         te_title_err.set(guard.field("te-title", &title_v, "Title", &[Rule::Required]));
         if guard.blocked() {
             return;
         }
+        // SPEC-13.5.20: due date range
         // Reject a partial/invalid due date (PMS-317) before submit.
         if let Err(e) = validate_opt_date(&te_due(), "Due date") {
             te_error.set(e);
@@ -2576,6 +2656,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
         spawn(async move {
             te_submitting.set(true);
             te_error.set(String::new());
+            // SPEC-13.13.6: edit body; blank optional values go out as null
             let mut body = serde_json::Map::new();
             body.insert("title".into(), serde_json::json!(te_title().trim()));
             body.insert("description".into(), serde_json::json!(te_description()));
@@ -2610,6 +2691,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
     let mut te_deleting = use_signal(|| false);
     let mut confirming_delete = use_signal(|| false);
 
+    // SPEC-13.13.7, SPEC-13.6.5: task delete guarded against double submit
     let on_confirm_delete = move |_: ()| {
         if te_deleting() {
             return;
@@ -2636,6 +2718,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
         crate::components::ConfirmDialog {
             open: confirming_delete(),
             title: "Delete task".to_string(),
+            // SPEC-13.9.5: irreversible-delete wording
             message: "Delete this task? This cannot be undone.".to_string(),
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
@@ -2659,6 +2742,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                     loading: te_deleting(),
                     // MAPPS-357: no deletes while the server is down.
                     disabled: !can_mutate,
+                    // SPEC-13.13.8, SPEC-13.4.9: unreachable-server gating
                     title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                     onclick: move |_| {
                         if !te_deleting() {
@@ -2677,6 +2761,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                     loading: te_submitting(),
                     // MAPPS-357: no save while the server is down.
                     disabled: !can_mutate,
+                    // SPEC-13.13.8, SPEC-13.4.9: unreachable-server gating
                     title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                     onclick: on_save,
                     "Save Changes"

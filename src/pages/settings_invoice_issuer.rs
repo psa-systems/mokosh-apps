@@ -49,6 +49,7 @@ use crate::Route;
 /// Every string this page renders that names a provider comes from here,
 /// which is what keeps one page honest about two of them.
 #[derive(Clone, Copy, PartialEq)]
+// SPEC-10.54.1
 pub struct Issuer {
     /// The path segment the server parses, and the `provider` field it
     /// answers with.
@@ -102,6 +103,7 @@ pub struct Overview {
     /// Defaults to TRUE for a server that predates the field, which keeps
     /// an older deployment rendering as it does today rather than telling
     /// every connected tenant their invoices are going nowhere.
+    // SPEC-10.54.6
     #[serde(default = "default_delegation_enabled")]
     pub delegation_enabled: bool,
     /// Whether this tenant delegated BILLS, which connecting does not do
@@ -196,6 +198,7 @@ pub enum CardState {
 /// application cannot be in any of the other states whatever the row says:
 /// the tenant's row can only have been written while an application
 /// existed, and what matters now is that there is nothing they can press.
+// SPEC-10.54.4
 pub fn card_state_of(overview: &Overview) -> CardState {
     if !overview.configured {
         return CardState::NotAvailable;
@@ -221,6 +224,7 @@ pub fn card_state_of(overview: &Overview) -> CardState {
 }
 
 /// The badge beside the heading.
+// SPEC-10.54.5
 pub fn badge_for(state: &CardState) -> (&'static str, BadgeVariant) {
     match state {
         CardState::NotAvailable => ("Not available here", BadgeVariant::Gray),
@@ -254,6 +258,7 @@ pub fn badge_for(state: &CardState) -> (&'static str, BadgeVariant) {
 }
 
 /// Where this provider's mapping page lives.
+// SPEC-10.54.10
 pub fn mappings_route(issuer: Issuer) -> Route {
     if issuer.provider == XERO.provider {
         Route::SettingsXeroMappings {}
@@ -275,6 +280,7 @@ pub fn QuickBooksSettingsPage() -> Element {
 #[component]
 fn IssuerSettingsPage(issuer: Issuer) -> Element {
     use_page_title(issuer.display);
+    // SPEC-10.54.2: gate before the body so no overview request is made.
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "{issuer.display}" } };
     }
@@ -283,6 +289,7 @@ fn IssuerSettingsPage(issuer: Issuer) -> Element {
 
 #[component]
 fn IssuerSettingsBody(issuer: Issuer) -> Element {
+    // SPEC-10.54.3
     let overview = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
@@ -303,6 +310,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
     let data = snap.as_ref().and_then(|o| o.as_ref()).cloned();
     let state = data.as_ref().map(card_state_of);
 
+    // SPEC-10.55.1
     let connect = move |_| {
         busy.set(true);
         error.set(String::new());
@@ -321,6 +329,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                         // about to be replaced.
                         #[cfg(target_arch = "wasm32")]
                         if let Err(e) = crate::platform::location::set_href(&resp.authorize_url) {
+                            // SPEC-10.55.2
                             error.set(format!("Could not open the sign-in page: {e}"));
                             busy.set(false);
                         }
@@ -329,11 +338,13 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                             // A desktop host has no document to navigate; say
                             // where the consent screen is rather than doing
                             // nothing.
+                            // SPEC-10.55.2
                             error.set(format!("Open this to continue: {}", resp.authorize_url));
                             busy.set(false);
                         }
                     }
                     Err(e) => {
+                        // SPEC-10.55.3
                         error.set(format!("Could not start the connection: {e}"));
                         busy.set(false);
                     }
@@ -345,6 +356,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
     };
 
     let mut overview_handle = overview;
+    // SPEC-10.55.5
     let disconnect = move |_| {
         busy.set(true);
         error.set(String::new());
@@ -358,6 +370,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                 ))
                 .await
                 {
+                    // SPEC-10.55.5
                     error.set(format!("Could not disconnect: {e}"));
                 }
             }
@@ -366,6 +379,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
         });
     };
 
+    // SPEC-10.56.2
     // MAPPS-1156: the only caller of the one route that can set the
     // `bills_and_expenses` capability. `enabled` is sent rather than
     // toggled server-side, so a stale card cannot flip it the wrong way.
@@ -391,6 +405,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
         });
     };
 
+    // SPEC-10.56.6
     // MAPPS-1168: the account a reimbursement is paid from. An empty field
     // is sent as `null` rather than skipped, because clearing it is how an
     // admin stops reimbursing through the provider without disconnecting.
@@ -417,6 +432,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                 )
                 .await
                 {
+                    // SPEC-10.56.6
                     error.set(format!("Could not save the account: {e}"));
                 }
             }
@@ -455,11 +471,13 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                         div { class: "space-y-4", "data-testid": "invoice-issuer-{issuer.testid}",
                             p { class: "text-sm text-muted", "{issuer.description}" }
                             match state {
+                                // SPEC-10.54.7
                                 CardState::NotAvailable => rsx! {
                                     p { class: "text-sm text-content",
                                         "This deployment has no {issuer.display} application configured, so there is nothing to connect to. An operator sets one up for everyone on this deployment."
                                     }
                                 },
+                                // SPEC-10.54.8, SPEC-10.54.11
                                 CardState::NeverConnected => rsx! {
                                     p { class: "text-sm text-content",
                                         "Connecting opens {issuer.display} so you can sign in and choose the {issuer.organisation} to invoice from. Nothing is sent there until an invoice is created."
@@ -476,6 +494,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                     }
                                 },
                                 CardState::Connected { organisation_id, delegated, delegation_enabled, payment_account_id, bills_delegated, bills_delegation_enabled } => rsx! {
+                                    // SPEC-10.54.9
                                     if let Some(id) = organisation_id.clone() {
                                         p { class: "text-sm text-content",
                                             "Connected to the {issuer.display} {issuer.organisation} "
@@ -515,6 +534,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                     // above, because it is a decision and not a
                                     // consequence of having connected.
                                     div { class: "border-t border-line pt-4 space-y-2",
+                                        // SPEC-10.56.1, SPEC-10.56.3
                                         p { class: "text-sm font-medium text-content", "Bills and expenses" }
                                         p { class: "text-sm text-muted",
                                             "The other direction: what you are billed for. With this on, a new bill is raised in {issuer.display} as well as here, and your accountant reconciles it there."
@@ -545,6 +565,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                         // Only once bills are delegated, because
                                         // that is the only arrangement that reads
                                         // it.
+                                        // SPEC-10.56.4
                                         if bills_delegated {
                                             PaymentAccountField {
                                                 issuer,
@@ -565,6 +586,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                             "Disconnect"
                                         }
                                     }
+                                    // SPEC-10.55.4
                                     ConfirmDialog {
                                         open: confirm_disconnect(),
                                         title: "Disconnect {issuer.display}?",
@@ -579,6 +601,7 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
                                         oncancel: move |_| confirm_disconnect.set(false),
                                     }
                                 },
+                                // SPEC-10.54.8
                                 CardState::Failing { message } => {
                                     let said = message.clone().unwrap_or_else(|| {
                                         format!("The last thing {} said was a failure.", issuer.display)
@@ -623,7 +646,9 @@ fn PaymentAccountField(
     busy: bool,
     onsave: EventHandler<String>,
 ) -> Element {
+    // SPEC-10.56.7
     let mut draft = use_signal(|| current.clone().unwrap_or_default());
+    // SPEC-10.56.5
     let unset = current.as_deref().unwrap_or("").trim().is_empty();
     rsx! {
         div { class: "pt-3 space-y-2",

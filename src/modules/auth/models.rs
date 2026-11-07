@@ -23,6 +23,7 @@
 //! declared per page. Those are the hand copies that still matter, and this
 //! change does not touch them; see `docs/client-server-integration.md`.
 
+// SPEC-3.4.1: re-export only; a local redeclaration breaks the identity test below.
 pub use mokosh_types::auth::*;
 
 #[cfg(test)]
@@ -55,8 +56,10 @@ mod tests {
         assert!(deleted.deleted, "a tombstoned account is marked deleted");
         assert!(!deleted.is_authenticated);
         assert!(!super::AuthState::default().deleted);
+        // SPEC-3.4.4: deleted vs default vs authenticated state.
     }
 
+    // SPEC-3.4.2: role predicates are pinned by the four tests below.
     #[test]
     fn test_user_role_is_admin() {
         assert!(UserRole::SuperAdmin.is_admin());
@@ -93,6 +96,7 @@ mod tests {
         assert!(!UserRole::Technician.can_manage_billing());
     }
 
+    // SPEC-3.4.3: wire names for roles and statuses.
     #[test]
     fn test_user_role_from_str() {
         assert_eq!(UserRole::from_str("admin"), Some(UserRole::Admin));
@@ -159,6 +163,7 @@ mod tests {
         assert_eq!(state.tenant_id, Some(tenant_id));
     }
 
+    // SPEC-3.4.6: has_role and is_admin read the user's role.
     #[test]
     fn test_auth_state_has_role() {
         let user = CurrentUser {
@@ -185,6 +190,7 @@ mod tests {
         assert!(state.is_admin());
     }
 
+    // SPEC-3.4.7: full_name and initials formatting (see the next test too).
     #[test]
     fn test_current_user_full_name() {
         let user = CurrentUser {
@@ -229,6 +235,7 @@ mod tests {
         assert_eq!(user.initials(), "JD");
     }
 
+    // SPEC-3.4.5: require_user and require_tenant yield the AuthRequired marker.
     #[test]
     fn test_auth_state_require_user() {
         let empty_state = AuthState::default();

@@ -24,6 +24,7 @@ use serde::Deserialize;
 /// Every field except `category`, `vpn` and `is_anonymizing` is optional on the
 /// wire, and all of them carry `#[serde(default)]` so a server that stops
 /// sending one decodes to `None` rather than failing the whole lookup.
+// SPEC-3.3.1: every field defaults when absent; SPEC-3.3.2: a null body is `None`, not a failure.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct IpEnrichment {
     #[serde(default)]
@@ -63,6 +64,7 @@ pub struct IpEnrichment {
 /// formatted rather than mapped: a value this build has never seen still
 /// renders as words instead of falling through to "Unknown" and hiding what the
 /// server actually said.
+// SPEC-3.3.3: format rather than match, so an unseen server label still reads as words.
 pub fn humanize_label(raw: &str) -> String {
     let spaced = raw.trim().replace(['-', '_'], " ");
     let mut chars = spaced.chars();
@@ -81,8 +83,11 @@ pub fn humanize_label(raw: &str) -> String {
 /// "the dataset says nothing here" when it means "this build asked and got no
 /// value".
 pub fn enrichment_rows(e: &IpEnrichment) -> Vec<(&'static str, String)> {
+    // SPEC-3.3.4: row order; SPEC-3.3.9: absent or blank fields are omitted, never blank rows.
+    // SPEC-3.3.10: is_anonymizing and advisory are deliberately never read here.
     let mut rows: Vec<(&'static str, String)> = Vec::new();
 
+    // SPEC-3.3.5: "AS" prefix on the trimmed ASN.
     if let Some(asn) = e.asn.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         rows.push(("ASN", format!("AS{asn}")));
     }
@@ -96,6 +101,7 @@ pub fn enrichment_rows(e: &IpEnrichment) -> Vec<(&'static str, String)> {
         .map(str::trim)
         .filter(|s| !s.is_empty());
     let isp = e.isp.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    // SPEC-3.3.6: ISP is dropped when identical to the organization.
     if let Some(org) = org {
         rows.push(("Organization", org.to_string()));
     }
@@ -103,12 +109,14 @@ pub fn enrichment_rows(e: &IpEnrichment) -> Vec<(&'static str, String)> {
         rows.push(("ISP", isp.to_string()));
     }
 
+    // SPEC-3.3.7: Network and VPN likelihood use the humanized server labels.
     if !e.category.trim().is_empty() {
         rows.push(("Network", humanize_label(&e.category)));
     }
     if !e.vpn.trim().is_empty() {
         rows.push(("VPN likelihood", humanize_label(&e.vpn)));
     }
+    // SPEC-3.3.8: proxy type and threat are humanized, provider is shown as sent.
     if let Some(proxy) = e
         .proxy_type
         .as_deref()

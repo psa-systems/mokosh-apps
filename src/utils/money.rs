@@ -14,9 +14,11 @@ use std::str::FromStr;
 /// Format a `Decimal` as `$1,234.56`: grouped thousands, two decimals, leading
 /// `$`, and a `-` sign for negative amounts.
 pub fn format_money(amount: Decimal) -> String {
+    // SPEC-4.58.1: round first, then sign and group.
     let rounded = amount.round_dp(2);
     let negative = rounded.is_sign_negative();
     let abs = rounded.abs();
+    // SPEC-4.58.2, SPEC-4.58.4
     let s = format!("{abs:.2}");
     let (int_part, frac_part) = s.split_once('.').unwrap_or((s.as_str(), "00"));
     let mut grouped = String::new();
@@ -27,6 +29,7 @@ pub fn format_money(amount: Decimal) -> String {
         }
         grouped.push(*ch);
     }
+    // SPEC-4.58.3: sign goes before the dollar sign.
     let sign = if negative { "-" } else { "" };
     format!("{sign}${grouped}.{frac_part}")
 }
@@ -37,11 +40,13 @@ pub fn format_money(amount: Decimal) -> String {
 /// schema's `*_minor` columns, where invoices serialise a decimal string.
 /// Rendering goes through the same formatter either way, so a bill total
 /// and an invoice total are grouped and signed identically.
+// SPEC-4.58.5
 pub fn format_money_minor(minor: i64) -> String {
     format_money(Decimal::new(minor, 2))
 }
 
 /// Format an optional `Decimal`; `None` renders as `-`.
+// SPEC-4.58.6
 pub fn format_money_opt(amount: Option<Decimal>) -> String {
     match amount {
         Some(d) => format_money(d),
@@ -52,6 +57,7 @@ pub fn format_money_opt(amount: Option<Decimal>) -> String {
 /// Format an optional `f64` amount (the projects budget/actual fields are
 /// `f64`). Converts to `Decimal` for display; `None` or an unrepresentable
 /// value renders as `-`.
+// SPEC-4.58.7
 pub fn format_money_f64(v: Option<f64>) -> String {
     match v.and_then(Decimal::from_f64_retain) {
         Some(d) => format_money(d),
@@ -65,10 +71,12 @@ pub fn format_money_f64(v: Option<f64>) -> String {
 /// wants a zero default instead of `-` must supply `"0"` explicitly, e.g.
 /// `.unwrap_or_else(|| "0".into())`, before calling this function.
 pub fn format_money_str(raw: &str) -> String {
+    // SPEC-4.58.8, SPEC-4.58.10
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return "-".to_string();
     }
+    // SPEC-4.58.9
     match Decimal::from_str(trimmed) {
         Ok(d) => format_money(d),
         Err(_) => "-".to_string(),

@@ -15,6 +15,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 /// One row of the audit log, as returned by `GET /api/v1/audit-log`.
+// SPEC-3.1.1: id, tenant_id, timestamp are required; SPEC-3.1.2: the rest default.
+// SPEC-3.1.3, SPEC-3.1.4: unknown keys dropped by serde; UUID/UTC types fail on malformed input.
+// SPEC-3.1.5: resolved names pass through as sent, None when absent.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct AuditLogEntry {
     pub id: Uuid,

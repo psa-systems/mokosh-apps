@@ -23,6 +23,7 @@ pub struct TableProps {
 pub fn Table(props: TableProps) -> Element {
     // Apply striping via a child selector on the table element so it cascades
     // to every body row regardless of how the caller composes `TableBody`.
+    // SPEC-5.64.1: opt-in striping of odd body rows.
     let striped = if props.striped {
         "[&_tbody_tr:nth-child(odd)]:bg-surface-2"
     } else {
@@ -50,6 +51,7 @@ pub struct TableHeadProps {
 
 #[component]
 pub fn TableHead(props: TableHeadProps) -> Element {
+    // SPEC-5.64.2: head surface.
     rsx! {
         thead { class: "bg-surface-2",
             {props.children}
@@ -65,6 +67,7 @@ pub struct TableBodyProps {
 
 #[component]
 pub fn TableBody(props: TableBodyProps) -> Element {
+    // SPEC-5.64.2: body surface and dividers.
     rsx! {
         tbody { class: "bg-surface divide-y divide-line",
             {props.children}
@@ -97,6 +100,8 @@ pub fn TableRow(props: TableRowProps) -> Element {
     // This reverses MAPPS-263's "hover every row" (which Vas reported as the
     // page reacting to hover over dead space); clickable rows still get the
     // hover + pointer affordance, softened by `transition-colors`.
+    // SPEC-5.64.3: hover affordance only on clickable rows.
+    // SPEC-5.64.4: a clickable row needs a link or onactivate cell, enforced by a scan test below.
     let base_class = if props.clickable {
         "hover:bg-surface-2 cursor-pointer transition-colors"
     } else {
@@ -170,6 +175,7 @@ impl TableAlign {
 
 #[component]
 pub fn TableHeader(props: TableHeaderProps) -> Element {
+    // SPEC-5.64.5: padding and alignment of a header cell.
     let pad = if props.compact {
         "px-4 py-3"
     } else {
@@ -194,6 +200,7 @@ pub fn TableHeader(props: TableHeaderProps) -> Element {
     // columns is deliberate and not the same as omitting the attribute: it says
     // "sortable, not currently sorted", which is what makes the sorted column
     // stand out from its peers rather than from the non-sortable ones.
+    // SPEC-5.64.7: aria-sort is present exactly on sortable headers.
     let aria_sort = props.sortable.then_some(match props.sort_direction {
         Some(SortDirection::Ascending) => "ascending",
         Some(SortDirection::Descending) => "descending",
@@ -216,6 +223,7 @@ pub fn TableHeader(props: TableHeaderProps) -> Element {
             // Non-sortable headers stay plain markup: wrapping them in a button
             // would put an inert control in the tab order for every column in
             // the app.
+            // SPEC-5.64.6: the sort trigger is a real button inside the header cell.
             if props.sortable {
                 button {
                     r#type: "button",
@@ -321,6 +329,7 @@ pub fn TableCell(props: TableCellProps) -> Element {
     // overflow horizontally and push other columns off-screen. Callers that
     // need single-line cells opt back in via `class` (e.g. `whitespace-nowrap`
     // or `truncate`), which is appended last and wins.
+    // SPEC-5.64.8: cell padding, wrapping and class order.
     let pad = if props.compact {
         "px-4 py-3"
     } else {
@@ -332,6 +341,7 @@ pub fn TableCell(props: TableCellProps) -> Element {
         td {
             class: "{class}",
             colspan: props.colspan.map(|n| n.to_string()),
+            // SPEC-5.64.9: the activate button wraps the cell content.
             if let Some(activate) = props.onactivate {
                 // `text-left` and `w-full` so the button is the cell rather than
                 // a centred island inside it, and the row still reads as a row.
@@ -369,6 +379,7 @@ pub struct TableLoadingProps {
 
 #[component]
 pub fn TableLoading(props: TableLoadingProps) -> Element {
+    // SPEC-5.64.10: rows by columns of pulsing cells.
     rsx! {
         TableBody {
             for _ in 0..props.rows {
@@ -406,6 +417,7 @@ pub struct TableEmptyProps {
 
 #[component]
 pub fn TableEmpty(props: TableEmptyProps) -> Element {
+    // SPEC-5.64.11: a non-empty title selects the rich empty state.
     let rich = !props.title.is_empty();
     rsx! {
         TableBody {
@@ -449,6 +461,7 @@ pub struct TableEmptyRowProps {
 /// dashboard tables.
 #[component]
 pub fn TableEmptyRow(props: TableEmptyRowProps) -> Element {
+    // SPEC-5.64.12: one centered row spanning every column.
     let class = format!("px-6 py-8 text-center text-sm {}", props.class);
     rsx! {
         tr {
@@ -482,8 +495,10 @@ pub fn Pagination(props: PaginationProps) -> Element {
     // Guard zero inputs so a direct caller cannot panic: per_page=0 would
     // divide-by-zero in div_ceil and current_page=0 would underflow the usize
     // subtraction. DataTable always passes >=1, but clamp defensively.
+    // SPEC-5.65.1: zero inputs are raised to 1 for the arithmetic.
     let per_page = props.per_page.max(1);
     let current_page = props.current_page.max(1);
+    // SPEC-5.65.2: page count rounds up; a single page renders no pager.
     let total_pages = props.total_items.div_ceil(per_page);
     let start_item = (current_page - 1) * per_page + 1;
     let end_item = std::cmp::min(current_page * per_page, props.total_items);
@@ -492,6 +507,7 @@ pub fn Pagination(props: PaginationProps) -> Element {
         return rsx! {};
     }
 
+    // SPEC-5.65.4: a window of two pages either side of the current one.
     let page_numbers: Vec<usize> = {
         let mut pages = Vec::new();
         let start = std::cmp::max(1, props.current_page.saturating_sub(2));
@@ -504,11 +520,13 @@ pub fn Pagination(props: PaginationProps) -> Element {
 
     rsx! {
         div {
+            // SPEC-5.65.7: the top border follows `bordered`.
             class: if props.bordered {
                 "flex items-center justify-between border-t border-line bg-surface px-4 py-3 sm:px-6"
             } else {
                 "flex items-center justify-between bg-surface px-4 py-3 sm:px-6"
             },
+            // SPEC-5.65.6: text-only controls below the sm breakpoint.
             // Mobile view
             div { class: "flex flex-1 justify-between sm:hidden",
                 button {
@@ -525,6 +543,7 @@ pub fn Pagination(props: PaginationProps) -> Element {
                 }
             }
 
+            // SPEC-5.65.3: range summary; SPEC-5.65.5: previous and next bounds.
             // Desktop view
             div { class: "hidden sm:flex sm:flex-1 sm:items-center sm:justify-between",
                 div {
@@ -622,6 +641,7 @@ pub fn DataTable(props: DataTableProps) -> Element {
                 {props.children}
             }
 
+            // SPEC-5.65.8: the pager is hidden while loading and when one page suffices.
             if !props.loading && props.total_items > props.per_page {
                 Pagination {
                     current_page: props.current_page,
@@ -648,6 +668,7 @@ pub enum BadgeVariant {
 }
 
 impl BadgeVariant {
+    // SPEC-5.65.9: one light and dark colour pair per variant.
     fn class(&self) -> &'static str {
         match self {
             BadgeVariant::Gray => "bg-surface-2 text-content",

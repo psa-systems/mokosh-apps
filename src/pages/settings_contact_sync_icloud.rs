@@ -260,6 +260,7 @@ fn ICloudContactsSettingsBody() -> Element {
     // computes the same value (`components::form::mapps1212_checkbox_resync_tests`
     // measures both halves). Rendering the intent is what gives the cancel
     // path that difference to carry.
+    // SPEC-8.6.6: the checkbox renders this intent, cleared on cancel and on a failed save.
     let mut wanted = use_signal(|| None::<bool>);
     let navigator = use_navigator();
     let can_mutate = crate::hooks::use_can_mutate();
@@ -371,6 +372,7 @@ fn ICloudContactsSettingsBody() -> Element {
                     // failure message.
                     Err(e) => {
                         error.set(format!("Could not change the setting: {e}"));
+                        // SPEC-8.10.2: failed save clears the intent.
                         // The save did not happen, so the box goes back to
                         // what the server still says rather than sitting on
                         // an intent nothing honoured.

@@ -56,6 +56,7 @@ pub enum ViewMode {
 /// both-at-once mode and sits at the end rather than between the two states it
 /// combines. Reordering is free: `as_str` persists the choice by name, so a
 /// preference stored under the previous order still names the mode it named.
+// SPEC-5.38.2: switcher order
 pub(crate) const VIEW_MODES: [ViewMode; 3] = [ViewMode::Write, ViewMode::Preview, ViewMode::Split];
 
 impl ViewMode {
@@ -79,6 +80,7 @@ impl ViewMode {
 
     /// Anything unrecognised is Write: an author whose stored preference has
     /// gone stale gets the editor, which is what this screen is for.
+    // SPEC-5.38.6
     pub(crate) fn from_str(s: &str) -> Self {
         match s {
             "split" => Self::Split,
@@ -94,6 +96,7 @@ impl ViewMode {
     /// devtools panel or pastes as plain text in at least one of Chrome and
     /// Firefox, and a shortcut that steals a browser feature is worse than
     /// tabbing to the group and pressing an arrow.
+    // SPEC-5.38.8, SPEC-5.38.10
     pub(crate) fn stepped(self, delta: i32) -> Self {
         let len = VIEW_MODES.len() as i32;
         let at = VIEW_MODES.iter().position(|m| *m == self).unwrap_or(0) as i32;
@@ -101,6 +104,7 @@ impl ViewMode {
     }
 
     /// Is the source pane on the page in this mode?
+    // SPEC-5.38.5
     pub(crate) fn shows_source(self) -> bool {
         self != Self::Preview
     }
@@ -123,6 +127,7 @@ impl ViewMode {
 /// segments, because a segment that does nothing at that width is exactly the
 /// dead control this pass is about. Below `lg`, Split stacks the two panes
 /// instead, which is what the mode promises.
+// SPEC-5.39.1
 pub(crate) fn body_pane_class(visible: bool) -> &'static str {
     if visible {
         // A flex column so the field inside can stretch, and `flex-1` so the
@@ -150,6 +155,7 @@ pub(crate) fn body_pane_class(visible: bool) -> &'static str {
 /// elevation and weight, not colour alone.
 /// Choose a mode and remember it. One place, so the click path and the
 /// keyboard path cannot drift over whether the choice is persisted.
+// SPEC-5.38.7
 pub(crate) fn set_view_mode(view: &mut Signal<ViewMode>, next: ViewMode, pref_key: &str) {
     view.set(next);
     // A host that named no key is not remembering the choice, and writing under
@@ -159,6 +165,7 @@ pub(crate) fn set_view_mode(view: &mut Signal<ViewMode>, next: ViewMode, pref_ke
     }
 }
 
+// SPEC-5.38.4
 pub(crate) fn view_mode_class(selected: bool) -> &'static str {
     if selected {
         "px-3 py-1 rounded-md text-sm font-semibold bg-surface text-content shadow-sm"
@@ -178,6 +185,7 @@ pub struct MarkdownEditorProps {
     #[props(default)]
     pub placeholder: String,
     #[props(default = 8)]
+    // SPEC-5.40.3: default 8
     pub rows: u32,
     #[props(default = false)]
     pub required: bool,
@@ -194,11 +202,13 @@ pub struct MarkdownEditorProps {
     pub value: String,
     /// Fires with the new source, whatever changed it: typing, a toolbar
     /// button, a keyboard shortcut, or an accepted mention.
+    // SPEC-5.40.4
     pub oninput: EventHandler<String>,
     /// MAPPS-580: the directory `@handle` completes against. Empty disables
     /// completion, which is the right default for a host that has no directory
     /// loaded: the renderer resolves a mention either way.
     #[props(default)]
+    // SPEC-5.40.12
     pub people: Vec<Mention>,
     /// MAPPS-587: where a picked file goes. See the module header.
     #[props(default)]
@@ -225,6 +235,7 @@ pub struct MarkdownEditorProps {
     /// editor passes `flex-1 min-h-0` and makes its own wrapper a flex column;
     /// every other host leaves this empty and keeps its rows.
     #[props(default)]
+    // SPEC-5.39.9
     pub field_class: String,
     /// MAPPS-610: offer `Write | Preview | Split` and a preview pane.
     ///
@@ -233,6 +244,7 @@ pub struct MarkdownEditorProps {
     /// panes and the scroll link between them - which is the whole point of it
     /// living here rather than being copied into every page that wants it.
     #[props(default = false)]
+    // SPEC-5.38.1
     pub views: bool,
     /// MAPPS-610: where the chosen view is remembered. Empty means it is not:
     /// the editor opens in Write every time.
@@ -249,6 +261,7 @@ pub struct MarkdownEditorProps {
 /// `name` is already required to be unique on the page (the toolbar and the
 /// mention list both address the field by it), so deriving from it keeps the
 /// two ids in step without a second prop for a host to get wrong.
+// SPEC-5.39.5
 pub(crate) fn preview_id(name: &str) -> String {
     format!("{name}-preview")
 }
@@ -268,6 +281,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
     // just decided. Deliberately WITHOUT `enter_takes_first_match`: the
     // popover sits over a textarea where Enter is the newline key, so it only
     // takes a mention the user has highlighted.
+    // SPEC-5.40.5, SPEC-5.40.7
     let nav = crate::hooks::dropdown_nav::use_dropdown_nav("mention-ac");
     use_context_provider(|| nav);
 
@@ -275,6 +289,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
     // the host names one. Held even when `views` is off, so the panes below can
     // read one rule rather than branching twice.
     let pref_key = props.view_pref_key.clone();
+    // SPEC-5.38.6
     let mut view = use_signal(move || {
         if pref_key.is_empty() {
             ViewMode::Write
@@ -309,6 +324,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
         let source = field_id.clone();
         let preview = preview_box.clone();
         let views = props.views;
+        // SPEC-5.39.6
         use_effect(move || {
             if views && view() == ViewMode::Split {
                 crate::platform::scroll_sync::link(&source, &preview);
@@ -322,6 +338,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
     // and, unchanged, as the handler `handle_keydown` calls when Enter/Tab
     // accepts a row from the field's own `onkeydown` - one accept path
     // however the row was taken.
+    // SPEC-5.40.11
     let mention_onaccept = EventHandler::new({
         let target = props.name.clone();
         move |(text, caret): (String, u32)| {
@@ -340,6 +357,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
             // two are one control. `Textarea` would otherwise draw it between
             // them, where it reads as a caption on the toolbar. Still a real
             // `<label for>`, so the field keeps its accessible name.
+            // SPEC-5.40.1
             if !props.label.is_empty() && !props.label_hidden {
                 label {
                     r#for: "{props.name}",
@@ -359,11 +377,13 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
             // governs. PMS-939 built it in the KB page; it lives here now so
             // the description and the note editors get the same one rather
             // than a copy each.
+            // SPEC-5.38.2: switcher only when views is on
             if props.views {
                 div { class: "mb-2 flex flex-wrap items-center gap-3",
                     div {
                         class: "inline-flex gap-1 rounded-lg bg-surface-2 p-1",
                         role: "radiogroup",
+                        // SPEC-5.38.2
                         aria_label: "Editor view",
                         for option in VIEW_MODES {
                             {
@@ -378,6 +398,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                                         r#type: "button",
                                         role: "radio",
                                         class: view_mode_class(selected),
+                                        // SPEC-5.38.3
                                         aria_checked: if selected { "true" } else { "false" },
                                         // Roving: only the selected option is in
                                         // the tab order, which is what makes the
@@ -387,11 +408,13 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                                         onkeydown: move |e: KeyboardEvent| {
                                             // Selection follows focus, so a step
                                             // both moves and chooses.
+                                            // SPEC-5.38.8
                                             let delta = match e.key() {
                                                 Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowDown) => 1,
                                                 Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowUp) => -1,
                                                 _ => 0,
                                             };
+                                            // SPEC-5.38.9
                                             if delta == 0 {
                                                 return;
                                             }
@@ -422,6 +445,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                     // together, and on demand rather than on every keystroke:
                     // the author scrolls the preview themselves to read ahead,
                     // and a jump that fights that is worse than none.
+                    // SPEC-5.39.7, SPEC-5.39.8: only in Split
                     if showing == ViewMode::Split {
                         {
                             let source = props.value.clone();
@@ -460,6 +484,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                 }
             }
             div {
+                // SPEC-5.39.2
                 class: if showing == ViewMode::Split {
                     // Two equal rows below `lg`, two equal columns from `lg` up.
                     // Explicit rows because the panel may have a definite height
@@ -473,6 +498,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                     format!("{} flex flex-col", props.panel_class)
                 },
             div {
+                // SPEC-5.38.5
                 class: body_pane_class(showing.shows_source()),
                 // MAPPS-587: drop an image anywhere on the write pane.
                 // `ondragover` has to prevent the default or the browser never
@@ -481,12 +507,14 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                 // MAPPS-610: the drop zone moved here with the panes, so any
                 // host that can take a file gets it rather than it being one
                 // page's layout.
+                // SPEC-5.40.13
                 ondragover: move |e: DragEvent| {
                     if on_file.is_some() {
                         e.prevent_default();
                     }
                 },
                 ondrop: move |e: DragEvent| {
+                    // SPEC-5.40.14
                     let Some(sink) = on_file else {
                         return;
                     };
@@ -522,10 +550,12 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
             // bubbles up from the field regardless, and this is the one
             // `<div>` both the mention list below and the field share.
             div {
+                // SPEC-5.40.5
                 role: "combobox",
                 aria_expanded: nav.expanded(),
                 aria_controls: nav.panel_id(),
                 aria_activedescendant: nav.active_descendant(),
+            // SPEC-5.40.2, SPEC-5.40.3
             Textarea {
                 name: props.name.clone(),
                 label: props.label.clone(),
@@ -552,6 +582,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                 },
                 value: props.value.clone(),
                 oninput: move |e: FormEvent| on_change.call(e.value()),
+                // SPEC-5.40.6
                 onkeydown: {
                     let target = target.clone();
                     let value = props.value.clone();
@@ -574,6 +605,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                         ) {
                             return;
                         }
+                        // SPEC-5.40.10
                         let mods = e.modifiers();
                         let chord = mods.ctrl() || mods.meta();
                         let key = match e.key() {
@@ -583,11 +615,13 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                         // Link opens a dialog rather than applying a transform,
                         // so it is handled here while the marks go through the
                         // shared mapping.
+                        // SPEC-5.40.8
                         if chord && key.eq_ignore_ascii_case("k") {
                             e.prevent_default();
                             link_shortcut.set(true);
                             return;
                         }
+                        // SPEC-5.40.9
                         if let Some(action) = shortcut_action(chord, &key) {
                             e.prevent_default();
                             let handler = EventHandler::new(move |next: String| {
@@ -602,6 +636,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
             // MAPPS-580: the mention list, under the field it completes for.
             // Renders nothing unless an `@` is being typed that the RENDERER
             // would also read as a mention.
+            // SPEC-5.40.12
             MentionAutocomplete {
                 target_id: props.name.clone(),
                 value: props.value.clone(),
@@ -609,6 +644,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                 onaccept: mention_onaccept,
             }
             }
+            // SPEC-5.39.3
             if props.views {
                 div {
                     class: body_pane_class(showing.shows_preview()),
@@ -638,6 +674,7 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                     // `shows_preview` check that picks the CSS class, so the
                     // box - and the parse it triggers - only exists while the
                     // preview is actually on screen.
+                    // SPEC-5.39.4, SPEC-5.39.5
                     if showing.shows_preview() {
                         div {
                             id: "{preview_box}",

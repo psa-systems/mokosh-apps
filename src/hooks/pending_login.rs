@@ -17,6 +17,7 @@ use serde::Deserialize;
 /// One entry in the picker list returned from `/auth/login`
 /// (`needs_selection` branch) and rendered on `/pick-tenant`.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+// SPEC-4.23.4
 pub struct PickerMembership {
     pub tenant_id: String,
     pub tenant_name: String,
@@ -34,6 +35,7 @@ pub struct PickerMembership {
 /// Pending intermediate state between `/login` and one of its
 /// downstream routes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+// SPEC-4.23.3
 pub struct PendingLogin {
     /// The short-lived JWT (typ="identity") returned in the login
     /// response's `identity_token` field. `None` when no pending state
@@ -47,4 +49,5 @@ pub struct PendingLogin {
 /// Root-mount signal shared by `/login`, `/pick-tenant`, and
 /// `/create-org`. `/login` writes to it; the two downstream pages
 /// read it and clear it when they're done.
+// SPEC-4.23.1, SPEC-4.23.2, SPEC-4.23.5
 pub static PENDING_LOGIN: GlobalSignal<PendingLogin> = Signal::global(PendingLogin::default);

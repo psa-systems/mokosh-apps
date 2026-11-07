@@ -23,6 +23,7 @@ use serde::{Deserialize, Deserializer};
 /// endpoint mokosh-server serves (the same one the System Status page
 /// probes); the previously-used `/system/version` was never deployed
 /// and 404'd on every poll (MAPPS-151).
+// SPEC-3.19.1
 pub const VERSION_PATH: &str = "/version";
 
 /// Server-side response shape for `GET /api/v1/version`. Mirrors
@@ -31,6 +32,7 @@ pub const VERSION_PATH: &str = "/version";
 /// through its own struct), and unlisted fields are dropped at
 /// deserialise time.
 #[derive(Clone, Debug, Deserialize)]
+// SPEC-3.19.2
 pub struct ServerVersionResponse {
     /// The semver mokosh-server is currently running, normalised to
     /// plain semver without the leading `v`.
@@ -44,6 +46,7 @@ pub struct ServerVersionResponse {
 /// `"v0.2.0"` so a pure string-equality check still matches the
 /// SPA's `CARGO_PKG_VERSION`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+// SPEC-3.19.4
 pub struct VersionPair {
     #[serde(deserialize_with = "deserialize_semver")]
     pub running: String,
@@ -62,6 +65,7 @@ impl VersionPair {
     /// major/minor is a real mismatch. Returns false when the two share a
     /// release line (any patch delta), when `latest` is older, absent, or
     /// when either side fails to parse. MAPPS-370, MAPPS-372.
+    // SPEC-3.19.6, SPEC-3.19.8: unparseable input fails closed to "no update".
     pub fn update_available(&self) -> bool {
         match (
             parse_semver(&self.running),
@@ -78,6 +82,7 @@ impl VersionPair {
     /// bundle is a minor ahead of the server it talks to: the server image
     /// lags and should be upgraded. Same minor-granularity, fail-closed
     /// rules, so the two are mutually exclusive. MAPPS-370, MAPPS-372.
+    // SPEC-3.19.7, SPEC-3.19.8
     pub fn running_ahead(&self) -> bool {
         match (
             parse_semver(&self.running),
@@ -101,6 +106,7 @@ pub struct SystemVersion {
 /// Fetch the server's running version and pair it with the SPA's own
 /// compile-time version to detect a stale client bundle.
 #[cfg(feature = "app")]
+// SPEC-3.19.1, SPEC-3.19.5: the client pair treats the server version as its "latest".
 pub async fn get_version() -> Result<SystemVersion, String> {
     let response =
         crate::hooks::fetch::api::get_authed::<ServerVersionResponse>(VERSION_PATH).await?;
@@ -127,6 +133,7 @@ pub async fn get_version() -> Result<SystemVersion, String> {
 
 /// Strip a single leading `v` so OCI tag names (`v0.2.0`) and Cargo
 /// semver (`0.2.0`) compare equal.
+// SPEC-3.19.3: strips one `v` only, so a malformed `vv1.0` still differs from a clean version.
 fn normalise_semver(s: String) -> String {
     if let Some(rest) = s.strip_prefix('v') {
         rest.to_string()
@@ -143,6 +150,7 @@ fn normalise_semver(s: String) -> String {
 /// [`VersionPair::update_available`] reads as "no update" rather than
 /// risking a wrong prompt. Input is already `v`-stripped by the
 /// deserialiser.
+// SPEC-3.19.9
 fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
     let mut parts = s.split('.');
     let major = parts.next()?.parse().ok()?;
@@ -166,6 +174,7 @@ fn deserialize_semver<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
+    // SPEC-3.19.2, SPEC-3.19.4
     let s = String::deserialize(deserializer)?;
     Ok(normalise_semver(s))
 }
@@ -174,6 +183,7 @@ fn deserialize_optional_semver<'de, D>(deserializer: D) -> Result<Option<String>
 where
     D: Deserializer<'de>,
 {
+    // SPEC-3.19.4: absent or null stays none.
     let opt = Option::<String>::deserialize(deserializer)?;
     Ok(opt.map(normalise_semver))
 }

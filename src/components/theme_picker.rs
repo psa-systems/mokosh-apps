@@ -33,6 +33,7 @@ pub fn ThemePickerButton() -> Element {
             // follow the base mode, so the appearance/settings control read
             // as a different color scheme from the rest of the top bar.
             class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2",
+            // SPEC-5.69.1: dialog-opening trigger with its ARIA state.
             aria_label: "Theme and appearance",
             title: "Appearance",
             // MAPPS-314: announce the dialog-opener semantics. Without
@@ -57,6 +58,7 @@ pub fn ThemePickerButton() -> Element {
 
 #[component]
 pub fn ThemePicker() -> Element {
+    // SPEC-5.69.2: initial state comes from the live theme module.
     let mut base = use_signal(theme::current);
     let mut is_dark = use_signal(theme::current_is_dark);
     let mut accent_id = use_signal(|| theme::current_accent().id.to_string());
@@ -87,6 +89,7 @@ pub fn ThemePicker() -> Element {
                                     key: "{opt.as_str()}",
                                     r#type: "button",
                                     class: "{cls}",
+                                    // SPEC-5.69.3: apply, refresh the dark flag, persist to the account.
                                     onclick: move |_| {
                                         theme::set(opt);
                                         base.set(opt);
@@ -99,6 +102,7 @@ pub fn ThemePicker() -> Element {
                         }
                     }
                 }
+                // SPEC-5.69.4: inert placeholders for palettes that do not exist yet.
                 // Phase-2 named palettes, locked. Owning issue: MAPPS-910.
                 div { class: "flex gap-2 pt-1",
                     for name in ["Sepia", "Midnight", "Forest"] {
@@ -126,7 +130,9 @@ pub fn ThemePicker() -> Element {
                 div { class: "grid grid-cols-7 gap-3",
                     for a in accents::ACCENTS {
                         {
+                            // SPEC-5.69.5: fill follows the resolved mode.
                             let variant = if is_dark() { a.dark } else { a.light };
+                            // SPEC-5.69.6: a failing contrast pair locks the swatch.
                             let locked = !contrast::passes_aa(variant.on_accent, variant.fill);
                             // MAPPS-288: surface the actual contrast ratio on
                             // hover so a curious user (or an accessibility
@@ -135,8 +141,10 @@ pub fn ThemePicker() -> Element {
                             // already prevents picking a failing combination;
                             // this adds the user-visible "what / why" the AC
                             // calls for.
+                            // SPEC-5.69.8: the ratio of a colour pair that does not parse.
                             let ratio = contrast::contrast_ratio(variant.on_accent, variant.fill)
                                 .unwrap_or(0.0);
+                            // SPEC-5.69.7: tooltip and accessible name wording.
                             let tooltip = if locked {
                                 format!(
                                     "{} - locked: contrast {:.1}:1 (needs 4.5:1 for WCAG AA)",
@@ -166,6 +174,7 @@ pub fn ThemePicker() -> Element {
                                     "aria-pressed": "{selected}",
                                     class: "aspect-square w-full rounded-full {ring} {state}",
                                     style: "background-color: {variant.fill}",
+                                    // SPEC-5.69.9: a locked swatch ignores clicks.
                                     onclick: move |_| {
                                         if !locked {
                                             theme::set_accent(a.id);
@@ -182,6 +191,7 @@ pub fn ThemePicker() -> Element {
                 // so this is the one accent under which a primary action
                 // and a destructive one look alike. Said here, where it is
                 // chosen, rather than discovered on a Delete button.
+                // SPEC-5.69.10: warning shown only for the red accent.
                 if accent_id() == "red" {
                     p { class: "text-xs text-subtle",
                         "Red is also the colour of destructive actions, so Save and Delete will look alike with this accent."
@@ -218,6 +228,7 @@ pub fn ThemePicker() -> Element {
                         "Open"
                     }
                 }
+                // SPEC-5.69.11: the footer names the deployment brand.
                 p { class: "text-xs text-subtle",
                     "Saved to your account. Applies across {brand} immediately."
                 }

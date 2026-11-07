@@ -43,6 +43,7 @@ struct PickerContact {
 }
 
 impl PickerContact {
+    // SPEC-5.16.4
     fn display_name(&self) -> String {
         let name = self.full_name.trim();
         if !name.is_empty() {
@@ -108,6 +109,7 @@ struct CreatedContact {
 }
 
 impl CreatedContact {
+    // SPEC-5.16.14: the same name rule applies to the created contact.
     fn display_name(&self) -> String {
         let full = self.full_name.trim();
         if !full.is_empty() {
@@ -125,6 +127,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
     // MAPPS-503: open / highlight state and the shared keyboard contract.
     // MAPPS-653: the field has to end up holding a contact, so Enter takes the
     // first match when the user has not arrowed onto one.
+    // SPEC-5.16.6
     let mut nav = use_dropdown_nav("contact-picker").enter_takes_first_match();
     let mut editing = use_signal(|| false);
     // MAPPS-276: inline-create modal state. Same shape as the
@@ -151,6 +154,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
         .filter(|c| !c.is_empty())
         .and_then(|c| {
             uuid::Uuid::parse_str(c)
+                // SPEC-5.16.13
                 .inspect_err(|e| {
                     tracing::warn!("contact picker company filter {c:?} is not a uuid: {e}")
                 })
@@ -162,12 +166,14 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
     let query_text = query.read().trim().to_string();
     // MAPPS-855: debounce the resource's dependency so a burst of keystrokes
     // fires one request per pause in typing rather than one per keystroke.
+    // SPEC-5.16.2
     let query_debounced = crate::hooks::use_debounced_signal(query, 300);
     let results = use_resource(move || {
         let company_filter = company_filter.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let q = query_debounced.read().trim().to_string();
+            // SPEC-5.16.1
             let mut path = String::from("/contacts/contacts?per_page=20");
             if !q.is_empty() {
                 path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
@@ -181,6 +187,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
             crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
                 .await
                 .map(|p| p.data)
+                // SPEC-5.16.3
                 .inspect_err(|e| tracing::warn!("contact search failed: {e}"))
         }
     });
@@ -189,6 +196,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
     // inline-edit mode. Change swaps to search mode locally without a
     // server round trip.
     if let Some(_id) = &props.selected_id {
+        // SPEC-5.16.7
         if !editing() {
             let name = props.value.clone();
             let onclear = props.onclear;
@@ -236,6 +244,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
     let loaded = matches!(&*snap, Some(Ok(_)));
     // MAPPS-653: with nothing matching the typed text, the create action is
     // row 0, which is what makes Enter on a no-match query start a new contact.
+    // SPEC-5.16.8
     let list = NavRows::new(rows.len(), allow_inline_create && loaded);
     let rows_for_keys = rows.clone();
     let query_for_keys = query_text.clone();
@@ -256,6 +265,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                     let seed = query_for_keys.clone();
                     nav.keydown(&e, list.len, move |index| {
                         match rows.get(index) {
+                            // SPEC-5.16.5
                             Some(row) => {
                                 let name = row.display_name();
                                 onselect.call((row.id.to_string(), name.clone()));
@@ -263,6 +273,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                 query.set(name);
                             }
                             // Past the last result row: the inline create action.
+                            // SPEC-5.16.9
                             None => {
                                 seed_create_form(&seed, &mut new_first, &mut new_last);
                                 new_email.set(String::new());
@@ -273,6 +284,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                     });
                 },
                 Input {
+                    // SPEC-5.16.6
                     name: "contact_search",
                     label: props.label,
                     placeholder: "Search contacts…",
@@ -308,6 +320,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                         // MAPPS-444: it takes the shared banner (paired hues,
                         // role="alert"); `m-1` keeps its border off the
                         // dropdown's own edge.
+                        // SPEC-5.16.3
                         Some(Err(_)) => rsx! {
                             ErrorBanner { class: "m-1", "Could not search. Try again." }
                         },
@@ -329,6 +342,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                             let id_str = row.id.to_string();
                                             let key = id_str.clone();
                                             let name = row.display_name();
+                                            // SPEC-5.16.4
                                             let company = row
                                                 .company_name
                                                 .clone()
@@ -384,6 +398,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                             // into Create.
                             // MAPPS-503: it is the last navigable row, reachable
                             // by Down and committed by Enter / Tab.
+                            // SPEC-5.16.8
                             if let Some(index) = list.create_index {
                                 {
                                     let query_for_seed = query_text.clone();
@@ -433,6 +448,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                     let mut on_create = move |_: ()| {
                         let first = new_first.read().trim().to_string();
                         let last = new_last.read().trim().to_string();
+                        // SPEC-5.16.11
                         if first.is_empty() || last.is_empty() {
                             create_error.set("First and last name are required.".to_string());
                             return;
@@ -447,6 +463,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                         spawn(async move {
                             #[cfg(feature = "app")]
                             {
+                                // SPEC-5.16.12
                                 let mut body = serde_json::Map::new();
                                 body.insert("first_name".into(), serde_json::json!(first));
                                 body.insert("last_name".into(), serde_json::json!(last));
@@ -479,6 +496,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                         new_email.set(String::new());
                                         show_create_modal.set(false);
                                     }
+                                    // SPEC-5.16.14
                                     Err(err) => {
                                         create_error.set(format!(
                                             "Could not create contact: {err}"
@@ -492,6 +510,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                     rsx! {
                         Modal {
                             open: show_create_modal(),
+                            // SPEC-5.16.10
                             title: "Create new contact".to_string(),
                             size: ModalSize::Medium,
                             onclose: move |_| {
@@ -521,6 +540,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                 // MAPPS-694: Enter from any field in the modal
                                 // creates, so the name typed into the picker is
                                 // committed without tabbing to the button.
+                                // SPEC-5.16.15
                                 onkeydown: submit_on_enter(move || on_create(())),
                                 if !create_error.read().is_empty() {
                                     p { class: "text-sm text-red-600 dark:text-red-400",
@@ -570,6 +590,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
 /// Split a typed search query into first / last name guesses so the
 /// inline-create modal opens with a pre-filled form when the user
 /// invokes it after typing.
+// SPEC-5.16.9
 fn seed_create_form(query: &str, first: &mut Signal<String>, last: &mut Signal<String>) {
     let trimmed = query.trim();
     if trimmed.is_empty() {

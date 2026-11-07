@@ -15,9 +15,11 @@ use super::icons::InformationIcon;
 #[component]
 pub fn ContextualHelpLink(article: String) -> Element {
     let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+    // SPEC-5.19.1
     if !cfg.has_docs() {
         return rsx! {};
     }
+    // SPEC-5.19.2
     let href = cfg.docs_url(&article);
     rsx! {
         a {

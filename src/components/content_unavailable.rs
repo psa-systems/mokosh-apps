@@ -46,6 +46,7 @@ pub struct ContentUnavailableProps {
 pub fn ContentUnavailable(props: ContentUnavailableProps) -> Element {
     // MAPPS-366: this is the whole body of a page's unavailable branch, so it
     // owns the tab title that the page's healthy branch would otherwise set.
+    // SPEC-5.17.1
     use_page_title(props.title.clone());
     rsx! {
         PageHeader { title: "{props.title}" }
@@ -53,6 +54,7 @@ pub fn ContentUnavailable(props: ContentUnavailableProps) -> Element {
             // `role=status` + `aria-live=polite` so assistive tech
             // announces the outage when the body swaps in, matching
             // the MAPPS-333 banner's posture.
+            // SPEC-5.17.2
             div {
                 role: "status",
                 aria_live: "polite",
@@ -68,6 +70,7 @@ pub fn ContentUnavailable(props: ContentUnavailableProps) -> Element {
                     // "Failed to fetch" internals (MAPPS-333).
                     "The server is unreachable. This page will refresh on its own once the connection is back."
                 }
+                // SPEC-5.17.3
                 if props.show_dashboard_link {
                     Link {
                         to: Route::Dashboard {},

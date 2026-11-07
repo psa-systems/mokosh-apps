@@ -1,5 +1,6 @@
 //! Mokosh Platform Modules - client-side DTOs only
 
+// SPEC-3.17.1: the public module set; these modules hold client-side DTOs and helpers only.
 pub mod audit;
 pub mod auth;
 pub mod calendar;

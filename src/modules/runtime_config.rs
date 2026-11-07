@@ -27,6 +27,7 @@
 /// MAPPS-504: the source is [`crate::platform::config`] -
 /// `window.__MOKOSH_CONFIG__` in the browser, `config.json` under the
 /// per-user config directory on the desktop.
+// SPEC-3.7.1: absent and empty both yield None.
 pub fn get(field: &str) -> Option<String> {
     crate::platform::config::get(field)
 }
@@ -36,6 +37,7 @@ pub fn get(field: &str) -> Option<String> {
 /// truthy (`"true"` case-insensitive, or `"1"`). Anything else - including
 /// the field being unset entirely - returns false so flags are locked-off
 /// by default and need an explicit operator opt-in to enable.
+// SPEC-3.7.2: locked off unless explicitly `true` or `1`.
 pub fn flag_enabled(field: &str) -> bool {
     get(field).is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
 }
@@ -45,6 +47,7 @@ pub fn flag_enabled(field: &str) -> bool {
 /// client build. Returns `None` when the field is absent, empty, or not
 /// a valid byte count, so the caller falls back to its own compile-time
 /// default rather than a bogus limit.
+// SPEC-3.7.3: an unparseable value yields None so the caller's default applies.
 pub fn kb_attachment_max_bytes() -> Option<usize> {
     get("kb_attachment_max_bytes")?.parse().ok()
 }
@@ -59,6 +62,7 @@ pub fn kb_attachment_max_bytes() -> Option<usize> {
 /// Value is a bare host (no scheme, no leading dot). This replaces
 /// the pre-649 `portal_host_suffix` shape which encoded a per-tenant
 /// wildcard suffix (`.client.<apex>`).
+// SPEC-3.7.4: runtime value first, then the compile-time fallback.
 pub fn portal_host() -> Option<String> {
     if let Some(v) = get("portal_host") {
         if !v.is_empty() {
@@ -76,6 +80,7 @@ pub fn portal_host() -> Option<String> {
 /// configured, so the caller can render a generic hint instead of a
 /// broken URL.
 pub fn portal_url_for_portal_id(portal_id: i64) -> Option<String> {
+    // SPEC-3.7.5: None without a portal host; http only for a localhost host.
     let host = portal_host()?;
     // Dev's bare `portal.localhost:PORT` stays on http; anything else
     // uses https.
@@ -92,6 +97,7 @@ pub fn portal_url_for_portal_id(portal_id: i64) -> Option<String> {
 /// Company detail pages when a specific `portal_id` is not yet
 /// available. Returns `None` when no portal host is configured.
 pub fn portal_root_url() -> Option<String> {
+    // SPEC-3.7.5: same scheme rule as the per-portal URL.
     let host = portal_host()?;
     let scheme = if host.contains("localhost") {
         "http"

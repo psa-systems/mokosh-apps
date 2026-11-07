@@ -45,6 +45,7 @@ use crate::utils::url::urlencoding_minimal;
 use crate::utils::Paginated;
 use crate::Route;
 
+// SPEC-10.30.14
 const PER_PAGE: usize = 25;
 
 /// `Bill`, as `GET /bills` and `GET /bills/{id}` serve it.
@@ -142,6 +143,7 @@ pub(crate) struct RemoteBillPayment {
 /// be a cache key per keystroke for no gain. Blank collapses to absent on
 /// this side too, which is what the server does with whitespace.
 pub(crate) fn list_path(page: usize, status: &str, q: &str) -> String {
+    // SPEC-10.30.2, SPEC-10.30.3
     let mut path = format!("/bills?page={page}&per_page={PER_PAGE}");
     let status = status.trim();
     if !status.is_empty() {
@@ -175,6 +177,7 @@ pub(crate) fn hundredths_from_str(raw: &str) -> Option<i64> {
 /// a parse that silently accepted `1.239` would put 123 in the ledger and
 /// show 1.24 on the screen.
 fn scaled_from_str(raw: &str, places: u32) -> Option<i64> {
+    // SPEC-10.31.6, SPEC-10.31.7: refuse rather than round or truncate.
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -224,6 +227,7 @@ fn scaled_from_str(raw: &str, places: u32) -> Option<i64> {
 /// `status_badge` gives each of these its own label, so the filter and the
 /// column cannot drift apart.
 pub(crate) const BILL_STATUSES: &[(&str, &str)] = &[
+    // SPEC-10.31.5, SPEC-10.30.5
     ("draft", "Draft"),
     ("approved", "Approved"),
     ("paid", "Paid"),
@@ -238,6 +242,7 @@ pub(crate) const BILL_STATUSES: &[(&str, &str)] = &[
 /// itself in gray rather than being hidden, because a status this build
 /// does not know means the server is ahead of it.
 pub(crate) fn status_badge(status: &str) -> (String, BadgeVariant) {
+    // SPEC-10.31.1, SPEC-10.31.2
     match status {
         "draft" => ("Draft".to_string(), BadgeVariant::Gray),
         "approved" => ("Approved".to_string(), BadgeVariant::Blue),
@@ -252,10 +257,12 @@ pub(crate) fn status_badge(status: &str) -> (String, BadgeVariant) {
 /// `approve` is draft-only and `void` is draft or approved; a paid or void
 /// bill is terminal. Pure, so the buttons and the tests read the same rule.
 pub(crate) fn can_approve(status: &str) -> bool {
+    // SPEC-10.31.3
     status == "draft"
 }
 
 pub(crate) fn can_void(status: &str) -> bool {
+    // SPEC-10.31.3
     status == "draft" || status == "approved"
 }
 
@@ -265,6 +272,7 @@ pub(crate) fn can_void(status: &str) -> bool {
 /// balance in the refusal message when an amount is over, so the UI shows
 /// the server's message rather than hiding the button.
 pub(crate) fn can_record_payment(status: &str) -> bool {
+    // SPEC-10.31.4
     status == "approved"
 }
 
@@ -272,6 +280,7 @@ pub(crate) fn can_record_payment(status: &str) -> bool {
 /// one place so the modal's picker and `check-ui-copy` guards read the
 /// same list the server validates against (PMS-1536).
 pub(crate) const BILL_PAYMENT_METHODS: &[(&str, &str)] = &[
+    // SPEC-10.31.8
     ("check", "Check"),
     ("credit_card", "Credit card"),
     ("ach", "ACH"),
@@ -291,6 +300,7 @@ pub fn BillListPage() -> Element {
         .unwrap_or(false);
 
     use_page_title("Bills");
+    // SPEC-10.30.1
     if !has_finance {
         return rsx! { crate::pages::billing::NoFinancePermission { title: "Bills" } };
     }
@@ -309,6 +319,7 @@ fn BillListBody() -> Element {
     let search_text = search.read().clone();
     // MAPPS-931: debounce the search so a burst of keystrokes fires one
     // refetch per pause rather than one per keystroke.
+    // SPEC-10.30.4
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let mut resource = use_resource(move || {
         // Read inside the closure so the resource subscribes to the page
@@ -329,6 +340,7 @@ fn BillListBody() -> Element {
     });
 
     // The list serves `vendor_id`, and a column of uuids answers nothing.
+    // SPEC-10.30.6
     let vendors = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_all_authed::<NamedRow>("/vendors")
@@ -356,6 +368,7 @@ fn BillListBody() -> Element {
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
     let navigator = use_navigator();
+    // SPEC-10.30.12
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Bills".to_string() }
@@ -365,7 +378,9 @@ fn BillListBody() -> Element {
     // An empty list under a filter is "nothing matches", not "nothing
     // here": the second offers a New Bill button to somebody whose bills
     // are one filter away (the products page makes the same distinction).
+    // SPEC-10.30.11
     let filtered = !status_text.trim().is_empty() || !search_text.trim().is_empty();
+    // SPEC-10.30.5
     let mut status_options = vec![SelectOption::new("", "All bills")];
     status_options.extend(
         BILL_STATUSES
@@ -380,6 +395,7 @@ fn BillListBody() -> Element {
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
+                    // SPEC-10.30.13
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                     onclick: move |_| creating.set(true),
@@ -429,6 +445,7 @@ fn BillListBody() -> Element {
             Table {
                 TableHead {
                     TableRow {
+                        // SPEC-10.30.7
                         TableHeader { "Vendor" }
                         TableHeader { "Number" }
                         TableHeader { "Issued" }
@@ -438,6 +455,7 @@ fn BillListBody() -> Element {
                     }
                 }
                 if is_loading {
+                    // SPEC-10.30.10
                     TableLoading { columns: 6, rows: 4 }
                 } else if rows.is_empty() && !fetch_failed && filtered {
                     TableEmpty {
@@ -466,6 +484,7 @@ fn BillListBody() -> Element {
                             {
                                 let key = row.id.to_string();
                                 let id = row.id;
+                                // SPEC-10.30.6
                                 let vendor = vendor_names
                                     .get(&row.vendor_id)
                                     .cloned()
@@ -482,12 +501,14 @@ fn BillListBody() -> Element {
                                             navigator.push(Route::BillDetail { id: id.to_string() });
                                         },
                                         TableCell {
+                                            // SPEC-10.30.9
                                             // MAPPS-569: the row navigates, so this cell is the
                                             // keyboard path.
                                             onactivate: move |_| {
                                                 navigator.push(Route::BillDetail { id: id.to_string() });
                                             },
                                             span { class: "font-medium text-accent", "{vendor}" }
+                                            // SPEC-10.30.8
                                             if let Some(p) = provider.clone() {
                                                 Badge { variant: BadgeVariant::Purple, class: "ml-2", "In {p}" }
                                             }
@@ -570,6 +591,7 @@ pub(crate) fn bill_body(
     notes: &str,
     lines: &[(String, String, String, String, String)],
 ) -> Result<serde_json::Value, String> {
+    // SPEC-10.32.7
     if vendor_id.trim().is_empty() {
         return Err("Pick the vendor this bill is from.".to_string());
     }
@@ -587,6 +609,7 @@ pub(crate) fn bill_body(
     for (position, (description, category_id, quantity, unit_price, tax)) in
         lines.iter().enumerate()
     {
+        // SPEC-10.32.8
         let what = if description.trim().is_empty() {
             format!("Line {}", position + 1)
         } else {
@@ -620,6 +643,7 @@ pub(crate) fn bill_body(
             "position": position as i64,
         }));
     }
+    // SPEC-10.32.9
     Ok(serde_json::json!({
         "vendor_id": vendor_id.trim(),
         "bill_number": if bill_number.trim().is_empty() {
@@ -655,6 +679,7 @@ fn NewBillModal(props: NewBillModalProps) -> Element {
     let mut bill_number = use_signal(String::new);
     let mut issue_date = use_signal(String::new);
     let mut due_date = use_signal(String::new);
+    // SPEC-10.32.2
     let mut currency = use_signal(|| "USD".to_string());
     let mut notes = use_signal(String::new);
     let mut lines = use_signal(|| vec![LineDraft::new()]);
@@ -688,6 +713,7 @@ fn NewBillModal(props: NewBillModalProps) -> Element {
         .flatten()
         .unwrap_or_default();
 
+    // SPEC-10.32.3
     let mut vendor_options = vec![SelectOption::new("", "Pick a vendor")];
     vendor_options.extend(
         vendor_rows
@@ -704,6 +730,7 @@ fn NewBillModal(props: NewBillModalProps) -> Element {
     // What the server will compute, shown while it is typed: a total that
     // only appears after saving is one nobody can check against the paper
     // bill in front of them.
+    // SPEC-10.32.5
     let preview: i64 = lines
         .read()
         .iter()
@@ -724,6 +751,7 @@ fn NewBillModal(props: NewBillModalProps) -> Element {
             return;
         }
         error.set(String::new());
+        // SPEC-10.32.10
         let drafts: Vec<(String, String, String, String, String)> = lines
             .read()
             .iter()
@@ -759,6 +787,7 @@ fn NewBillModal(props: NewBillModalProps) -> Element {
                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>("/bills", &body)
                     .await
                 {
+                    // SPEC-10.32.11
                     Ok(_) => onsaved.call(()),
                     // The delegated path refuses an unmapped vendor and an
                     // unmapped expense category by name (MAPPS-1155), and
@@ -776,6 +805,7 @@ fn NewBillModal(props: NewBillModalProps) -> Element {
     rsx! {
         Modal {
             open: true,
+            // SPEC-10.32.1
             title: "New Bill".to_string(),
             onclose: move |_| onclose.call(()),
             footer: rsx! {
@@ -809,6 +839,7 @@ fn NewBillModal(props: NewBillModalProps) -> Element {
                         name: "bill_number",
                         label: "Their bill number",
                         placeholder: "Optional",
+                        // SPEC-10.32.4
                         maxlength: 100,
                         help: "The number on their document, so the two can be matched.",
                         value: bill_number.read().clone(),
@@ -921,6 +952,7 @@ fn NewBillModal(props: NewBillModalProps) -> Element {
                             PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                             "Add line"
                         }
+                        // SPEC-10.32.6
                         // The server refuses a bill with no lines, so the last
                         // one cannot be removed.
                         if lines.read().len() > 1 {
@@ -962,6 +994,7 @@ fn fire_transition(
     mut confirm_void: Signal<bool>,
     mut resource: Resource<Option<RemoteBillWithLines>>,
 ) {
+    // SPEC-10.33.10
     let path = format!("/bills/{bill_id}/{action}");
     busy.set(true);
     error.set(String::new());
@@ -990,6 +1023,7 @@ pub fn BillDetailPage(id: String) -> Element {
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
 
+    // SPEC-10.33.1
     use_page_title("Bill");
     if !has_finance {
         return rsx! { crate::pages::billing::NoFinancePermission { title: "Bill" } };
@@ -1011,6 +1045,7 @@ fn BillDetailBody(id: String) -> Element {
     // payments list.
     let mut recording_payment = use_signal(|| false);
 
+    // SPEC-10.33.2
     let mut resource = use_resource(use_reactive(&bill_id, |bill_id| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
@@ -1069,6 +1104,7 @@ fn BillDetailBody(id: String) -> Element {
         .collect();
     let can_mutate = crate::hooks::use_can_mutate();
 
+    // SPEC-10.33.8: approve fires with no confirmation; void goes through the dialog.
     let approve_id = bill_id.clone();
     let void_id = bill_id.clone();
 
@@ -1086,6 +1122,7 @@ fn BillDetailBody(id: String) -> Element {
             ErrorBanner { class: "mb-4", "{error}" }
         }
         match data {
+            // SPEC-10.33.3: a failed load also lands here, with no error shown.
             None => rsx! { crate::components::DetailSkeleton {} },
             Some(loaded) => {
                 let bill = loaded.bill.clone();
@@ -1094,11 +1131,13 @@ fn BillDetailBody(id: String) -> Element {
                     .get(&bill.vendor_id)
                     .cloned()
                     .unwrap_or_else(|| "Unknown vendor".to_string());
+                // SPEC-10.33.4
                 let number = bill.bill_number.clone().unwrap_or_default();
                 let due = bill.due_date.clone().unwrap_or_default();
                 let notes = bill.notes.clone().unwrap_or_default();
                 let provider = bill.external_provider.clone();
                 let external_id = bill.external_bill_id.clone();
+                // SPEC-10.33.6
                 let approvable = can_approve(&bill.status) && can_mutate;
                 let voidable = can_void(&bill.status) && can_mutate;
                 let payable = can_record_payment(&bill.status) && can_mutate;
@@ -1108,6 +1147,7 @@ fn BillDetailBody(id: String) -> Element {
                         title: vendor.clone(),
                         actions: rsx! { Badge { variant: tone, "{label}" } },
                         div { class: "space-y-4",
+                            // SPEC-10.33.5
                             if let (Some(p), Some(external)) = (provider.clone(), external_id.clone()) {
                                 StatusBanner { tone: crate::components::BannerTone::Info,
                                     "This bill is held in {p} as {external}. It was raised there when it was created here, and that copy is what your accountant reconciles."
@@ -1167,6 +1207,7 @@ fn BillDetailBody(id: String) -> Element {
                                     }
                                 }
                             }
+                            // SPEC-10.33.7
                             if !approvable && !voidable && !payable {
                                 p { class: "text-sm text-muted",
                                     "A paid or voided bill is final here. A correction is a new bill, the way an invoice amendment is a new invoice."
@@ -1174,6 +1215,7 @@ fn BillDetailBody(id: String) -> Element {
                             }
                             ConfirmDialog {
                                 open: confirm_void(),
+                                // SPEC-10.33.9
                                 title: "Void this bill?".to_string(),
                                 message: "The bill stays on record with its lines and stops counting as owed. It cannot be brought back; enter a new one if it was voided by mistake.".to_string(),
                                 confirm_text: "Void".to_string(),
@@ -1205,6 +1247,7 @@ fn BillDetailBody(id: String) -> Element {
                                             .category_id
                                             .and_then(|c| category_names.get(&c).cloned())
                                             .unwrap_or_default();
+                                        // SPEC-10.33.11
                                         let quantity = format!("{:.2}", line.quantity_hundredths as f64 / 100.0);
                                         rsx! {
                                             TableRow { key: "{key}",
@@ -1239,6 +1282,7 @@ fn BillDetailBody(id: String) -> Element {
                                 dt { "Total" }
                                 dd { "{format_money_minor(bill.total_minor)}" }
                             }
+                            // SPEC-10.33.12
                             if bill.paid_minor > 0 {
                                 div { class: "flex justify-between",
                                     dt { class: "text-muted", "Paid" }
@@ -1284,9 +1328,11 @@ fn PaymentsCard(payments_handle: Resource<Option<Vec<RemoteBillPayment>>>) -> El
     let snap = payments_handle.read_unchecked().clone();
     let data = snap.as_ref().and_then(|o| o.as_ref()).cloned();
     let rows = data.unwrap_or_default();
+    // SPEC-10.34.1: a failed payments load also renders nothing here.
     if rows.is_empty() {
         return rsx! {};
     }
+    // SPEC-10.34.2
     let method_label = |m: &str| -> String {
         BILL_PAYMENT_METHODS
             .iter()
@@ -1346,6 +1392,7 @@ struct RecordPaymentModalProps {
 
 #[component]
 fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
+    // SPEC-10.34.4
     let mut paid_on = use_signal(|| {
         chrono::Local::now()
             .date_naive()
@@ -1374,6 +1421,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         if *saving.read() {
             return;
         }
+        // SPEC-10.34.8, SPEC-10.34.5
         error.set(String::new());
         let amount_text = amount.read().clone();
         let Some(amount_minor) = minor_from_str(&amount_text) else {
@@ -1391,6 +1439,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             error.set("Enter the date you paid.".to_string());
             return;
         }
+        // SPEC-10.34.6
         let body = serde_json::json!({
             "paid_on": date_text,
             "amount_minor": amount_minor,
@@ -1411,6 +1460,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     // an over-payment and naming the voided state on a
                     // void bill; show it as it came rather than reducing
                     // it to "could not save".
+                    // SPEC-10.34.7
                     Err(err) => error.set(format!("Could not record the payment: {err}")),
                     Ok(_) => onsaved.call(()),
                 }
@@ -1435,6 +1485,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     ErrorBanner { "{error}" }
                 }
                 p { class: "text-sm text-muted",
+                    // SPEC-10.34.3
                     "Remaining to pay: "
                     span { class: "font-medium text-content",
                         "{format_money_minor(remaining_minor)} {props.currency}"

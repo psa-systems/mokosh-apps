@@ -54,6 +54,7 @@ pub struct CollapsibleCardProps {
 /// Card whose body collapses behind a chevron toggle.
 #[component]
 pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
+    // SPEC-5.13.1
     let mut open = use_signal(|| props.default_open);
 
     let base_class = "bg-surface rounded-lg shadow border border-line";
@@ -61,6 +62,7 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
 
     // Match `Card`'s body padding for the with-header case so a full-bleed
     // table (padding: false) sits flush while a padded body stays inset.
+    // SPEC-5.13.7
     let body_class = if props.padding { "px-6 pb-6 pt-4" } else { "" };
 
     // MAPPS-286: derive a stable id from the title so the toggle button's
@@ -69,6 +71,7 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
     // assistive tech then ties "this toggle controls that region" without
     // a separate heading association. Spaces and other non-id-safe chars
     // are collapsed to dashes.
+    // SPEC-5.13.6
     let body_id = format!(
         "lc-collapsible-{}",
         props
@@ -95,6 +98,7 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
                     "flex items-start flex-wrap justify-between gap-x-4 gap-y-2 px-6 pt-6 pb-4 border-b border-line"
                 },
                 div { class: "min-w-0 flex-1",
+                    // SPEC-5.13.2
                     button {
                         r#type: "button",
                         class: "flex items-center gap-2 text-left",
@@ -110,6 +114,7 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
                             ChevronRightIcon { size: IconSize::Small, class: "text-subtle".to_string() }
                         }
                         h3 { class: "text-lg font-medium text-content", "{props.title}" }
+                        // SPEC-5.13.4
                         if let Some(count) = props.count {
                             span {
                                 class: "ml-1 rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-muted",
@@ -117,16 +122,19 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
                             }
                         }
                     }
+                    // SPEC-5.13.5
                     if !props.subtitle.is_empty() {
                         // Aligned with the title rather than the chevron, so the
                         // two lines of heading read as one block.
                         p { class: "mt-1 ml-6 text-sm text-muted", "{props.subtitle}" }
                     }
                 }
+                // SPEC-5.13.3
                 div { class: "flex flex-wrap items-center gap-2",
                     {props.actions}
                 }
             }
+            // SPEC-5.13.1
             if open() {
                 div { id: "{body_id}", class: "{body_class}",
                     {props.children}

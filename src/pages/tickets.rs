@@ -20,18 +20,22 @@ use mokosh_types::tickets::{NoteType, TicketSavedView};
 
 /// MAPPS-546: rows per page on the ticket list, sent to the server rather than
 /// written into the table as a constant.
+// SPEC-9.1.4, SPEC-9.1.12, SPEC-9.15.2
 const PER_PAGE: usize = 25;
 
 /// MAPPS-517: entries rendered in the ticket journal. The stream merges three
 /// sources, each read in full, so a long-running ticket would otherwise render
 /// hundreds of list items; the count of the rest is stated under the stream.
+// SPEC-9.9.2, SPEC-9.15.2
 const JOURNAL_LIMIT: usize = 50;
 
 /// Shown under the email checkbox on a public note. States the one thing that
 /// can still surprise the author: the mail is skipped when the ticket has no
 /// contact with an email address.
+// SPEC-9.10.3
 const NOTE_EMAIL_HELP: &str = "Sent to the ticket's contact. Nothing is sent when the ticket has no contact with an email address.";
 
+// SPEC-9.10.4
 const NOTE_PREVIEW_NOTE: &str = "The ticket-note email is built into the server rather than by a notification rule, so there is nothing to render yet. The ticket's contact is still emailed the note.";
 use crate::Route;
 
@@ -39,6 +43,7 @@ use crate::Route;
 /// encoding. Larger files are rejected with an inline copy string so the
 /// SPA never fires a `POST /tickets/{id}/attachments` that the server
 /// would slice down anyway. 5 MB, in bytes.
+// SPEC-9.8.5, SPEC-9.15.2
 pub(crate) const TICKET_ATTACHMENT_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
 /// MAPPS-607: should the Reopen button render? Split out of the render
@@ -51,6 +56,7 @@ pub(crate) const TICKET_ATTACHMENT_MAX_BYTES: u64 = 5 * 1024 * 1024;
 /// AND-ed on top so a status match alone doesn't render the button for
 /// a contact who lacks `tickets:reopen`; staff sessions bypass the cap
 /// unconditionally via `use_capability`.
+// SPEC-9.8.1
 pub(crate) fn should_show_reopen(status_name: &str, has_reopen_cap: bool) -> bool {
     if !has_reopen_cap {
         return false;
@@ -83,6 +89,7 @@ pub(crate) fn should_show_reopen(status_name: &str, has_reopen_cap: bool) -> boo
 /// Split out of the render body so the four combinations are unit-testable
 /// on the native `cargo test --lib` target (touching `use_capability`
 /// from here would panic without the wasm environment).
+// SPEC-9.15.1, SPEC-9.7.3
 pub(crate) fn contact_can_edit_ticket(
     reporter_contact_id: Option<uuid::Uuid>,
     my_contact_id: Option<uuid::Uuid>,
@@ -393,6 +400,7 @@ struct RemoteNote {
 // ============================================================================
 
 /// `POST /api/v1/tickets`, sent by the New Ticket form.
+// SPEC-9.15.3
 #[derive(Debug, Serialize)]
 struct CreateTicketBody {
     title: String,
@@ -420,6 +428,7 @@ struct CreateTicketBody {
 /// Every field is omitted rather than sent as null unless the editor that
 /// fired set it, so a status change carries `status_id` alone: the same wire
 /// bytes the hand-built JSON literals this replaced produced.
+// SPEC-9.15.4, SPEC-9.15.6
 #[derive(Debug, Default, Serialize)]
 struct UpdateTicketBody {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -462,6 +471,7 @@ struct UpdateTicketBody {
 }
 
 /// `POST /api/v1/tickets/{id}/notes`, sent by the note composer.
+// SPEC-9.15.5, SPEC-9.10.8
 #[derive(Debug, Serialize)]
 struct CreateNoteBody {
     note_type: NoteType,
@@ -481,6 +491,7 @@ struct CreateNoteBody {
 }
 
 /// `PUT /api/v1/tickets/{id}/notes/{note_id}`, sent by the inline note editor.
+// SPEC-9.15.5
 #[derive(Debug, Serialize)]
 struct UpdateNoteBody {
     content: String,
@@ -513,6 +524,7 @@ struct UpdateNoteBody {
 /// the string-to-`NoteType` decode (an unknown kind means no, since offering
 /// a control that cannot work is worse than hiding one that could), and the
 /// `admin OR author` role resolution the SPA computes rather than fetches.
+// SPEC-9.9.15
 fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_admin: bool) -> bool {
     if let Some(server) = note.can_edit {
         return server;
@@ -534,6 +546,7 @@ fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_adm
 /// Parallel to how a time entry's minutes/billable flag renders on its own
 /// journal line: present only for a note that has the field, so a plain
 /// free-text note (every field `None`) renders no extra lines at all.
+// SPEC-9.9.16
 fn note_structured_lines(note: &RemoteNote) -> Vec<(&'static str, String)> {
     let mut lines = Vec::new();
     if let Some(minutes) = note.time_minutes {
@@ -553,6 +566,7 @@ fn note_structured_lines(note: &RemoteNote) -> Vec<(&'static str, String)> {
         // explicitly on the three cases so an invalid payload reads as
         // an explicit, logged failure rather than a plausible value.
         match follow_up.get("needed") {
+            // SPEC-9.9.17
             Some(serde_json::Value::Bool(needed)) => {
                 let mut value = if *needed {
                     "Needed".to_string()
@@ -567,6 +581,7 @@ fn note_structured_lines(note: &RemoteNote) -> Vec<(&'static str, String)> {
                 }
                 lines.push(("Follow-up", value));
             }
+            // SPEC-9.9.18
             _ => {
                 tracing::warn!(
                     note_id = %note.id,
@@ -584,6 +599,7 @@ fn note_structured_lines(note: &RemoteNote) -> Vec<(&'static str, String)> {
 /// `DELETE /tickets/{id}` (`mokosh-server/src/modules/tickets/routes.rs`),
 /// which allows `super_admin`/`admin`/`manager`. Returns the disabled state
 /// and, when disabled, the reason to show in the button's title.
+// SPEC-9.8.8
 fn ticket_delete_gate(
     deleting: bool,
     can_mutate: bool,
@@ -626,6 +642,7 @@ const ALL_NOTE_TYPES: [NoteType; 4] = [
 /// `resolution` go missing; iterating every variant would put `time_entry`
 /// back. Only a match fails the build on a fifth variant until somebody
 /// decides whether an agent may write it.
+// SPEC-9.10.2
 fn composer_label(kind: NoteType) -> Option<&'static str> {
     match kind {
         NoteType::Internal => Some("Internal Note"),
@@ -639,6 +656,7 @@ fn composer_label(kind: NoteType) -> Option<&'static str> {
 }
 
 /// The composer's Note Type options.
+// SPEC-9.10.2
 fn note_type_options() -> Vec<SelectOption> {
     ALL_NOTE_TYPES
         .iter()
@@ -726,6 +744,7 @@ enum SlaStatus {
 impl SlaStatus {
     /// (badge variant, label) for rendering. `NotApplicable` returns
     /// `None` so the caller can skip the badge entirely.
+    // SPEC-9.13.1
     fn badge(self) -> Option<(BadgeVariant, &'static str)> {
         match self {
             SlaStatus::OnTrack => Some((BadgeVariant::Green, "On Track")),
@@ -746,6 +765,7 @@ type PhraseParts = Vec<(String, Option<String>)>;
 /// PMS-253: honours the per-user format pref for the absolute part.
 /// MAPPS-939: takes `pref`/`tz` explicitly so the detail page resolves the
 /// user's timezone once per render pass instead of once per SLA due date.
+// SPEC-9.13.4, SPEC-9.13.6, SPEC-9.27.5
 fn sla_due_parts_in(due: DateTime<Utc>, pref: Option<&str>, tz: chrono_tz::Tz) -> PhraseParts {
     let absolute =
         crate::utils::datetime::fmt_user_dt_in(due, pref, tz, Some("%b %-d, %Y %-I:%M %p"));
@@ -758,6 +778,7 @@ fn sla_due_parts_in(due: DateTime<Utc>, pref: Option<&str>, tz: chrono_tz::Tz) -
 
 /// The coarse "2 hr left" / "3 days overdue" hint behind `sla_due_parts`,
 /// with `now` explicit so a test can pin it (MAPPS-734 reuses it per leg).
+// SPEC-9.13.5
 fn remaining_hint(due: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let delta = due.signed_duration_since(now);
     let secs = delta.num_seconds();
@@ -799,6 +820,7 @@ enum SlaLeg {
     },
 }
 
+// SPEC-9.13.2, SPEC-9.13.3
 fn sla_leg(
     target: Option<DateTime<Utc>>,
     actual: Option<DateTime<Utc>>,
@@ -824,6 +846,7 @@ fn sla_leg(
 /// "Due <due> (<hint>)" or "<at> (met, due <due>)"; every timestamp is a
 /// phrase of its own, so a narrow card breaks the line beside it and not
 /// through it.
+// SPEC-9.13.3, SPEC-9.13.6
 fn sla_leg_parts(leg: &SlaLeg, fmt: impl Fn(DateTime<Utc>) -> String) -> PhraseParts {
     match leg {
         SlaLeg::Pending { due, hint } => vec![
@@ -843,6 +866,7 @@ fn sla_leg_parts(leg: &SlaLeg, fmt: impl Fn(DateTime<Utc>) -> String) -> PhraseP
 
 /// The Created row's phrases: the timestamp, then who created the ticket
 /// when that is known (MAPPS-731).
+// SPEC-9.12.12
 fn created_parts(created: String, created_iso: String, by: &str) -> PhraseParts {
     let created_part = (created, Some(created_iso));
     if by.is_empty() {
@@ -854,6 +878,7 @@ fn created_parts(created: String, created_iso: String, by: &str) -> PhraseParts 
 
 /// Render a `DateTime<Utc>` as a coarse "X ago" string. Good enough
 /// for a list view where exact times live on the detail page.
+// SPEC-9.3.5
 fn relative_time(when: DateTime<Utc>) -> String {
     let now = Utc::now();
     let delta = now.signed_duration_since(when);
@@ -882,6 +907,7 @@ fn relative_time(when: DateTime<Utc>) -> String {
 /// Convert the lowercase status name the server returns into the
 /// title-case label `TicketRow` keys its badge color on. Unknown
 /// values pass through so future statuses don't disappear.
+// SPEC-9.3.2
 fn humanize_ticket_status(raw: &str) -> String {
     match raw {
         "" => "Open".into(),
@@ -900,6 +926,7 @@ fn humanize_ticket_status(raw: &str) -> String {
     }
 }
 
+// SPEC-9.3.3
 fn humanize_priority(raw: &str) -> String {
     match raw {
         "" => "Medium".into(),
@@ -922,6 +949,7 @@ fn humanize_priority(raw: &str) -> String {
 /// `pref`/`tz` explicitly so a caller rendering many timestamps in one
 /// render pass resolves the user's timezone once and reuses it, instead of
 /// each call re-deriving it from the AuthContext.
+// SPEC-9.3.5, SPEC-9.13.6
 fn fmt_datetime_in(dt: DateTime<Utc>, pref: Option<&str>, tz: chrono_tz::Tz) -> String {
     crate::utils::datetime::fmt_user_dt_in(dt, pref, tz, Some("%b %d, %Y %H:%M"))
 }
@@ -972,6 +1000,7 @@ struct JournalEntry {
 /// (the roster is `RequireManager`-gated on the server and can legitimately
 /// not reach every signed-in operator, and a JIT-provisioned bunyip user
 /// starts with an empty profile name), then the roster.
+// SPEC-9.9.9
 fn journal_actor(
     users: &[UserOpt],
     id: &Option<uuid::Uuid>,
@@ -990,6 +1019,7 @@ fn journal_actor(
 /// Headline for an audit-log entry. A single-column edit gets the phrasing a
 /// reader expects for that column ("changed the status"); anything wider falls
 /// back to naming the columns, as the change-history pane always did.
+// SPEC-9.9.5, SPEC-9.9.6
 fn history_action(entry: &HistoryEntry) -> String {
     // MAPPS-749: a note edit rides in this feed (PMS-974) and is not an edit
     // to the ticket. Saying "updated content" of the ticket would be a plain
@@ -1022,6 +1052,7 @@ fn history_action(entry: &HistoryEntry) -> String {
 /// The before/after lines for an audit entry. Empty when every change on it is
 /// a bare reference (a FK swap the audit log records as two UUIDs), which
 /// `ChangeLine::build` drops because it reads as "(reference) → (reference)".
+// SPEC-9.9.7
 fn history_changes(entry: &HistoryEntry) -> Vec<ChangeLine> {
     entry
         .changes
@@ -1041,6 +1072,7 @@ fn history_changes(entry: &HistoryEntry) -> Vec<ChangeLine> {
 /// anything no source records - attachments and approvals write no audit row
 /// against the ticket - which is why the journal says so on screen instead of
 /// reading as complete.
+// SPEC-9.9.1, SPEC-9.9.3, SPEC-9.9.4, SPEC-9.9.8
 fn build_journal(
     notes: &[RemoteNote],
     history: &[HistoryEntry],
@@ -1169,6 +1201,7 @@ enum TicketSortKey {
 /// the server unchecked against any allow-list. Since MAPPS-533 an unlisted one
 /// is a 422, so a drift here breaks the ticket list rather than reordering it
 /// quietly.
+// SPEC-9.1.9
 fn ticket_sort_param(key: TicketSortKey) -> &'static str {
     match key {
         TicketSortKey::Ticket => "ticket_number",
@@ -1186,6 +1219,7 @@ fn ticket_sort_param(key: TicketSortKey) -> &'static str {
 /// sent, or a stale value from a dropped column) falls back to `None` rather
 /// than guessing, so the fetch below runs unsorted instead of silently
 /// picking the wrong column.
+// SPEC-9.1.11
 fn ticket_sort_key_from_param(param: &str) -> Option<TicketSortKey> {
     match param {
         "ticket_number" => Some(TicketSortKey::Ticket),
@@ -1198,6 +1232,7 @@ fn ticket_sort_key_from_param(param: &str) -> Option<TicketSortKey> {
     }
 }
 
+// SPEC-9.1.11
 fn sort_direction_param(dir: SortDirection) -> &'static str {
     match dir {
         SortDirection::Ascending => "asc",
@@ -1205,6 +1240,7 @@ fn sort_direction_param(dir: SortDirection) -> &'static str {
     }
 }
 
+// SPEC-9.1.11
 fn sort_direction_from_param(s: &str) -> Option<SortDirection> {
     match s {
         "asc" => Some(SortDirection::Ascending),
@@ -1287,6 +1323,7 @@ fn ticket_sort_dir_for(
 /// page 3 of a different ordering - a jump to unrelated rows that reads as a
 /// bug. `contacts.rs::toggle_sort` has taken the page for the same reason since
 /// it was paged.
+// SPEC-9.1.10
 fn toggle_ticket_sort(
     current: &mut Signal<Option<(TicketSortKey, SortDirection)>>,
     key: TicketSortKey,
@@ -1330,6 +1367,7 @@ struct SavedViewSort {
 /// MAPPS-998: write a saved view's filter + sort into the live signals that
 /// already drive the fetch, the same signals "Clear filters" resets. Does NOT
 /// touch `selected_view_id` or `views_open`; callers set those around this.
+// SPEC-9.2.12
 fn apply_saved_view(
     view: &TicketSavedView,
     search: &mut Signal<String>,
@@ -1356,6 +1394,7 @@ fn apply_saved_view(
 }
 
 /// MAPPS-998: `POST /tickets/saved-views` body.
+// SPEC-9.2.15
 #[derive(Serialize)]
 struct SavedViewSaveBody {
     name: String,
@@ -1367,6 +1406,7 @@ struct SavedViewSaveBody {
 /// sort are omitted (left `None`), which the server's `UpdateTicketSavedViewRequest`
 /// treats as "leave unchanged" - a rename does not re-capture the current
 /// filters, it only renames what was already saved.
+// SPEC-9.2.18
 #[derive(Serialize)]
 struct RenameViewBody {
     name: String,
@@ -1378,6 +1418,7 @@ struct RenameViewBody {
 /// otherwise hand back page N of the NEW results, which can be past the end of
 /// a smaller result set and render an empty list even though page one has
 /// matches.
+// SPEC-9.2.1
 fn set_ticket_search(search: &mut Signal<String>, page: &mut Signal<usize>, value: String) {
     search.set(value);
     page.set(1);
@@ -1456,6 +1497,7 @@ mod mapps837_search_resets_page_tests {
 #[component]
 pub fn TicketListPage() -> Element {
     let contact_can_read = crate::hooks::capabilities::use_capability("tickets:read");
+    // SPEC-9.1.1
     if crate::hooks::fetch::api::has_contact_session() && !contact_can_read {
         use_page_title("Tickets");
         return rsx! {
@@ -1470,6 +1512,7 @@ pub fn TicketListPage() -> Element {
 
 #[component]
 fn TicketListBody() -> Element {
+    // SPEC-9.1.2
     use_page_title("Tickets");
     // MAPPS-939: resolve once for the whole row list, not once per row's
     // "updated" hover title.
@@ -1479,6 +1522,7 @@ fn TicketListBody() -> Element {
     // `tickets:write`. Staff / platform sessions always see it (the
     // hook returns true unconditionally for them); contacts see it
     // only when their role carries the cap.
+    // SPEC-9.1.3
     let can_create_ticket = crate::hooks::capabilities::use_capability("tickets:write");
     let mut search = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
@@ -1487,6 +1531,7 @@ fn TicketListBody() -> Element {
     let mut queue_filter = use_signal(String::new);
     // MAPPS-289: sortable-column state. Sorting here is entirely client-side
     // over the fetched page; the list query sends no `?sort=` at all.
+    // SPEC-9.1.9
     let mut sort = use_signal(|| Some((TicketSortKey::Updated, SortDirection::Descending)));
     // MAPPS-290: page-scoped bulk selection. The header `SelectAllHeader`
     // toggles every visible row in/out; per-row `SelectRowCell` toggles
@@ -1506,6 +1551,7 @@ fn TicketListBody() -> Element {
     // MAPPS-998: per-user saved views (search + status + priority + queue +
     // sort), read through the MAPPS-860 shared-resource cache so the Views
     // control and any future consumer share one `GET /tickets/saved-views`.
+    // SPEC-9.2.10
     let mut saved_views_resource = crate::hooks::use_ticket_saved_views(true);
     let mut selected_view_id = use_signal::<Option<String>>(|| None);
     let mut views_open = use_signal(|| false);
@@ -1535,6 +1581,7 @@ fn TicketListBody() -> Element {
     // back. Empty fetch (offline / 403) falls back to no options so the
     // filter just renders the "All Statuses" placeholder, which is
     // strictly better than fabricating slugs.
+    // SPEC-9.2.2, SPEC-9.2.3
     let status_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::list_or_empty(
@@ -1547,6 +1594,7 @@ fn TicketListBody() -> Element {
     // statuses above - the filter sends an id, and the previous hardcoded
     // critical/high/medium/low list offered values a renamed priority would
     // never match.
+    // SPEC-9.2.2, SPEC-9.2.3
     let priority_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::list_or_empty(
@@ -1561,6 +1609,7 @@ fn TicketListBody() -> Element {
     // a first-class ticket attribute the create form and the detail view both
     // show - stayed off the filter card. Empty fetch falls back to just the
     // "All Queues" placeholder.
+    // SPEC-9.2.2, SPEC-9.2.3
     let queue_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::list_or_empty(
@@ -1597,6 +1646,7 @@ fn TicketListBody() -> Element {
     // MAPPS-855: debounce the search dependency so a burst of keystrokes
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke.
+    // SPEC-9.1.8
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let mut tickets_resource = use_resource(move || {
         let q = search_debounced.read().trim().to_string();
@@ -1609,13 +1659,17 @@ fn TicketListBody() -> Element {
             // MAPPS-357: subscribe to reachability so the list auto-refetches the
             // instant the server returns, and so a failed load stays distinguishable
             // from an empty one.
+            // SPEC-9.1.8: reading reachability refetches the list on reconnect.
             let _reachable = crate::hooks::use_server_reachable();
             let has_staff = crate::hooks::fetch::api::current_access_token().is_some();
             let has_contact = crate::hooks::fetch::api::has_contact_session();
+            // SPEC-9.1.5
             if !has_staff && !has_contact {
                 return None;
             }
+            // SPEC-9.1.4, SPEC-9.1.7
             let mut path = format!("/tickets?page={current_page}&per_page={PER_PAGE}");
+            // SPEC-9.1.6
             if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
                 path.push_str(&format!("&company_id={company_id}"));
             }
@@ -1646,6 +1700,7 @@ fn TicketListBody() -> Element {
             }
             crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteTicket>>(&path)
                 .await
+                // SPEC-9.1.14
                 .inspect_err(|e| tracing::error!("ticket list load failed: {e}"))
                 .ok()
         }
@@ -1667,6 +1722,7 @@ fn TicketListBody() -> Element {
     // down; `can_mutate` disables the bulk-delete control.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // SPEC-9.1.15
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Tickets".to_string() }
@@ -1683,6 +1739,7 @@ fn TicketListBody() -> Element {
     // list, so the question "is this empty because the tenant has no tickets,
     // or because the filters exclude them?" is answered by whether any filter
     // is set.
+    // SPEC-9.2.8
     let filters_active = !search.read().trim().is_empty()
         || !status_filter.read().is_empty()
         || !priority_filter.read().is_empty()
@@ -1691,6 +1748,7 @@ fn TicketListBody() -> Element {
     // MAPPS-998: the caller's own saved views, alphabetical (the server
     // already orders `name ASC`; sorting again client-side keeps this
     // correct even if a cached page predates that ordering).
+    // SPEC-9.2.9
     let mut sorted_views: Vec<TicketSavedView> = saved_views_resource
         .read_unchecked()
         .clone()
@@ -1707,6 +1765,7 @@ fn TicketListBody() -> Element {
         .map(|v| v.name.clone())
         .unwrap_or_else(|| "No view".to_string());
 
+    // SPEC-9.2.14, SPEC-9.2.15, SPEC-9.2.16
     let mut submit_save_view = move || {
         if saving_view() {
             return;
@@ -1764,6 +1823,7 @@ fn TicketListBody() -> Element {
         });
     };
 
+    // SPEC-9.2.17, SPEC-9.2.18
     let mut submit_rename_view = move || {
         if renaming_saving() {
             return;
@@ -1807,6 +1867,7 @@ fn TicketListBody() -> Element {
         });
     };
 
+    // SPEC-9.2.20
     let mut submit_delete_view = move |id: String| {
         if deleting_saving() {
             return;
@@ -1844,6 +1905,7 @@ fn TicketListBody() -> Element {
     let tenant_statuses = status_resource.read_unchecked().clone().unwrap_or_default();
     // MAPPS-546: the option VALUE is the id, because the server filters on
     // `status_id`. The label stays the tenant's own name.
+    // SPEC-9.2.2
     let mut status_options = vec![SelectOption::new("", "All Statuses")];
     for s in tenant_statuses.iter() {
         status_options.push(SelectOption::new(s.id.to_string(), s.name.clone()));
@@ -1858,6 +1920,7 @@ fn TicketListBody() -> Element {
         .read_unchecked()
         .clone()
         .unwrap_or_default();
+    // SPEC-9.2.2
     let mut priority_options = vec![SelectOption::new("", "All Priorities")];
     for p in tenant_priorities.iter() {
         priority_options.push(SelectOption::new(
@@ -1869,6 +1932,7 @@ fn TicketListBody() -> Element {
     // MAPPS-997: queue filter options. Same shape as status/priority above.
     // A still-loading / failed fetch just renders the placeholder.
     let tenant_queues = queue_resource.read_unchecked().clone().unwrap_or_default();
+    // SPEC-9.2.2
     let mut queue_options = vec![SelectOption::new("", "All Queues")];
     for q in tenant_queues.iter() {
         queue_options.push(SelectOption::new(q.id.to_string(), q.name.clone()));
@@ -1882,6 +1946,7 @@ fn TicketListBody() -> Element {
     let status_id_snap = status_filter.read().clone();
     let priority_id_snap = priority_filter.read().clone();
     let queue_id_snap = queue_filter.read().clone();
+    // SPEC-9.2.6
     let mut filter_pills: Vec<FilterPill> = Vec::new();
     if !status_id_snap.is_empty() {
         let name = tenant_statuses
@@ -1923,6 +1988,7 @@ fn TicketListBody() -> Element {
     rsx! {
         PageHeader {
             title: "Tickets",
+            // SPEC-9.1.2, SPEC-9.1.3
             subtitle: "Manage support tickets and service requests",
             actions: rsx! {
                 if can_create_ticket {
@@ -1943,6 +2009,7 @@ fn TicketListBody() -> Element {
         // fetch above already narrows the list to ?company_id=;
         // without this chip the user has no signal that the list
         // is already scoped (the header reads a plain "Tickets").
+        // SPEC-9.1.6
         crate::components::ContextFilterBanner {
             scope: crate::components::ContextFilterScope::Tickets,
         }
@@ -1950,6 +2017,7 @@ fn TicketListBody() -> Element {
         // Filters
         Card { class: "mb-6",
             div { class: "flex flex-col sm:flex-row gap-4",
+                // SPEC-9.2.5, SPEC-9.2.9
                 // MAPPS-998: Views sits to the LEFT of Search, same row.
                 div { class: "shrink-0 sm:w-48",
                     crate::components::Popover {
@@ -1973,6 +2041,7 @@ fn TicketListBody() -> Element {
                                 selected_view_id.set(None);
                                 views_open.set(false);
                             },
+                            // SPEC-9.2.11
                             "No view"
                         }
                         if sorted_views.is_empty() {
@@ -1996,6 +2065,7 @@ fn TicketListBody() -> Element {
                                             class: "flex-1 min-w-0 text-left rounded-md px-3 py-2 text-sm text-content truncate",
                                             onclick: {
                                                 let view = view.clone();
+                                                // SPEC-9.2.12
                                                 move |_| {
                                                     apply_saved_view(
                                                         &view,
@@ -2020,6 +2090,7 @@ fn TicketListBody() -> Element {
                                                 let id = id.clone();
                                                 let name = name.clone();
                                                 move |_| {
+                                                    // SPEC-9.2.17
                                                     renaming_view.set(Some((id.clone(), name.clone())));
                                                     rename_name.set(name.clone());
                                                     rename_error.set(String::new());
@@ -2036,6 +2107,7 @@ fn TicketListBody() -> Element {
                                                 let id = id.clone();
                                                 let name = name.clone();
                                                 move |_| {
+                                                    // SPEC-9.2.19
                                                     deleting_view.set(Some((id.clone(), name.clone())));
                                                     delete_error.set(String::new());
                                                     views_open.set(false);
@@ -2051,6 +2123,7 @@ fn TicketListBody() -> Element {
                         button {
                             r#type: "button",
                             class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
+                            // SPEC-9.2.13
                             onclick: move |_| {
                                 new_view_name.set(String::new());
                                 save_error.set(String::new());
@@ -2065,6 +2138,7 @@ fn TicketListBody() -> Element {
                     SearchInput {
                         value: search.read().clone(),
                         placeholder: "Search tickets…",
+                        // SPEC-9.2.1
                         oninput: move |e: FormEvent| set_ticket_search(&mut search, &mut page, e.value()),
                     }
                 }
@@ -2074,6 +2148,7 @@ fn TicketListBody() -> Element {
                         options: status_options,
                         value: status_filter.read().clone(),
                         placeholder: "Status",
+                        // SPEC-9.2.4
                         onchange: move |e: FormEvent| {
                             status_filter.set(e.value());
                             page.set(1);
@@ -2084,6 +2159,7 @@ fn TicketListBody() -> Element {
                         options: queue_options,
                         value: queue_filter.read().clone(),
                         placeholder: "Queue",
+                        // SPEC-9.2.4
                         onchange: move |e: FormEvent| {
                             queue_filter.set(e.value());
                             page.set(1);
@@ -2094,6 +2170,7 @@ fn TicketListBody() -> Element {
                         options: priority_options,
                         value: priority_filter.read().clone(),
                         placeholder: "Priority",
+                        // SPEC-9.2.4
                         onchange: move |e: FormEvent| {
                             priority_filter.set(e.value());
                             page.set(1);
@@ -2108,6 +2185,7 @@ fn TicketListBody() -> Element {
         FilterPillBar {
             pills: filter_pills.clone(),
             class: Some("mb-4".to_string()),
+            // SPEC-9.2.7
             onremove: move |i: usize| {
                 if let Some(pill) = filter_pills.get(i) {
                     match pill.field.as_str() {
@@ -2130,6 +2208,7 @@ fn TicketListBody() -> Element {
         // MAPPS-998: save the current filter+sort+search as a named view.
         Modal {
             open: show_save_modal(),
+            // SPEC-9.2.13
             title: "Save current view".to_string(),
             size: ModalSize::Small,
             onclose: move |_| {
@@ -2183,6 +2262,7 @@ fn TicketListBody() -> Element {
         // MAPPS-998: rename one of the signed-in user's own saved views.
         Modal {
             open: renaming_view.read().is_some(),
+            // SPEC-9.2.17
             title: "Rename view".to_string(),
             size: ModalSize::Small,
             onclose: move |_| {
@@ -2238,6 +2318,7 @@ fn TicketListBody() -> Element {
             let pending_delete = deleting_view.read().clone();
             let delete_message = pending_delete
                 .as_ref()
+                // SPEC-9.2.19
                 .map(|(_, name)| format!("Delete the saved view \"{name}\"? This cannot be undone."))
                 .unwrap_or_default();
             rsx! {
@@ -2262,6 +2343,7 @@ fn TicketListBody() -> Element {
         }
 
         if fetch_failed {
+            // SPEC-9.1.16
             ErrorBanner { class: "mb-3", "Could not load tickets. Refresh the page to retry." }
         }
 
@@ -2271,6 +2353,7 @@ fn TicketListBody() -> Element {
         // verbs (bulk assign, set priority) follows the same shape.
         BulkActionsBar {
             selection,
+            // SPEC-9.3.9
             label: "ticket".to_string(),
             Button {
                 variant: ButtonVariant::Danger,
@@ -2282,6 +2365,7 @@ fn TicketListBody() -> Element {
                     // confirmation dialog. The actual delete fanout
                     // runs from the dialog's confirm handler so an
                     // accidental click is recoverable.
+                    // SPEC-9.3.10
                     let ids: Vec<String> = selection.read().iter().cloned().collect();
                     if !ids.is_empty() {
                         bulk_delete_confirm.set(Some(ids));
@@ -2312,6 +2396,7 @@ fn TicketListBody() -> Element {
                     cancel_text: "Cancel".to_string(),
                     destructive: true,
                     loading: bulk_delete_running(),
+                    // SPEC-9.3.11
                     onconfirm: move |_| {
                         let Some(ids) = bulk_delete_confirm.read().clone() else { return };
                         if ids.is_empty() || bulk_delete_running() { return; }
@@ -2327,6 +2412,7 @@ fn TicketListBody() -> Element {
                                     }
                                 });
                                 let results = join_all(futs).await;
+                                // SPEC-9.3.12
                                 let failures = results.iter().filter(|r| r.is_err()).count();
                                 if failures == 0 {
                                     crate::hooks::toast::push_toast(
@@ -2346,6 +2432,7 @@ fn TicketListBody() -> Element {
                             bulk_delete_running.set(false);
                         });
                     },
+                    // SPEC-9.3.13
                     oncancel: move |_| {
                         if !bulk_delete_running() {
                             bulk_delete_confirm.set(None);
@@ -2360,6 +2447,7 @@ fn TicketListBody() -> Element {
             loading: is_loading,
             total_items: total_matches,
             current_page: (*page.read()).max(1),
+            // SPEC-9.1.12
             per_page: PER_PAGE,
             onpagechange: move |p| page.set(p),
             columns: 6,
@@ -2367,6 +2455,7 @@ fn TicketListBody() -> Element {
                 striped: true,
                 TableHead {
                     TableRow {
+                        // SPEC-9.1.13, SPEC-9.3.8
                         // MAPPS-290: select-all checkbox for the visible page.
                         SelectAllHeader {
                             selection,
@@ -2416,6 +2505,7 @@ fn TicketListBody() -> Element {
                     }
                 }
                 if is_loading {
+                    // SPEC-9.1.13
                     TableLoading { columns: 6, rows: 5 }
                 } else if filtered_tickets.is_empty() {
                     if !filters_active {
@@ -2423,6 +2513,7 @@ fn TicketListBody() -> Element {
                         // matching the Contracts reference pattern.
                         TableEmpty {
                             columns: 6,
+                            // SPEC-9.3.6
                             title: "No tickets yet".to_string(),
                             description: "Create your first ticket to start tracking support work."
                                 .to_string(),
@@ -2447,6 +2538,7 @@ fn TicketListBody() -> Element {
                         // the toolbar above mounts.
                         TableEmpty {
                             columns: 6,
+                            // SPEC-9.3.7
                             title: "No tickets match your filters".to_string(),
                             description: "Adjust the filters above, or clear them to see every ticket again.".to_string(),
                             actions: rsx! {
@@ -2478,6 +2570,7 @@ fn TicketListBody() -> Element {
                                 // MAPPS-1063: `assigned_to_id` with no name is
                                 // an unresolved reference, not an unassigned
                                 // ticket; log it and tooltip the cell.
+                                // SPEC-9.3.4
                                 assigned_to_tooltip: match (&ticket.assigned_to_id, &ticket.assigned_to_name) {
                                     (Some(uid), None) => Some(crate::utils::unresolved(
                                         "tickets.ticket_row_assignee",
@@ -2489,6 +2582,7 @@ fn TicketListBody() -> Element {
                                 },
                                 updated: relative_time(ticket.updated_at),
                                 updated_iso: ticket.updated_at.to_rfc3339(),
+                                // SPEC-9.3.5
                                 updated_title: fmt_datetime_in(ticket.updated_at, pref.as_deref(), tz),
                                 // MAPPS-290: hand the page-scoped
                                 // selection signal down so each
@@ -2531,8 +2625,10 @@ struct TicketRowProps {
 
 #[component]
 fn TicketRow(props: TicketRowProps) -> Element {
+    // SPEC-9.3.2
     let status_variant = ticket_status_badge(&props.status);
 
+    // SPEC-9.3.3
     let priority_variant = match props.priority.as_str() {
         "Critical" => BadgeVariant::Red,
         "High" => BadgeVariant::Red,
@@ -2547,10 +2643,12 @@ fn TicketRow(props: TicketRowProps) -> Element {
     rsx! {
         TableRow {
             clickable: true,
+            // SPEC-9.3.1
             onclick: move |_| { navigator.push(Route::TicketDetail { id: id.clone() }); },
             // MAPPS-290: per-row checkbox in the first column. The cell
             // stops propagation so toggling the checkbox doesn't also
             // navigate to the detail page.
+            // SPEC-9.3.8
             SelectRowCell { selection: props.selection, id: props.id.clone() }
             TableCell {
                 div {
@@ -2570,6 +2668,7 @@ fn TicketRow(props: TicketRowProps) -> Element {
                 Badge { variant: priority_variant, "{props.priority}" }
             }
             TableCell {
+                // SPEC-9.3.4
                 if props.assigned_to == "Unassigned" {
                     if let Some(ref t) = props.assigned_to_tooltip {
                         span { class: "text-subtle italic", title: "{t}", "Unassigned" }
@@ -2582,6 +2681,7 @@ fn TicketRow(props: TicketRowProps) -> Element {
             }
             TableCell { class: "text-muted",
                 time {
+                    // SPEC-9.3.5
                     datetime: "{props.updated_iso}",
                     title: "{props.updated_title}",
                     "{props.updated}"
@@ -2601,6 +2701,7 @@ struct CompanyPrefill {
     name: String,
 }
 
+// SPEC-9.4.2
 fn read_company_prefill_from_url() -> CompanyPrefill {
     #[cfg(feature = "app")]
     {
@@ -2627,6 +2728,7 @@ fn read_company_prefill_from_url() -> CompanyPrefill {
 /// Pure core of [`read_company_prefill_from_url`], so the rule is testable
 /// without a location.
 #[cfg_attr(not(feature = "app"), allow(dead_code))]
+// SPEC-9.4.2
 fn company_prefill_from(search: &str) -> CompanyPrefill {
     let params = crate::utils::url::QueryString::parse(search);
     let id = params.get("company_id").unwrap_or_default();
@@ -2665,6 +2767,7 @@ fn read_kb_prefill_from_url() -> KbArticlePrefill {
 /// Pure core of [`read_kb_prefill_from_url`], so the rule is testable
 /// without a location.
 #[cfg_attr(not(feature = "app"), allow(dead_code))]
+// SPEC-9.4.3
 fn kb_prefill_from(search: &str) -> KbArticlePrefill {
     let params = crate::utils::url::QueryString::parse(search);
     let id = params.get("from_kb_article").unwrap_or_default();
@@ -2686,6 +2789,7 @@ fn kb_prefill_from(search: &str) -> KbArticlePrefill {
 /// while the server is unreachable so a write cannot silently fail.
 #[component]
 pub fn TicketNewPage() -> Element {
+    // SPEC-9.4.1
     use_page_title("New Ticket");
     // MAPPS-207: seed the company from the URL when linked from a company.
     let prefill = use_signal(read_company_prefill_from_url);
@@ -2697,6 +2801,7 @@ pub fn TicketNewPage() -> Element {
     let kb_prefill = kb_prefill.read().clone();
     let kb_article_id_for_body = kb_prefill.id.clone();
 
+    // SPEC-9.4.3
     let initial_title = kb_prefill.title.clone();
     let initial_description = if kb_prefill.title.is_empty() {
         String::new()
@@ -2772,6 +2877,7 @@ pub fn TicketNewPage() -> Element {
     // network drop so the form mounts even when the lookups are
     // unavailable; the matching signal stays empty and the server
     // applies its defaults.
+    // SPEC-9.4.4
     let types_resource = use_resource(|| async move {
         crate::hooks::fetch::api::get_all_authed::<RemoteTicketLookup>("/tickets/types")
             .await
@@ -2781,6 +2887,7 @@ pub fn TicketNewPage() -> Element {
                 Vec::new()
             })
     });
+    // SPEC-9.4.4
     let categories_resource = use_resource(|| async move {
         crate::hooks::fetch::api::get_all_authed::<RemoteTicketLookup>("/tickets/categories")
             .await
@@ -2793,6 +2900,7 @@ pub fn TicketNewPage() -> Element {
     // MAPPS-860: shared roster cache, not a per-page fetch.
     let users_resource = crate::hooks::use_user_roster(true);
 
+    // SPEC-9.4.5
     let type_options: Vec<SelectOption> = {
         let mut opts = vec![SelectOption::new("", "(none)")];
         if let Some(rows) = types_resource.read().as_ref() {
@@ -2811,6 +2919,7 @@ pub fn TicketNewPage() -> Element {
         }
         opts
     };
+    // SPEC-9.4.5
     let assignee_options: Vec<SelectOption> = {
         let mut opts = vec![SelectOption::new("", "Unassigned")];
         if let Some(rows) = users_resource.read().as_ref() {
@@ -2829,6 +2938,7 @@ pub fn TicketNewPage() -> Element {
     // Fetch the tenant's ticket priorities on mount. The Paginated envelope
     // matches the server's PaginatedResponse wire shape; meta is ignored
     // here (lookup tables are short enough to fit one page).
+    // SPEC-9.4.4
     let priorities_resource = use_resource(|| async move {
         crate::hooks::fetch::list_or_empty(
             "new ticket priority option",
@@ -2842,6 +2952,7 @@ pub fn TicketNewPage() -> Element {
     // every time the resource transitions to Ready, but a non-empty
     // priority_id signal short-circuits so an in-progress user selection
     // is never clobbered by a late-arriving fetch.
+    // SPEC-9.4.6
     use_effect(move || {
         if !priority_id.read().is_empty() {
             return;
@@ -2867,6 +2978,7 @@ pub fn TicketNewPage() -> Element {
         // While the fetch is in flight, render an empty single-option
         // placeholder so the Select component does not blow up; the
         // effect above will populate the real options on the next tick.
+        // SPEC-9.4.5
         None => vec![SelectOption::new("", "Loading…")],
     };
 
@@ -2883,6 +2995,7 @@ pub fn TicketNewPage() -> Element {
         //
         // MAPPS-281: Title/Description are trimmed so a whitespace-only value
         // does not satisfy the (inert) native `required` and reach the server.
+        // SPEC-9.5.1
         let mut guard = FormGuard::new();
 
         let title_v = title.read().trim().to_string();
@@ -2909,6 +3022,7 @@ pub fn TicketNewPage() -> Element {
         // malformed id; in practice the picker only ever yields a real UUID or
         // an empty string, so the surfaced message is `Rule::Required`'s
         // "Company is required."
+        // SPEC-9.5.1, SPEC-9.5.2
         company_error.set(guard.field(
             "company_search",
             company_id.read().as_str(),
@@ -2958,6 +3072,7 @@ pub fn TicketNewPage() -> Element {
         // because the shared `CreateTicketRequest` types it as a
         // `DateTime<Utc>`. A value the parse cannot read blocks the submit and
         // lands in the field's own slot instead of reaching the server.
+        // SPEC-9.5.3
         let due_value = due_date.read().trim().to_string();
         let scheduled_end: Option<DateTime<Utc>> = if due_value.is_empty() {
             due_date_error.set(String::new());
@@ -3004,6 +3119,7 @@ pub fn TicketNewPage() -> Element {
                     match uuid::Uuid::parse_str(&kb_article_id) {
                         Ok(u) => Some(u),
                         Err(e) => {
+                            // SPEC-9.5.5
                             tracing::warn!(
                                 "source KB article id {kb_article_id:?} is not a UUID: {e}"
                             );
@@ -3023,12 +3139,14 @@ pub fn TicketNewPage() -> Element {
                         match uuid::Uuid::parse_str(raw) {
                             Ok(u) => Some(u),
                             Err(e) => {
+                                // SPEC-9.5.5
                                 tracing::warn!("team id {raw:?} is not a UUID: {e}");
                                 None
                             }
                         }
                     }
                 };
+                // SPEC-9.5.4
                 let body = CreateTicketBody {
                     title: title_v,
                     // MAPPS-322: Description is required and validated non-empty
@@ -3058,6 +3176,7 @@ pub fn TicketNewPage() -> Element {
                     id: uuid::Uuid,
                 }
 
+                // SPEC-9.5.6
                 match crate::hooks::fetch::api::post_authed_typed::<CreatedTicket, _>(
                     "/tickets", &body,
                 )
@@ -3080,6 +3199,7 @@ pub fn TicketNewPage() -> Element {
                         // validation message next to that input; otherwise
                         // fall back to the general user-facing message
                         // (MAPPS-210).
+                        // SPEC-9.5.7
                         if let Some(msg) = err.field_message("title") {
                             title_error.set(msg);
                         } else if let Some(msg) = err.field_message("description") {
@@ -3127,6 +3247,7 @@ pub fn TicketNewPage() -> Element {
     rsx! {
         PageHeader {
             title: "New Ticket",
+            // SPEC-9.4.1
             subtitle: "Create a new support ticket",
             breadcrumbs: rsx! {
                 crate::components::Breadcrumbs {
@@ -3161,10 +3282,12 @@ pub fn TicketNewPage() -> Element {
                         required: true,
                         // Server caps the title at 500 chars; mirror it
                         // client-side as a UX nicety (MAPPS-210).
+                        // SPEC-9.4.9
                         maxlength: 500,
                         rules: vec![Rule::Required],
                         error: title_error.read().clone(),
                         value: title.read().clone(),
+                        // SPEC-9.5.8
                         oninput: move |e: FormEvent| {
                             title_error.set(String::new());
                             title.set(e.value());
@@ -3184,6 +3307,7 @@ pub fn TicketNewPage() -> Element {
                         // first-time technician on a tenant with zero
                         // companies can finish the New Ticket flow
                         // without leaving the form to seed a company.
+                        // SPEC-9.4.7
                         allow_inline_create: true,
                         onselect: move |(id, name): (String, String)| {
                             company_error.set(String::new());
@@ -3210,6 +3334,7 @@ pub fn TicketNewPage() -> Element {
                     crate::components::ContactPicker {
                         value: contact_name.read().clone(),
                         selected_id: picker_contact_selected_id,
+                        // SPEC-9.4.8
                         label: "Contact".to_string(),
                         company_filter: contact_company_filter,
                         // MAPPS-276: opt this picker into the inline
@@ -3238,6 +3363,7 @@ pub fn TicketNewPage() -> Element {
                     name: "description".to_string(),
                     label: "Description".to_string(),
                     placeholder: "Provide detailed information about the issue…".to_string(),
+                    // SPEC-9.4.9
                     rows: 8,
                     // MAPPS-610: the same switcher the KB body has. One key for
                     // both description editors, so a reporter who writes in
@@ -3275,6 +3401,7 @@ pub fn TicketNewPage() -> Element {
                                 None
                             };
                         rsx! {
+                            // SPEC-9.4.8
                             crate::components::AssetPicker {
                                 value: asset_name.read().clone(),
                                 selected_id: picker_asset_selected_id,
@@ -3325,6 +3452,7 @@ pub fn TicketNewPage() -> Element {
                         name: "due_date",
                         label: "Due Date".to_string(),
                         value: due_date.read().clone(),
+                        // SPEC-9.4.10
                         help: "Stamps the ticket's scheduled-end so SLA + dispatch view it on creation.".to_string(),
                         error: due_date_error.read().clone(),
                         oninput: move |e: FormEvent| {
@@ -3339,6 +3467,7 @@ pub fn TicketNewPage() -> Element {
                 // dropdown component fed by GET /api/v1/teams is filed
                 // as a follow-up. Personal tenants hide the field
                 // entirely per Q4 default.
+                // SPEC-9.4.11
                 if !crate::hooks::use_auth().read().is_personal_tenant() {
                     Input {
                         name: "team_id",
@@ -3361,6 +3490,7 @@ pub fn TicketNewPage() -> Element {
                         r#type: "submit",
                         variant: ButtonVariant::Primary,
                         loading: *is_submitting.read(),
+                        // SPEC-9.4.12
                         // MAPPS-357: block create while the server is unreachable.
                         disabled: !can_mutate,
                         title: (!can_mutate).then(|| "Can't create a ticket while the server is unreachable".to_string()),
@@ -3390,6 +3520,7 @@ struct TicketInlineAttachment {
 
 /// The path that goes into the Markdown: what the server said, else the
 /// public inline read for the id, which is the same thing.
+// SPEC-9.11.4
 fn inline_image_url(att: &TicketInlineAttachment) -> String {
     att.url
         .clone()
@@ -3398,6 +3529,7 @@ fn inline_image_url(att: &TicketInlineAttachment) -> String {
 }
 
 /// MAPPS-733: the wording under the picker's file field on this page.
+// SPEC-9.11.6
 fn ticket_upload_help() -> String {
     format!(
         "PNG, JPEG, WebP or GIF, up to {}. It is stored with this ticket and anyone holding the link can view it.",
@@ -3423,17 +3555,20 @@ fn start_inline_image_upload(
     mut uploading: Signal<bool>,
     mut upload_error: Signal<String>,
 ) {
+    // SPEC-9.11.1
     upload_error.set(String::new());
     if let Err(msg) = crate::utils::image_upload::check(&mime, bytes.len()) {
         upload_error.set(msg);
         return;
     }
+    // SPEC-9.11.2
     if *uploading.read() {
         return;
     }
     uploading.set(true);
     #[cfg(feature = "app")]
     spawn(async move {
+        // SPEC-9.11.3
         let path = format!("/tickets/{ticket_id}/attachments/inline");
         match crate::hooks::fetch::api::post_file_authed::<TicketInlineAttachment>(
             &path, &file_name, &mime, &bytes,
@@ -3457,6 +3592,7 @@ fn start_inline_image_upload(
                 );
             }
             Err(e) => {
+                // SPEC-9.11.5
                 upload_error.set(format!("Could not upload that image: {}", e.user_message()));
             }
         }
@@ -3476,6 +3612,7 @@ fn start_inline_image_upload(
 #[component]
 pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let contact_can_read = crate::hooks::capabilities::use_capability("tickets:read");
+    // SPEC-9.6.1
     if crate::hooks::fetch::api::has_contact_session() && !contact_can_read {
         use_page_title("Ticket");
         return rsx! {
@@ -3556,6 +3693,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // remains" pin. Contacts never see the note-type selector; the default
     // has to be `public` for them so the inline composer's submit does not
     // post an internal note (mokosh-server prompt 008 rejects it anyway).
+    // SPEC-9.10.2
     let default_note_type = if staff_only { "internal" } else { "public" };
     let mut note_type = use_signal(|| default_note_type.to_string());
     let mut note_content = use_signal(String::new);
@@ -3616,6 +3754,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 "/tickets/{id}"
             ))
             .await
+            // SPEC-9.6.2
             .inspect_err(|e| tracing::error!("ticket detail load failed for {id}: {e}"))
             .ok()
         }
@@ -3651,6 +3790,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                     &format!("/tickets/{parent_id}"),
                 )
                 .await
+                // SPEC-9.14.1, SPEC-9.14.3
                 .inspect_err(|e| tracing::error!("parent ticket load failed for {parent_id}: {e}"))
                 .ok()
                 .map(|parent| TicketFamily::Child(Box::new(parent))),
@@ -3661,6 +3801,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                     "/tickets?parent_ticket_id={id}"
                 ))
                 .await
+                // SPEC-9.14.2, SPEC-9.14.3
                 .inspect_err(|e| tracing::error!("child tickets load failed for {id}: {e}"))
                 .ok()
                 .map(TicketFamily::Parent)
@@ -3686,6 +3827,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 "/tickets/{id}/sla"
             ))
             .await
+            // SPEC-9.6.6
             .inspect_err(|e| tracing::warn!("ticket sla load failed for {id}: {e}"))
             .ok()
         }
@@ -3706,6 +3848,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 "/tickets/{id}/notes"
             ))
             .await
+            // SPEC-9.6.7
             .inspect_err(|e| tracing::error!("ticket note thread load failed for {id}: {e}"))
             .ok()
         }
@@ -3719,6 +3862,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
             // enforcement. Skip the fetch entirely on a contact session so
             // the SPA doesn't chase a guaranteed 403 (or client-side "not
             // authenticated" when no staff bearer).
+            // SPEC-9.6.8
             #[cfg(feature = "web")]
             if crate::hooks::fetch::api::has_contact_session() {
                 return Some(Vec::<RemoteTimeEntry>::new());
@@ -3727,6 +3871,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 "/time-entries?ticket_id={id}"
             ))
             .await
+            // SPEC-9.6.8
             .inspect_err(|e| tracing::error!("ticket time entry load failed for {id}: {e}"))
             .ok()
         }
@@ -3744,6 +3889,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 "/audit-log/entity/tickets/{id}"
             ))
             .await
+            // SPEC-9.6.9
             .inspect_err(|e| tracing::error!("ticket journal load failed for {id}: {e}"))
             .ok()
         }
@@ -3761,6 +3907,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // label; with an empty options list the pill renders blank).
     // get_authed_any tries the contact bearer first, falls back to
     // staff.
+    // SPEC-9.6.10, SPEC-9.6.11
     let statuses_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // MAPPS-605: dual-planed, so the caller's own bearer picks the
@@ -3821,6 +3968,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // `ticket_resource` for the company id the same way `family_resource`
     // above tracks it for `parent_ticket_id` - `None` (loading / no company
     // yet) fetches nothing rather than hitting the unscoped list.
+    // SPEC-9.6.10
     let sites_resource = use_resource(move || {
         let company_id = ticket_resource
             .read()
@@ -3841,6 +3989,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
             }
         }
     });
+    // SPEC-9.6.10
     let contracts_resource = use_resource(move || {
         let company_id = ticket_resource
             .read()
@@ -4001,6 +4150,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // is a hook, so it must run on every render path). Mirrors the header label
     // used in the body: the ticket's "number: title" once loaded, "Loading…" in
     // flight, or "Ticket not found" on a 404.
+    // SPEC-9.6.5
     let header_title = match ticket.as_ref() {
         Some(t) if !t.title.trim().is_empty() => {
             if t.ticket_number.trim().is_empty() {
@@ -4012,6 +4162,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         Some(_) => format!("Ticket {}", props.id),
         None => "Loading…".to_string(),
     };
+    // SPEC-9.6.4
     let title = if ticket_fetch_failed {
         "Ticket not found".to_string()
     } else {
@@ -4025,6 +4176,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // again, because it has no reactive dependency to re-run on; the guard would
     // then be stuck on whatever the first render decided. Every input here is a
     // signal, so the memo actually tracks.
+    // SPEC-9.7.11
     let editor_dirty = use_memo(move || {
         editing_desc()
             && (*e_title.read() != *e_baseline_title.read()
@@ -4035,8 +4187,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // belongs to the router and is why Cancel asks separately below. The modal
     // this replaced could not be navigated away from at all, so the risk is
     // created by editing in the page and is answered here rather than inherited.
+    // SPEC-9.6.13
     crate::hooks::use_unsaved_guard(editor_dirty.into());
 
+    // SPEC-9.6.3
     if ticket_fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Ticket".to_string() }
@@ -4049,6 +4203,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 div { class: "py-8 text-center",
                     p {
                         class: "text-sm text-red-600 dark:text-red-400 mb-2",
+                        // SPEC-9.6.4
                         "Ticket not found. It may have been deleted, or the link may be incorrect."
                     }
                     Link {
@@ -4063,6 +4218,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // MAPPS-517: each journal source is read as a snapshot first, so a failed
     // fetch (`Some(None)`) stays separable from an empty one and can be named
     // under the stream instead of reading as "nothing happened".
+    // SPEC-9.6.14
     let history_snap = history_resource.read_unchecked().clone();
     let history_failed = matches!(history_snap, Some(None));
     let history = history_snap.flatten().unwrap_or_default();
@@ -4087,6 +4243,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         .clone()
         .unwrap_or_default()
         .into_iter()
+        // SPEC-9.6.11
         .filter(|t| t.is_active)
         .collect();
     let sla_policies = sla_policies_resource
@@ -4100,6 +4257,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         .unwrap_or_default();
     // "Edited" marker for the description: most recent history entry that
     // touched the description column.
+    // SPEC-9.7.2
     let desc_edited = history
         .iter()
         .find(|e| e.action == "update" && e.changed_fields.iter().any(|f| f == "description"))
@@ -4134,6 +4292,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     let time_failed = matches!(time_snap, Some(None));
     let time_entries: Vec<RemoteTimeEntry> = time_snap.flatten().unwrap_or_default();
     let total_minutes: i32 = time_entries.iter().map(|e| e.duration_minutes).sum();
+    // SPEC-9.12.14
     let total_hours_label = format!("{:.1} hours", total_minutes as f64 / 60.0);
 
     // MAPPS-594: the save path is unchanged from the modal it replaced;
@@ -4143,6 +4302,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     let mut history_res = history_resource;
     let save_id = id_for_save.clone();
     let on_save = move |_: MouseEvent| {
+        // SPEC-9.7.9
         if e_submitting() {
             return;
         }
@@ -4153,6 +4313,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         // each field component's `name` prop. MAPPS-188: Title is
         // still trimmed (the server validates length >= 1) so a
         // whitespace-only value never reaches the PUT.
+        // SPEC-9.7.7
         let mut guard = FormGuard::new();
         let title_v = e_title().trim().to_string();
         e_title_error.set(guard.field("edit-title", &title_v, "Title", &[Rule::Required]));
@@ -4189,6 +4350,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
             let is_contact = crate::hooks::fetch::api::has_contact_session();
             #[cfg(not(feature = "web"))]
             let is_contact = false;
+            // SPEC-9.7.8
             let result: Result<(), String> = if is_contact {
                 #[cfg(feature = "web")]
                 {
@@ -4215,6 +4377,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                     ticket_res.restart();
                     history_res.restart();
                 }
+                // SPEC-9.7.9
                 Err(err) => {
                     e_submitting.set(false);
                     e_error.set(err);
@@ -4237,6 +4400,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // Whichever of the three did not load, named. An unreadable source has to
     // be visible here: the journal is the record, and a silently short stream
     // reads as a quiet ticket.
+    // SPEC-9.9.13
     let journal_gaps: Vec<&str> = [
         (notes_failed, "notes"),
         (history_failed, "change history"),
@@ -4264,6 +4428,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // "closed" / "resolved" name-match stays testable on the native
     // target. `ticket` is still `Option<_>` here (fetch may not have
     // resolved), so a loading page renders no button.
+    // SPEC-9.8.1
     let show_reopen = ticket
         .as_ref()
         .map(|t| should_show_reopen(&t.status.name, can_reopen))
@@ -4276,6 +4441,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
             // The reference in the report does exactly this, and it is what
             // makes an in-page edit read as editing the ticket rather than
             // editing a copy of it behind a scrim.
+            // SPEC-9.7.5
             title_slot: editing_desc().then(|| rsx! {
                 crate::components::Input {
                     name: "edit-title",
@@ -4293,6 +4459,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
             // PMS-746: a route back to the list, matching ContractDetailPage.
             breadcrumbs: rsx! {
                 crate::components::Breadcrumbs {
+                    // SPEC-9.6.5
                     items: crate::components::detail_breadcrumbs("Tickets", Route::TicketList {}, &header_title),
                 }
             },
@@ -4305,11 +4472,13 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 if show_reopen {
                     Button {
                         variant: ButtonVariant::Secondary,
+                        // SPEC-9.8.3
                         loading: *reopen_submitting.read(),
                         // MAPPS-357 parity: block reopening while the server is down.
                         disabled: !can_mutate,
                         title: (!can_mutate).then(|| "Can't reopen while the server is unreachable".to_string()),
                         onclick: move |_| {
+                            // SPEC-9.8.2
                             if *reopen_submitting.read() {
                                 return;
                             }
@@ -4321,6 +4490,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             spawn(async move {
                                 #[cfg(feature = "web")]
                                 {
+                                    // SPEC-9.8.2
                                     let path = format!("/tickets/{id}/reopen");
                                     let empty = serde_json::json!({});
                                     match crate::hooks::fetch::api::post_authed_any_typed::<
@@ -4337,6 +4507,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 "Ticket reopened.",
                                             );
                                         }
+                                        // SPEC-9.8.3
                                         Err(err) => {
                                             reopen_error
                                                 .set(format!("Could not reopen ticket: {}", err.user_message()));
@@ -4367,6 +4538,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 // pickers require an actual `input` element in the
                 // DOM; a synthesised click on a detached input is
                 // silently swallowed on Safari).
+                // SPEC-9.8.4
                 if can_attach {
                     Button {
                         variant: ButtonVariant::Secondary,
@@ -4394,6 +4566,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                         "Attach file"
                     }
                 }
+                // SPEC-9.8.7
                 if staff_only {
                     // MAPPS-683: a routed `Link`, not a raw anchor - see the
                     // note on `log_time_href` above.
@@ -4408,6 +4581,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                     // MAPPS-313: per-ticket Delete affordance, matching
                     // the pattern on Company / Contract / Asset detail.
                     {
+                        // SPEC-9.8.8
                         let (delete_disabled, delete_reason) =
                             ticket_delete_gate(deleting_ticket(), can_mutate, can_manage);
                         rsx! {
@@ -4461,6 +4635,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                         .content_type()
                         .unwrap_or_else(|| "application/octet-stream".to_string());
                     let size = file.size();
+                    // SPEC-9.8.5
                     if size > TICKET_ATTACHMENT_MAX_BYTES {
                         attach_error.set("File too large".to_string());
                         return;
@@ -4481,6 +4656,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         "content_type": content_type,
                                         "data_base64": data_base64,
                                     });
+                                    // SPEC-9.8.6
                                     let path = format!("/tickets/{id}/attachments");
                                     match crate::hooks::fetch::api::post_authed_any_typed::<
                                         serde_json::Value,
@@ -4503,6 +4679,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         }
                                     }
                                 }
+                                // SPEC-9.8.5
                                 Err(_) => {
                                     attach_error
                                         .set("Could not read the selected file.".to_string());
@@ -4528,6 +4705,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         // whose answer is always the same.
         crate::components::ConfirmDialog {
             open: confirming_cancel(),
+            // SPEC-9.7.12
             title: "Discard your changes?".to_string(),
             message: "The edits to this ticket have not been saved. Discarding them cannot be undone."
                 .to_string(),
@@ -4564,6 +4742,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
             rsx! {
                 crate::components::ConfirmDialog {
                     open: confirming_ticket_delete(),
+                    // SPEC-9.8.9
                     title: "Delete ticket".to_string(),
                     message: {
                         let mut msg = format!(
@@ -4578,12 +4757,14 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                     cancel_text: "Cancel".to_string(),
                     destructive: true,
                     loading: deleting_ticket(),
+                    // SPEC-9.8.11
                     oncancel: move |_| {
                         if !deleting_ticket() {
                             confirming_ticket_delete.set(false);
                             delete_ticket_error.set(String::new());
                         }
                     },
+                    // SPEC-9.8.10
                     onconfirm: move |_| {
                         if deleting_ticket() { return; }
                         deleting_ticket.set(true);
@@ -4602,6 +4783,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         confirming_ticket_delete.set(false);
                                         delete_nav.push(Route::TicketList {});
                                     }
+                                    // SPEC-9.8.11
                                     Err(err) => {
                                         delete_ticket_error.set(format!("Could not delete ticket: {err}"));
                                     }
@@ -4655,6 +4837,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                     // invented `reporter_contact_id` the previous code named.
                     let reporter_contact_id =
                         ticket.as_ref().and_then(|t| t.contact_id);
+                    // SPEC-9.7.3
                     let show_edit = if is_contact_session {
                         contact_can_edit_ticket(
                             reporter_contact_id,
@@ -4667,6 +4850,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                         // PMS-182, gated only on the ticket having loaded.
                         true
                     };
+                    // SPEC-9.7.5
                     let open_edit = move |_| {
                         e_title.set(cur_title.clone());
                         e_desc.set(cur_desc.clone());
@@ -4700,6 +4884,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             variant: ButtonVariant::Secondary,
                                             // MAPPS-357: block editing while the server is down.
                                             disabled: !can_mutate,
+                                            // SPEC-9.7.4
                                             title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
                                             onclick: open_edit,
                                             PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
@@ -4736,6 +4921,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         // Sized for a page rather than for a
                                         // 672px dialog, which is what the report
                                         // was about.
+                                        // SPEC-9.7.6
                                         rows: 24,
                                         views: true,
                                         view_pref_key: "ticket_desc_view_mode".to_string(),
@@ -4782,6 +4968,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 // confirmation whose answer is
                                                 // always the same is a dialog
                                                 // nobody reads.
+                                                // SPEC-9.7.12
                                                 if editor_dirty() {
                                                     confirming_cancel.set(true);
                                                 } else {
@@ -4796,6 +4983,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             loading: e_submitting(),
                                             // MAPPS-357: block the save PUT while the server is down.
                                             disabled: !can_mutate,
+                                            // SPEC-9.7.10
                                             title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                                             onclick: on_save,
                                             "Save Changes"
@@ -4818,6 +5006,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 // server is unreachable (on_toggle is a
                                                 // no-op when not interactive) to block the
                                                 // silent-fail write.
+                                                // SPEC-9.7.13
                                                 interactive: can_mutate,
                                                 on_toggle: move |i: usize| {
                                                     let Some(new_desc) =
@@ -4846,6 +5035,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                             Err(e) => {
                                                                 crate::hooks::push_toast(
                                                                     crate::components::AlertType::Error,
+                                                                    // SPEC-9.7.14
                                                                     format!("Could not update checklist: {e}"),
                                                                 );
                                                                 tr.restart();
@@ -4857,6 +5047,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         }
                                     }
                                 } else {
+                                    // SPEC-9.7.1
                                     p { class: "text-sm text-subtle italic", "No description provided." }
                                 }
                                 if let Some(m) = marker {
@@ -4878,6 +5069,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                     // The id comes from this ticket's own `parent_ticket_id`;
                     // the fetched parent is what supplies its NUMBER, which is
                     // what a person recognises.
+                    // SPEC-9.14.1
                     Some(TicketFamily::Child(parent)) => rsx! {
                         Card {
                             p { class: "text-sm text-content",
@@ -4893,6 +5085,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             }
                         }
                     },
+                    // SPEC-9.14.2
                     Some(TicketFamily::Parent(children)) => rsx! {
                         Card { title: "People on this request",
                             p { class: "mb-3 text-sm text-muted",
@@ -4913,6 +5106,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             }
                         }
                     },
+                    // SPEC-9.14.3
                     None => rsx! {},
                 }
 
@@ -4928,6 +5122,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 // have no cap for). Rendering the card only to show
                 // "Could not load approvals" is noise; the workflow is
                 // not one the contact can participate in.
+                // SPEC-9.6.12
                 if !crate::hooks::fetch::api::has_contact_session() {
                     ApprovalsSection { entity_id: props.id.clone() }
                 }
@@ -4946,6 +5141,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                         // with no help writing it.
                         crate::components::MarkdownEditor {
                             name: "content".to_string(),
+                            // SPEC-9.10.1
                             label: "Add a note".to_string(),
                             placeholder: "Enter your note…".to_string(),
                             rows: 4,
@@ -4988,6 +5184,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             Select {
                                 name: "note_type",
                                 label: "Note Type",
+                                // SPEC-9.10.2
                                 options: note_type_options(),
                                 value: note_type.read().clone(),
                                 error: note_type_error.read().clone(),
@@ -4999,6 +5196,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     // absent on every other type, so this clear is
                                     // what stops a flag set while public from
                                     // surviving into a note nobody can see it on.
+                                    // SPEC-9.10.3
                                     if e.value() != "public" {
                                         note_send_email.set(false);
                                     }
@@ -5011,6 +5209,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             // disabled control on an internal note still tells
                             // the reader that internal commentary is the sort
                             // of thing this app can mail to a customer.
+                            // SPEC-9.10.3
                             if note_is_public {
                                 div { class: "flex items-end",
                                     Checkbox {
@@ -5032,6 +5231,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                         div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
                             Input {
                                 name: "note_time_minutes",
+                                // SPEC-9.10.5
                                 label: "Time (minutes)",
                                 r#type: "number",
                                 min: "1".to_string(),
@@ -5092,6 +5292,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             // MAPPS-482 / docs/email-actions.md: this submit
                             // mails a client whenever the toggle is on, so it
                             // carries the mail affordances exactly then.
+                            // SPEC-9.10.4
                             if note_will_email {
                                 crate::components::EmailPreview {
                                     event_type: "ticket.note".to_string(),
@@ -5115,6 +5316,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 loading: *note_submitting.read(),
                                 // MAPPS-357: block the add-note POST while the server is down.
                                 disabled: !can_mutate,
+                                // SPEC-9.10.10
                                 title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
                                 onclick: {
                                     let ticket_id_for_note = ticket_id_for_note.clone();
@@ -5126,6 +5328,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     // and the field is focused. Runs before
                                     // `note_submitting` is set, so the bail path
                                     // leaves it untouched.
+                                    // SPEC-9.10.6
                                     let mut guard = FormGuard::new();
                                     let content_v = note_content.read().clone();
                                     note_content_error.set(guard.field(
@@ -5166,6 +5369,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     // a `NoteType`, so it is parsed here. Runs before
                                     // `note_submitting` is set, so the bail path leaves
                                     // it untouched.
+                                    // SPEC-9.10.7
                                     let Some(type_kind) = NoteType::from_str(&type_v) else {
                                         tracing::error!(
                                             "note type {type_v:?} is not one the server accepts"
@@ -5194,6 +5398,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             match t.parse::<i32>() {
                                                 Ok(n) => Some(n),
                                                 Err(_) => {
+                                                    // SPEC-9.10.7
                                                     note_time_minutes_error.set(format!(
                                                         "{t} is not a valid minute count"
                                                     ));
@@ -5202,6 +5407,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             }
                                         }
                                     };
+                                    // SPEC-9.10.8
                                     let work_summary_v = {
                                         let t = note_work_summary.read().trim().to_string();
                                         (!t.is_empty()).then_some(t)
@@ -5237,6 +5443,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 parts_used: parts_used_v,
                                                 follow_up: follow_up_v,
                                             };
+                                            // SPEC-9.10.9
                                             let path = format!("/tickets/{id}/notes");
                                             match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body).await {
                                                 Ok(_) => {
@@ -5275,6 +5482,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                     }
 
                     div { class: "mt-6 border-t border-line pt-6",
+                        // SPEC-9.9.12
                         if journal.is_empty() {
                             // MAPPS-517: an untouched ticket has no notes and no
                             // events, and that is an empty journal, not an error.
@@ -5288,6 +5496,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                         } else {
                             div { class: "flow-root",
                                 ul { class: "-mb-8",
+                                    // SPEC-9.9.2
                                     for (i , entry) in journal.iter().take(JOURNAL_LIMIT).enumerate() {
                                         // MAPPS-593: keyed, and load-bearing now
                                         // that an entry owns edit state. Without
@@ -5298,6 +5507,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         // note has an id; the other sources are
                                         // identified by when they happened.
                                         {
+                                            // SPEC-9.9.10
                                             let entry_key = match entry.editable_note {
                                                 Some(id) => id.to_string(),
                                                 None => format!("{}-{i}", entry.at),
@@ -5317,6 +5527,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             edited: entry.edited,
                                             structured: entry.structured.clone(),
                                             ticket_id: props.id.clone(),
+                                            // SPEC-9.9.11
                                             can_edit: can_mutate,
                                             on_saved: move |()| {
                                                 let mut nr = notes_resource;
@@ -5336,6 +5547,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 }
                             }
                         }
+                        // SPEC-9.9.13
                         if !journal_gaps.is_empty() {
                             p { class: "mt-4 text-xs text-red-600 dark:text-red-400",
                                 "This ticket's {journal_gaps_label} could not be loaded, so the journal is missing entries. Reload the page to try again."
@@ -5345,6 +5557,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                         // endpoints because the server exposes no single feed
                         // for a ticket. Say what is missing rather than let the
                         // stream read as the whole record.
+                        // SPEC-9.9.14
                         p { class: "mt-4 text-xs text-subtle",
                             "Built from this ticket's notes, its change history and its time entries. Attachments and approvals are not in the stream yet: they record no ticket history entry, so they arrive when the server exposes one activity feed."
                         }
@@ -5369,6 +5582,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 // inside this Actions card: the same fields, same handler,
                 // same endpoint, but the reader stays on the page they were
                 // reading.
+                // SPEC-9.14.4
                 if can_request_approval {
                     Card { title: "Actions",
                         if *show_request_approval.read() {
@@ -5410,6 +5624,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 return;
                                             }
                                             request_approval_error.set(String::new());
+                                            // SPEC-9.14.5
                                             let mut guard = FormGuard::new();
                                             let note_v = request_approval_note.read().trim().to_string();
                                             request_approval_note_error.set(guard.field(
@@ -5427,6 +5642,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 #[cfg(feature = "web")]
                                                 {
                                                     let body = serde_json::json!({ "note": note_v });
+                                                    // SPEC-9.14.6
                                                     let path = format!("/tickets/{id}/approvals/request");
                                                     match crate::hooks::fetch::api::post_authed_any_typed::<
                                                         serde_json::Value,
@@ -5442,6 +5658,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                             request_approval_note.set(String::new());
                                                             show_request_approval.set(false);
                                                         }
+                                                        // SPEC-9.14.7
                                                         Err(err) => {
                                                             request_approval_error.set(format!(
                                                                 "Could not request approval: {}",
@@ -5479,6 +5696,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                     }
                 }
                 Card { title: "Details",
+                    // SPEC-9.12.13
                     if let Some(t) = ticket.as_ref() {
                         dl { class: "space-y-4",
                             // PMS-359: inline Status / Priority / Assigned To editors.
@@ -5501,6 +5719,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     .iter()
                                     .map(|s| SelectOption::new(s.id.to_string(), s.name.clone()))
                                     .collect();
+                                // SPEC-9.12.5
                                 if status_options.is_empty() {
                                     status_options.push(SelectOption::new("", "Loading…"));
                                 }
@@ -5514,6 +5733,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let save_id = save_id.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
+                                        // SPEC-9.12.2, SPEC-9.12.4
                                         let body = UpdateTicketBody {
                                             status_id: Some(new_id),
                                             ..Default::default()
@@ -5531,6 +5751,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 hr.restart();
                                             }
                                             Err(err) => {
+                                                // SPEC-9.12.3
                                                 field_error.set(format!(
                                                     "Could not update status: {err}"
                                                 ));
@@ -5543,6 +5764,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         label: "Status",
                                         value: rsx! {
                                             Select {
+                                                // SPEC-9.12.1
                                                 name: "status_id",
                                                 label: "",
                                                 options: status_options,
@@ -5566,6 +5788,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     .iter()
                                     .map(|p| SelectOption::new(p.id.to_string(), p.name.clone()))
                                     .collect();
+                                // SPEC-9.12.5
                                 if priority_options.is_empty() {
                                     priority_options.push(SelectOption::new("", "Loading…"));
                                 }
@@ -5579,6 +5802,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let save_id = save_id.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
+                                        // SPEC-9.12.2, SPEC-9.12.4
                                         let body = UpdateTicketBody {
                                             priority_id: Some(new_id),
                                             ..Default::default()
@@ -5596,6 +5820,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 hr.restart();
                                             }
                                             Err(err) => {
+                                                // SPEC-9.12.3
                                                 field_error.set(format!(
                                                     "Could not update priority: {err}"
                                                 ));
@@ -5608,6 +5833,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         label: "Priority",
                                         value: rsx! {
                                             Select {
+                                                // SPEC-9.12.1
                                                 name: "priority_id",
                                                 label: "",
                                                 options: priority_options,
@@ -5630,6 +5856,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     .assigned_to_id
                                     .map(|u| u.to_string())
                                     .unwrap_or_default();
+                                // SPEC-9.12.6
                                 let mut user_options: Vec<SelectOption> =
                                     vec![SelectOption::new("", "Unassigned")];
                                 for u in users.iter() {
@@ -5659,6 +5886,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         // `Some(None)` is the Unassign: present
                                         // in the body and null, which is what
                                         // clears the column server-side.
+                                        // SPEC-9.12.2, SPEC-9.12.6
                                         let body = UpdateTicketBody {
                                             assigned_to_id: Some(new_id),
                                             ..Default::default()
@@ -5676,6 +5904,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 hr.restart();
                                             }
                                             Err(err) => {
+                                                // SPEC-9.12.3
                                                 field_error.set(format!(
                                                     "Could not update assignee: {err}"
                                                 ));
@@ -5688,6 +5917,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         label: "Assigned To",
                                         value: rsx! {
                                             Select {
+                                                // SPEC-9.12.1
                                                 name: "assigned_to_id",
                                                 label: "",
                                                 options: user_options,
@@ -5723,6 +5953,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let save_id = save_id.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
+                                        // SPEC-9.12.2, SPEC-9.12.8
                                         let body = UpdateTicketBody {
                                             asset_id: Some(new_id),
                                             ..Default::default()
@@ -5741,6 +5972,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 hr.restart();
                                             }
                                             Err(err) => {
+                                                // SPEC-9.12.3
                                                 field_error.set(format!(
                                                     "Could not update asset: {err}"
                                                 ));
@@ -5762,6 +5994,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             // "Could not update asset" error rather
                                             // than silently succeeding; gating it needs
                                             // a `disabled` prop on the shared component.
+                                            // SPEC-9.12.8
                                             crate::components::AssetPicker {
                                                 // PMS-344 follow-up
                                                 // (layout): suppress
@@ -5797,6 +6030,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             // is what makes the server actually persist each
                             // one instead of silently dropping it.
                             {
+                                // SPEC-9.12.7
                                 let current_type_id = t
                                     .type_name
                                     .as_deref()
@@ -5829,6 +6063,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let save_id = save_id.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
+                                        // SPEC-9.12.2, SPEC-9.12.4
                                         let body = UpdateTicketBody {
                                             type_id: Some(new_id),
                                             ..Default::default()
@@ -5846,6 +6081,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 hr.restart();
                                             }
                                             Err(err) => {
+                                                // SPEC-9.12.3
                                                 field_error.set(format!(
                                                     "Could not update type: {err}"
                                                 ));
@@ -5858,6 +6094,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         label: "Type",
                                         value: rsx! {
                                             Select {
+                                                // SPEC-9.12.1
                                                 name: "type_id",
                                                 label: "",
                                                 options: type_options,
@@ -5870,6 +6107,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 }
                             }
                             {
+                                // SPEC-9.12.7
                                 let current_category_id = t
                                     .category_name
                                     .as_deref()
@@ -5902,6 +6140,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let save_id = save_id.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
+                                        // SPEC-9.12.2, SPEC-9.12.4
                                         let body = UpdateTicketBody {
                                             category_id: Some(new_id),
                                             ..Default::default()
@@ -5919,6 +6158,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 hr.restart();
                                             }
                                             Err(err) => {
+                                                // SPEC-9.12.3
                                                 field_error.set(format!(
                                                     "Could not update category: {err}"
                                                 ));
@@ -5931,6 +6171,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         label: "Category",
                                         value: rsx! {
                                             Select {
+                                                // SPEC-9.12.1
                                                 name: "category_id",
                                                 label: "",
                                                 options: category_options,
@@ -5961,6 +6202,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let save_id = save_id.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
+                                        // SPEC-9.12.2, SPEC-9.12.8
                                         let body = UpdateTicketBody {
                                             contact_id: Some(new_id),
                                             ..Default::default()
@@ -5979,6 +6221,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 hr.restart();
                                             }
                                             Err(err) => {
+                                                // SPEC-9.12.3
                                                 field_error.set(format!(
                                                     "Could not update contact: {err}"
                                                 ));
@@ -5997,6 +6240,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             // gated from this file; a write it fires while
                                             // down surfaces the inline error below instead
                                             // of silently succeeding.
+                                            // SPEC-9.12.8
                                             crate::components::ContactPicker {
                                                 label: String::new(),
                                                 value: current_contact_name,
@@ -6028,6 +6272,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             // adding the read-side fields that would let
                             // these pre-select like Type/Category/Contact do.
                             {
+                                // SPEC-9.12.9
                                 let mut site_options: Vec<SelectOption> =
                                     vec![SelectOption::new("", "Not set")];
                                 site_options.extend(
@@ -6063,6 +6308,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let raw_for_choice = raw.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
+                                        // SPEC-9.12.2, SPEC-9.12.4
                                         let body = UpdateTicketBody {
                                             site_id: Some(new_id),
                                             ..Default::default()
@@ -6076,6 +6322,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         .await
                                         {
                                             Ok(_) => {
+                                                // SPEC-9.12.10
                                                 if raw_for_choice.is_empty() {
                                                     site_choice.set(None);
                                                 } else {
@@ -6086,6 +6333,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 hr.restart();
                                             }
                                             Err(err) => {
+                                                // SPEC-9.12.3
                                                 field_error.set(format!(
                                                     "Could not update site: {err}"
                                                 ));
@@ -6098,6 +6346,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         label: "Site",
                                         value: rsx! {
                                             Select {
+                                                // SPEC-9.12.1
                                                 name: "site_id",
                                                 label: "",
                                                 options: site_options,
@@ -6110,6 +6359,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 }
                             }
                             {
+                                // SPEC-9.12.9
                                 let mut team_options: Vec<SelectOption> =
                                     vec![SelectOption::new("", "Not set")];
                                 team_options.extend(
@@ -6145,6 +6395,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let raw_for_choice = raw.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
+                                        // SPEC-9.12.2, SPEC-9.12.4
                                         let body = UpdateTicketBody {
                                             team_id: Some(new_id),
                                             ..Default::default()
@@ -6158,6 +6409,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         .await
                                         {
                                             Ok(_) => {
+                                                // SPEC-9.12.10
                                                 if raw_for_choice.is_empty() {
                                                     team_choice.set(None);
                                                 } else {
@@ -6168,6 +6420,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 hr.restart();
                                             }
                                             Err(err) => {
+                                                // SPEC-9.12.3
                                                 field_error.set(format!(
                                                     "Could not update team: {err}"
                                                 ));
@@ -6180,6 +6433,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         label: "Team",
                                         value: rsx! {
                                             Select {
+                                                // SPEC-9.12.1
                                                 name: "team_id",
                                                 label: "",
                                                 options: team_options,
@@ -6192,6 +6446,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 }
                             }
                             {
+                                // SPEC-9.12.9
                                 let mut contract_options: Vec<SelectOption> =
                                     vec![SelectOption::new("", "Not set")];
                                 contract_options.extend(
@@ -6227,6 +6482,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let raw_for_choice = raw.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
+                                        // SPEC-9.12.2, SPEC-9.12.4
                                         let body = UpdateTicketBody {
                                             contract_id: Some(new_id),
                                             ..Default::default()
@@ -6240,6 +6496,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         .await
                                         {
                                             Ok(_) => {
+                                                // SPEC-9.12.10
                                                 if raw_for_choice.is_empty() {
                                                     contract_choice.set(None);
                                                 } else {
@@ -6250,6 +6507,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 hr.restart();
                                             }
                                             Err(err) => {
+                                                // SPEC-9.12.3
                                                 field_error.set(format!(
                                                     "Could not update contract: {err}"
                                                 ));
@@ -6262,6 +6520,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         label: "Contract",
                                         value: rsx! {
                                             Select {
+                                                // SPEC-9.12.1
                                                 name: "contract_id",
                                                 label: "",
                                                 options: contract_options,
@@ -6274,6 +6533,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 }
                             }
                             {
+                                // SPEC-9.12.9
                                 let mut sla_options: Vec<SelectOption> =
                                     vec![SelectOption::new("", "Not set")];
                                 sla_options.extend(
@@ -6309,6 +6569,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let raw_for_choice = raw.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
+                                        // SPEC-9.12.2, SPEC-9.12.4
                                         let body = UpdateTicketBody {
                                             sla_id: Some(new_id),
                                             ..Default::default()
@@ -6322,6 +6583,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         .await
                                         {
                                             Ok(_) => {
+                                                // SPEC-9.12.10
                                                 if raw_for_choice.is_empty() {
                                                     sla_choice.set(None);
                                                 } else {
@@ -6332,6 +6594,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 hr.restart();
                                             }
                                             Err(err) => {
+                                                // SPEC-9.12.3
                                                 field_error.set(format!(
                                                     "Could not update SLA policy: {err}"
                                                 ));
@@ -6344,6 +6607,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         label: "SLA Policy",
                                         value: rsx! {
                                             Select {
+                                                // SPEC-9.12.1
                                                 name: "sla_id",
                                                 label: "",
                                                 options: sla_options,
@@ -6360,6 +6624,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             // server has no update path for the column outside
                             // that flow. Absent on every other ticket, so the
                             // row is omitted rather than left blank.
+                            // SPEC-9.12.11
                             if let Some(pid) = t.procedure_kb_article_id {
                                 DetailItem {
                                     label: "Procedure",
@@ -6380,6 +6645,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     },
                                 }
                             }
+                            // SPEC-9.12.12
                             if !t.company_name.is_empty() {
                                 DetailItem {
                                     label: "Company",
@@ -6403,6 +6669,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 DetailItem { label: "Queue", value: rsx!(span { "{t.queue_name}" }) }
                             }
                             {
+                                // SPEC-9.13.6
                                 let created = created_parts(
                                     fmt_datetime_in(t.created_at, pref.as_deref(), tz),
                                     t.created_at.to_rfc3339(),
@@ -6423,8 +6690,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             // badge and no legs, so no block.
                             {
                                 let now = Utc::now();
+                                // SPEC-9.13.1
                                 let badge = sla.as_ref().map(|s| s.status).unwrap_or(t.sla_status).badge();
                                 let rows: Vec<(&'static str, PhraseParts)> = match sla.as_ref() {
+                                    // SPEC-9.13.2
                                     Some(s) => [
                                         ("First response", sla_leg(s.first_response_due, s.first_response_at, now)),
                                         ("Resolution", sla_leg(s.resolution_due, s.resolved_at, now)),
@@ -6441,6 +6710,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         })
                                     })
                                     .collect(),
+                                    // SPEC-9.13.4
                                     None => t
                                         .sla_due_date
                                         .map(|due| vec![("SLA Due", sla_due_parts_in(due, pref.as_deref(), tz))])
@@ -6521,6 +6791,7 @@ struct DetailItemProps {
 /// edge: "Aug 28, 2026 12:39 PM (9 days overdue" with no closing bracket.
 #[component]
 fn Phrases(parts: PhraseParts) -> Element {
+    // SPEC-9.16.4: flex-wrap breaks between parts. SPEC-9.16.5: a timestamp part is a `time` element.
     rsx! {
         span { class: "flex flex-wrap justify-end gap-x-1",
             for (text, iso) in parts {
@@ -6547,6 +6818,7 @@ fn DetailItem(props: DetailItemProps) -> Element {
     // value cell (chip + buttons) aligned to the label's top, not its
     // baseline. The cell never carries `whitespace-nowrap` (MAPPS-731):
     // a multi-phrase value wraps through `Phrases` instead.
+    // SPEC-9.16.1, SPEC-9.16.2, SPEC-9.16.3
     rsx! {
         div { class: "flex justify-between items-start gap-3",
             dt { class: "text-sm text-muted flex-shrink-0 pt-0.5", "{props.label}" }
@@ -6612,6 +6884,7 @@ struct TimelineItemProps {
 fn TimelineItem(props: TimelineItemProps) -> Element {
     // MAPPS-593: the edit state belongs to this entry, so two open notes on one
     // ticket do not share a draft. Component-per-entry is what makes that free.
+    // SPEC-9.18.6: all edit state lives in this per-entry component.
     let mut editing = use_signal(|| false);
     let mut draft = use_signal(String::new);
     let mut edit_error = use_signal(String::new);
@@ -6631,17 +6904,20 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
         let note_id = props.editable_note;
         let on_saved = props.on_saved;
         move |_| {
+            // SPEC-9.19.7: no re-entry while saving, no save without a note id.
             if saving() {
                 return;
             }
             let Some(note_id) = note_id else { return };
             let next = draft.read().trim().to_string();
+            // SPEC-9.19.8
             if next.is_empty() {
                 // The same rule the server applies. An edit that blanks a note
                 // is a delete wearing an edit's clothes.
                 edit_error.set("A note cannot be empty.".to_string());
                 return;
             }
+            // SPEC-9.19.9: PUT carries only the trimmed content.
             let path = format!("/tickets/{ticket_id}/notes/{note_id}");
             spawn(async move {
                 saving.set(true);
@@ -6649,11 +6925,13 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
                     .await
                 {
+                    // SPEC-9.19.10
                     Ok(_) => {
                         saving.set(false);
                         editing.set(false);
                         on_saved.call(());
                     }
+                    // SPEC-9.19.11
                     Err(e) => {
                         saving.set(false);
                         // Next to the note, not as a toast: the refusal is
@@ -6668,9 +6946,11 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
         }
     };
 
+    // SPEC-9.17.1
     rsx! {
         li {
             div { class: "relative pb-8",
+                // SPEC-9.17.2
                 if !props.is_last {
                     span {
                         class: "absolute left-4 top-4 -ml-px h-full w-0.5 bg-surface-2",
@@ -6687,6 +6967,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                     div { class: "flex min-w-0 flex-1 justify-between space-x-4 pt-1.5",
                         div {
                             p { class: "text-sm text-muted",
+                                // SPEC-9.17.3, SPEC-9.17.4, SPEC-9.17.5
                                 span {
                                     class: if props.user_muted { "font-medium text-subtle italic" } else { "font-medium text-content" },
                                     title: "{props.user_tooltip}",
@@ -6694,18 +6975,22 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                 }
                                 " {props.action}"
                                 if props.edited {
+                                    // SPEC-9.17.6
                                     // MAPPS-593: an unmarked edit means the
                                     // reader cannot tell that the text in front
                                     // of them is not what was written.
                                     span { class: "ml-1 text-xs text-subtle italic", "(edited)" }
                                 }
+                                // SPEC-9.17.8: no note id, no control.
                                 if props.editable_note.is_some() && !editing() {
                                     button {
                                         r#type: "button",
                                         class: "ml-2 text-xs text-accent hover:underline disabled:opacity-40 disabled:cursor-not-allowed disabled:no-underline",
+                                        // SPEC-9.17.9
                                         disabled: !props.can_edit,
                                         title: if props.can_edit { None } else { Some("Can't edit while the server is unreachable".to_string()) },
                                         onclick: move |_| {
+                                            // SPEC-9.17.10
                                             draft.set(original_for_open.clone());
                                             edit_error.set(String::new());
                                             editing.set(true);
@@ -6723,7 +7008,9 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                     // MAPPS-610: the same editor the composer
                                     // has. A correction is written the same way
                                     // the note was.
+                                    // SPEC-9.19.1, SPEC-9.19.3
                                     crate::components::MarkdownEditor {
+                                        // SPEC-9.19.2
                                         // `format!`, not a literal with braces
                                         // in it: the id has to be unique per
                                         // entry or every inline editor in the
@@ -6739,6 +7026,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                         error: edit_error.read().clone(),
                                         value: draft.read().clone(),
                                         people: props.people.clone(),
+                                        // SPEC-9.19.5
                                         // MAPPS-733: a correction can carry an
                                         // image the way the note could.
                                         on_file: {
@@ -6757,11 +7045,13 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                             })
                                         },
                                         upload_help: Some(ticket_upload_help()),
+                                        // SPEC-9.19.4
                                         oninput: move |next: String| {
                                             edit_error.set(String::new());
                                             draft.set(next);
                                         },
                                     }
+                                    // SPEC-9.19.6
                                     if note_edit_uploading() {
                                         p { class: "text-xs text-subtle", role: "status", "Uploading the image…" }
                                     }
@@ -6778,6 +7068,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                         Button {
                                             variant: ButtonVariant::Secondary,
                                             onclick: move |_| {
+                                                // SPEC-9.19.12
                                                 // Cancel restores what was
                                                 // written; nothing is sent.
                                                 draft.set(original.clone());
@@ -6802,6 +7093,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                 // with `#` reads as a heading. The output is
                                 // sanitized either way, and `@handle` now
                                 // resolves (MAPPS-578), which is the upside.
+                                // SPEC-9.18.1, SPEC-9.18.2
                                 div { class: "mt-2 bg-surface-2 rounded-md p-3",
                                     crate::components::Markdown { content: content.clone(), people: Some(props.people.clone()) }
                                 }
@@ -6811,6 +7103,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                             // on its headline above - here as a small list under
                             // the note body, present only for a note that carries
                             // at least one of the four.
+                            // SPEC-9.18.3, SPEC-9.18.4
                             if !editing() && !props.structured.is_empty() {
                                 dl { class: "mt-2 space-y-0.5 text-sm text-muted",
                                     for (label , value) in props.structured.iter() {
@@ -6821,8 +7114,10 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                     }
                                 }
                             }
+                            // SPEC-9.18.5
                             ChangeDetails { changes: props.changes.clone() }
                         }
+                        // SPEC-9.17.7
                         time { class: "whitespace-nowrap text-right text-sm text-muted", datetime: "{props.time_iso}",
                             "{props.time}"
                         }
@@ -6839,6 +7134,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
 
 #[derive(Clone, Debug, Deserialize)]
 struct TicketApprovalRow {
+    // SPEC-9.21.9: every field below `id` is optional on the wire.
     id: uuid::Uuid,
     #[serde(default)]
     state: String,
@@ -6877,6 +7173,7 @@ struct TicketApprovalRow {
 /// The defaults keep it a drop-in for its original ticket call site.
 #[derive(Props, Clone, PartialEq)]
 pub struct ApprovalsSectionProps {
+    // SPEC-9.20.1
     /// The parent entity's id.
     pub entity_id: String,
     /// URL segment the approvals hang off: `tickets`, `quotes`, ...
@@ -6903,17 +7200,20 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
         let id = id_for_list.clone();
         let segment = segment_for_list.clone();
         async move {
+            // SPEC-9.20.2: reruns on tenant change and after a created request.
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _v = version.read();
             crate::hooks::fetch::api::get_authed::<Vec<TicketApprovalRow>>(&format!(
                 "/{segment}/{id}/approvals"
             ))
             .await
+            // SPEC-9.20.3: logged here, shown as the banner below.
             .inspect_err(|e| tracing::error!("approval load failed for {segment}/{id}: {e}"))
             .ok()
         }
     });
     // MAPPS-860: shared roster cache, not a per-page fetch.
+    // SPEC-9.20.6
     let users_resource = crate::hooks::use_user_roster(true);
 
     let snap = approvals_resource.read_unchecked();
@@ -6924,7 +7224,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
     let loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
-    // MAPPS-939: resolve once for the whole approvals list, not once per row.
+    // SPEC-9.20.8: MAPPS-939, resolve once for the whole approvals list, not once per row.
     let tz = crate::utils::datetime::user_timezone();
     let pref = crate::utils::datetime::user_format_pref();
 
@@ -6948,10 +7248,12 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
         // focuses the approver picker. Runs before `request_submitting` is set,
         // so the bail path leaves it untouched.
         let mut guard = FormGuard::new();
+        // SPEC-9.22.5
         if user_id.is_empty() && role.is_empty() {
             request_error.set("Pick an approver or enter a role.".to_string());
             guard.note_invalid(Some("approver_user_id"));
         }
+        // SPEC-9.22.6
         if !user_id.is_empty() && !role.is_empty() {
             request_error.set("Pick either an approver or a role, not both.".to_string());
             guard.note_invalid(Some("approver_user_id"));
@@ -6967,6 +7269,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
         request_submitting.set(true);
         request_error.set(String::new());
         spawn(async move {
+            // SPEC-9.22.7: a key is present only when its value was entered.
             let mut body = serde_json::Map::new();
             if !user_id.is_empty() {
                 if let Ok(u) = uuid::Uuid::parse_str(&user_id) {
@@ -6989,6 +7292,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
             )
             .await
             {
+                // SPEC-9.22.8
                 Ok(_) => {
                     crate::hooks::toast::push_toast(AlertType::Success, "Approval requested");
                     show_request.set(false);
@@ -6997,6 +7301,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                     request_notes.set(String::new());
                     version += 1;
                 }
+                // SPEC-9.22.9
                 Err(e) => {
                     request_error.set(format!("Could not create approval: {e}"));
                 }
@@ -7021,9 +7326,11 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
             SelectOption::new(u.id.to_string(), label)
         })
         .collect();
+    // SPEC-9.22.3
     user_options.insert(0, SelectOption::new("", "- Pick approver -"));
 
     rsx! {
+        // SPEC-9.20.7
         Card { title: "Approvals",
             div { class: "flex justify-end mb-3",
                 Button {
@@ -7035,6 +7342,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                     "Request approval"
                 }
             }
+            // SPEC-9.20.4, SPEC-9.20.3, SPEC-9.20.5
             if loading {
                 p { class: "text-sm text-subtle italic", "Loading approvals…" }
             } else if fetch_failed {
@@ -7053,11 +7361,13 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                     for row in rows.iter().cloned() {
                         {
                             let key = row.id.to_string();
+                            // SPEC-9.21.2: any state other than approved/rejected is yellow.
                             let state_variant = match row.state.as_str() {
                                 "approved" => BadgeVariant::Green,
                                 "rejected" => BadgeVariant::Red,
                                 _ => BadgeVariant::Yellow,
                             };
+                            // SPEC-9.21.3, SPEC-9.21.4, SPEC-9.21.7
                             // MAPPS-736: the same three labels the My Approvals
                             // queue prints, so a contact approver, requester or
                             // decider reads the same on both pages.
@@ -7106,6 +7416,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                             let notes = row.notes.clone().unwrap_or_default();
                             let decision = row.decision.clone().unwrap_or_default();
                             let decision_notes = row.decision_notes.clone().unwrap_or_default();
+                            // SPEC-9.21.1, SPEC-9.21.5, SPEC-9.21.6, SPEC-9.21.8
                             rsx! {
                                 li { key: "{key}", class: "rounded border border-line p-3",
                                     div { class: "flex items-center gap-2 flex-wrap",
@@ -7147,6 +7458,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
             }
         }
 
+        // SPEC-9.22.1
         Modal {
             open: *show_request.read(),
             title: "Request approval",
@@ -7161,13 +7473,14 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                 Button {
                     variant: ButtonVariant::Primary,
                     loading: *request_submitting.read(),
-                    // MAPPS-357: block the approval-request POST while the server is down.
+                    // SPEC-9.22.4: MAPPS-357, block the approval-request POST while the server is down.
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't request an approval while the server is unreachable".to_string()),
                     onclick: on_submit,
                     "Request"
                 }
             },
+            // SPEC-9.22.2
             div { class: "space-y-4",
                 if !request_error().is_empty() {
                     ErrorBanner { "{request_error}" }
@@ -7208,6 +7521,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
 /// entry point.
 #[cfg(test)]
 mod mapps_607_tests {
+    // SPEC-9.32.1, SPEC-9.32.2, SPEC-9.32.3, SPEC-9.32.4: pins the pure gates and the detail route.
     use super::{contact_can_edit_ticket, should_show_reopen, TICKET_ATTACHMENT_MAX_BYTES};
     use crate::Route;
     use std::str::FromStr;
@@ -7299,6 +7613,7 @@ mod mapps_607_tests {
 
 #[cfg(test)]
 mod procedure_kb_tests {
+    // SPEC-9.32.5
     use super::RemoteTicketDetail;
 
     /// A minimal `TicketResponse` body plus whatever extra fields the
@@ -7343,6 +7658,8 @@ mod procedure_kb_tests {
 
 #[cfg(test)]
 mod mapps517_journal_tests {
+    // SPEC-9.23.1, SPEC-9.23.2, SPEC-9.23.3, SPEC-9.23.4, SPEC-9.23.5, SPEC-9.23.6, SPEC-9.23.7, SPEC-9.23.8,
+    // SPEC-9.23.9, SPEC-9.23.10, SPEC-9.23.11, SPEC-9.25.1, SPEC-9.25.2, SPEC-9.25.3, SPEC-9.28.7
     use super::{
         build_journal, ChangeLine, HistoryEntry, JournalEntry, RemoteNote, RemoteTimeEntry, UserOpt,
     };
@@ -7809,6 +8126,7 @@ mod mapps517_journal_tests {
 
 #[cfg(test)]
 mod mapps592_description_editor_tests {
+    // SPEC-9.29.1, SPEC-9.29.2, SPEC-9.29.3, SPEC-9.29.4: source-scan pins.
     const SRC: &str = include_str!("tickets.rs");
 
     /// The shipping code with runs of whitespace collapsed, excluding this
@@ -7915,6 +8233,7 @@ mod mapps592_description_editor_tests {
 
 #[cfg(test)]
 mod mapps593_note_edit_tests {
+    // SPEC-9.23.5, SPEC-9.23.12, SPEC-9.24.1, SPEC-9.24.2, SPEC-9.24.3, SPEC-9.24.4, SPEC-9.19.11, SPEC-9.29.10
     use super::{build_journal, note_is_editable, RemoteNote, UserOpt};
 
     const VIEWER: &str = "11111111-1111-4111-8111-111111111111";
@@ -8184,6 +8503,7 @@ mod mapps593_note_edit_tests {
 /// parity gap this closes.
 #[cfg(test)]
 mod mapps989_ticket_delete_gate_tests {
+    // SPEC-9.26.1, SPEC-9.26.2, SPEC-9.26.3
     use super::ticket_delete_gate;
 
     #[test]
@@ -8217,6 +8537,7 @@ mod mapps989_ticket_delete_gate_tests {
 
 #[cfg(test)]
 mod mapps594_in_page_edit_tests {
+    // SPEC-9.29.5, SPEC-9.29.6, SPEC-9.29.7, SPEC-9.29.8, SPEC-9.29.9: source-scan pins.
     const SRC: &str = include_str!("tickets.rs");
 
     /// The shipping code with runs of whitespace collapsed, excluding this
@@ -8371,6 +8692,7 @@ mod mapps594_in_page_edit_tests {
 
 #[cfg(test)]
 mod mapps613_note_type_and_email_affordance_tests {
+    // SPEC-9.24.5, SPEC-9.24.6, SPEC-9.24.7, SPEC-9.23.3
     use super::*;
 
     const SRC: &str = include_str!("tickets.rs");
@@ -8518,6 +8840,7 @@ mod mapps613_note_type_and_email_affordance_tests {
 /// too, so these cover the parse against the string the router hands back.
 #[cfg(test)]
 mod prefill_tests {
+    // SPEC-9.30.3, SPEC-9.30.4
     use super::{company_prefill_from, kb_prefill_from};
 
     const COMPANY: &str = "11111111-1111-4111-8111-111111111111";
@@ -8575,6 +8898,7 @@ mod prefill_tests {
 /// MAPPS-734: the SLA block on the ticket detail.
 #[cfg(test)]
 mod mapps734_sla_panel_tests {
+    // SPEC-9.27.1, SPEC-9.27.2, SPEC-9.27.3, SPEC-9.27.4, SPEC-9.27.7
     use super::{sla_leg, sla_leg_parts, RemoteTicketSla, SlaLeg, SlaStatus};
     use chrono::{DateTime, TimeZone, Utc};
 
@@ -8688,6 +9012,7 @@ mod mapps734_sla_panel_tests {
 /// being clipped at the card's edge.
 #[cfg(test)]
 mod mapps731_detail_row_tests {
+    // SPEC-9.16.3, SPEC-9.16.6, SPEC-9.27.2, SPEC-9.27.3, SPEC-9.27.6
     use super::{created_parts, sla_leg, sla_leg_parts};
     use chrono::{TimeZone, Utc};
 
@@ -8816,6 +9141,7 @@ mod mapps731_detail_row_tests {
 
 #[cfg(test)]
 mod mapps686_shared_dto_tests {
+    // SPEC-9.28.1, SPEC-9.28.2, SPEC-9.28.3, SPEC-9.28.4, SPEC-9.28.5, SPEC-9.28.6
     use super::{
         CreateNoteBody, CreateTicketBody, RemoteNote, RemoteSummary, RemoteTicket,
         RemoteTicketDetail, RemoteTimeEntry, SlaStatus, UpdateNoteBody, UpdateTicketBody,
@@ -9464,6 +9790,7 @@ mod mapps686_shared_dto_tests {
 /// reach an article.
 #[cfg(test)]
 mod mapps733_inline_image_tests {
+    // SPEC-9.30.1, SPEC-9.30.2, SPEC-9.29.11
     use super::{inline_image_url, ticket_upload_help, TicketInlineAttachment};
 
     #[test]
@@ -9543,6 +9870,7 @@ mod mapps733_inline_image_tests {
 /// ends of the ticket it produced.
 #[cfg(test)]
 mod request_family_tests {
+    // SPEC-9.29.12
     fn detail_page() -> &'static str {
         let src = include_str!("tickets.rs");
         let start = src.find("fn TicketDetailPage(").expect("the detail page");
@@ -9575,6 +9903,7 @@ mod request_family_tests {
 
 #[cfg(test)]
 mod mapps997_queue_filter_tests {
+    // SPEC-9.31.1, SPEC-9.31.2, SPEC-9.31.3
     const SRC: &str = include_str!("tickets.rs");
 
     fn list_body() -> &'static str {
@@ -9675,6 +10004,7 @@ mod mapps997_queue_filter_tests {
 /// endpoint) rather than the rendered pixels.
 #[cfg(test)]
 mod mapps998_saved_views_tests {
+    // SPEC-9.31.4, SPEC-9.31.5, SPEC-9.31.6
     const SRC: &str = include_str!("tickets.rs");
 
     fn list_body() -> &'static str {
@@ -9748,6 +10078,7 @@ mod mapps998_saved_views_tests {
 
 #[cfg(test)]
 mod mapps1042_note_structured_tests {
+    // SPEC-9.25.1, SPEC-9.25.3, SPEC-9.25.4
     use super::{note_structured_lines, RemoteNote};
     use chrono::Utc;
     use serde_json::json;

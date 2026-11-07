@@ -13,6 +13,7 @@ use std::marker::PhantomData;
 
 use dioxus::prelude::*;
 
+// SPEC-4.38.1: keyed by row type so two lists cannot share one flag.
 /// "A page asked for the `T` list." One context entry per row type.
 pub struct Wanted<T: 'static> {
     flag: Signal<bool>,
@@ -53,10 +54,13 @@ where
     let resource = use_resource(move || async move {
         // Read before any early return so Dioxus subscribes the resource to
         // it: signing in, a token refresh and an org switch all bump it.
+        // SPEC-4.38.6: re-run on a tenant-generation change.
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // SPEC-4.38.3: no request until a page has asked.
         if !*flag.read() {
             return Vec::new();
         }
+        // SPEC-4.38.5: no fetch before sign-in.
         if !signed_in() {
             // Not a failure: `set_access_token` bumps the generation read
             // above, which re-runs this once the session exists.
@@ -65,6 +69,7 @@ where
         }
         fetch().await
     });
+    // SPEC-4.38.2: one resource per row type, shared through context.
     use_context_provider::<Resource<Vec<T>>>(|| resource);
 }
 
@@ -73,6 +78,7 @@ where
 /// another page already loaded.
 pub fn use_shared_list<T: Clone + 'static>(enabled: bool) -> Resource<Vec<T>> {
     let Wanted { mut flag, .. } = use_context::<Wanted<T>>();
+    // SPEC-4.38.4: only ever raises the flag, never lowers it.
     if enabled && !*flag.read() {
         flag.set(true);
     }
@@ -86,6 +92,7 @@ fn signed_in() -> bool {
 
 #[cfg(not(feature = "app"))]
 fn signed_in() -> bool {
+    // SPEC-4.38.11: a non-app build never counts as signed in.
     false
 }
 
@@ -94,8 +101,10 @@ pub(crate) async fn fetch_list<T: serde::de::DeserializeOwned>(
     what: &'static str,
     endpoint: &str,
 ) -> Vec<T> {
+    // SPEC-4.38.7: all pages, typed error so a 403 is told apart.
     match crate::hooks::fetch::api::get_all_authed_typed::<T>(endpoint).await {
         Ok(rows) => {
+            // SPEC-4.38.8: an empty tenant is an info-level outcome.
             if rows.is_empty() {
                 tracing::info!("{what} load succeeded and this tenant has none");
             }
@@ -104,10 +113,12 @@ pub(crate) async fn fetch_list<T: serde::de::DeserializeOwned>(
         // The endpoint refusing this role (a technician on `/auth/users`) is
         // an answer, not a fault: its pickers stay empty without a toast on
         // every page that role opens.
+        // SPEC-4.38.9: a refused role is logged, with no toast.
         Err(e) if e.status_code() == Some(403) => {
             tracing::warn!("{what} load refused for this role, its pickers stay empty: {e}");
             Vec::new()
         }
+        // SPEC-4.38.10: any other failure is logged and toasted.
         Err(e) => {
             tracing::error!("{what} load failed, its pickers are empty: {e}");
             crate::hooks::push_toast(
@@ -121,6 +132,7 @@ pub(crate) async fn fetch_list<T: serde::de::DeserializeOwned>(
 
 #[cfg(not(feature = "app"))]
 pub(crate) async fn fetch_list<T>(_what: &'static str, _endpoint: &str) -> Vec<T> {
+    // SPEC-4.38.11: a non-app build never fetches.
     Vec::new()
 }
 

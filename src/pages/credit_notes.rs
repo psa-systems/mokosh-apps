@@ -41,6 +41,7 @@ use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// Rows per page for the list.
+// SPEC-10.35.10
 const PER_PAGE: usize = 25;
 
 /// `CreditNoteResponse`. `lines` is `Some` on `GET /credit-notes/{id}` and
@@ -128,6 +129,7 @@ struct RemoteInvoiceBalance {
 /// Fetch the credit notes raised against one invoice. Best-effort: an empty
 /// list on error, so the invoice page still renders without them.
 pub(crate) async fn load_invoice_credit_notes(invoice_id: &str) -> Vec<RemoteCreditNote> {
+    // SPEC-10.36.6
     let path = format!("/credit-notes?invoice_id={invoice_id}");
     crate::hooks::fetch::api::get_all_authed::<RemoteCreditNote>(&path)
         .await
@@ -158,6 +160,7 @@ pub(crate) mod credit_note_math {
         invoice_total: &str,
         amount_credited: &str,
     ) -> Option<Decimal> {
+        // SPEC-10.36.1
         let total = Decimal::from_str(invoice_total.trim()).ok()?;
         let credited = Decimal::from_str(amount_credited.trim()).ok()?;
         Some((total - credited).max(Decimal::ZERO))
@@ -168,6 +171,7 @@ pub(crate) mod credit_note_math {
     /// whole is the credit, so a negative or zero line inside it is a charge
     /// hidden in a credit.
     pub(crate) fn line_amount(quantity: &str, unit_price: &str) -> Option<Decimal> {
+        // SPEC-10.36.2
         let qty = Decimal::from_str(quantity.trim()).ok()?;
         let price = Decimal::from_str(unit_price.trim()).ok()?;
         if qty <= Decimal::ZERO || price <= Decimal::ZERO {
@@ -179,12 +183,14 @@ pub(crate) mod credit_note_math {
     /// Subtotal over lines that parse. A line that does not parse contributes
     /// nothing here and is reported on its own field by the form.
     pub(crate) fn subtotal(lines: &[(String, String)]) -> Decimal {
+        // SPEC-10.36.3
         lines.iter().filter_map(|(q, p)| line_amount(q, p)).sum()
     }
 
     /// The tax field: blank is zero, anything else must parse and not be
     /// negative. `Err` carries the message the field shows.
     pub(crate) fn tax(raw: &str) -> Result<Decimal, String> {
+        // SPEC-10.36.4
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return Ok(Decimal::ZERO);
@@ -200,6 +206,7 @@ pub(crate) mod credit_note_math {
     /// document-level rules the server has beyond the per-field ones: a
     /// credit note must credit something, and not more than is left.
     pub(crate) fn document_error(total: Decimal, remaining: Decimal) -> Option<String> {
+        // SPEC-10.36.5
         if total <= Decimal::ZERO {
             return Some("A credit note must credit something: add at least one line with a positive amount.".to_string());
         }
@@ -230,6 +237,7 @@ pub fn CreditNoteListPage() -> Element {
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
 
+    // SPEC-10.35.1
     use_page_title("Credit Notes");
     if !has_finance {
         return rsx! { crate::pages::billing::NoFinancePermission { title: "Credit Notes" } };
@@ -243,6 +251,7 @@ fn CreditNoteListBody() -> Element {
     let mut status_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
 
+    // SPEC-10.35.3
     let status_options = vec![
         SelectOption::new("", "All Statuses"),
         SelectOption::new("issued", "Issued"),
@@ -260,6 +269,7 @@ fn CreditNoteListBody() -> Element {
             // MAPPS-357: subscribe to reachability so the list auto-refetches
             // the instant the server comes back.
             let _reachable = crate::hooks::use_server_reachable();
+            // SPEC-10.35.2: a missing token returns None here with no log.
             let token = crate::hooks::fetch::api::current_access_token()?;
             let mut path = format!("/credit-notes?page={current_page}&per_page={PER_PAGE}");
             if !status.is_empty() {
@@ -280,6 +290,7 @@ fn CreditNoteListBody() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // SPEC-10.35.9
     // MAPPS-357: a failed load while the server is flagged down is an outage,
     // not an empty list.
     let reachable = crate::hooks::use_server_reachable();
@@ -294,6 +305,7 @@ fn CreditNoteListBody() -> Element {
     rsx! {
         PageHeader {
             title: "Credit Notes",
+            // SPEC-10.35.4
             subtitle: "Corrections issued against sent invoices",
             actions: rsx! {
                 Link {
@@ -339,6 +351,7 @@ fn CreditNoteListBody() -> Element {
             Table {
                 TableHead {
                     TableRow {
+                        // SPEC-10.35.5
                         TableHeader { "Number" }
                         TableHeader { "Invoice" }
                         TableHeader { "Date" }
@@ -348,6 +361,7 @@ fn CreditNoteListBody() -> Element {
                     }
                 }
                 if is_loading {
+                    // SPEC-10.35.8
                     TableLoading { columns: 6, rows: 5 }
                 } else if rows.is_empty() {
                     if filtered {
@@ -389,6 +403,7 @@ fn CreditNoteRow(note: RemoteCreditNote) -> Element {
     let invoice_id = note.invoice_id.map(|i| i.to_string());
     let invoice_number = note.invoice_number.clone().unwrap_or_default();
     let date = note.issue_date.clone().unwrap_or_default();
+    // SPEC-10.35.6
     let reason = one_line(&note.reason, 80);
     let total = format_money_str(&note.total);
 
@@ -408,6 +423,7 @@ fn CreditNoteRow(note: RemoteCreditNote) -> Element {
                     Link {
                         to: Route::InvoiceDetail { id: iid },
                         class: "text-accent hover:opacity-90",
+                        // SPEC-10.35.7
                         // Stop the row navigation so the click lands on the
                         // invoice rather than the credit note.
                         onclick: move |e: MouseEvent| e.stop_propagation(),
@@ -449,6 +465,7 @@ fn format_voided_at(raw: &str) -> String {
 /// statement MSP-voice shape without a Dioxus render. Each is one statement;
 /// no "stays on record and cannot be reinstated" assertion restates the
 /// badge's own meaning. See `docs/copy-style.md`.
+// SPEC-10.36.7
 pub(crate) const VOID_CONFIRM_MESSAGE: &str =
     "Void this credit note? The invoice's balance due goes back up by the credited amount.";
 pub(crate) const VOID_BUTTON_TOOLTIP: &str =
@@ -461,6 +478,7 @@ pub(crate) const ISSUED_LOCKED_NOTE: &str =
 /// The first line of a reason, cut to `max` characters for a table cell. The
 /// full text is on the cell's `title` and on the detail page.
 fn one_line(text: &str, max: usize) -> String {
+    // SPEC-10.35.6
     let first = text.lines().next().unwrap_or("").trim();
     if first.chars().count() <= max {
         return first.to_string();
@@ -491,6 +509,7 @@ pub fn CreditNoteDetailPage(props: CreditNoteDetailPageProps) -> Element {
         .as_ref()
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
+    // SPEC-10.37.1
     use_page_title("Credit Note");
     if !has_finance {
         return rsx! { crate::pages::billing::NoFinancePermission { title: "Credit Note" } };
@@ -526,6 +545,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
 
     // The corrected invoice, fetched once the note says which one. Restarted
     // alongside the note after a void, so the balance on this page moves.
+    // SPEC-10.37.2
     let mut invoice_resource = use_resource(move || {
         // Read note_resource here, inside this resource's own closure, so
         // Dioxus's dependency tracker attaches this resource's subscription
@@ -558,6 +578,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
 
+    // SPEC-10.37.3
     let header_title = match &note {
         Some(n) => format!("Credit Note {}", n.credit_note_number),
         None => "Credit Note".to_string(),
@@ -578,6 +599,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
     // MAPPS-936: parse against the shared `CreditNoteStatus` vocabulary; an
     // unknown value falls to "not issued", so a mismatched client / server
     // version does not flip "void" into "issued".
+    // SPEC-10.37.5
     let is_issued = matches!(
         mokosh_types::billing::CreditNoteStatus::from_str(&status),
         Some(mokosh_types::billing::CreditNoteStatus::Issued)
@@ -590,6 +612,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
         }
         busy.set(true);
         action_error.set(String::new());
+        // SPEC-10.37.8
         let path = format!("/credit-notes/{id_for_void}/void");
         spawn(async move {
             #[cfg(feature = "app")]
@@ -633,6 +656,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
     rsx! {
         crate::components::ConfirmDialog {
             open: confirming_void(),
+            // SPEC-10.37.7
             title: "Void credit note".to_string(),
             // PMS-1335: one short question. The side-effect ("balance due
             // goes back up") is the point and stays; the "kept on record
@@ -664,6 +688,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
                 // document as issued.
                 if let Some(n) = note.as_ref() {
                     crate::components::DownloadButton {
+                        // SPEC-10.37.4
                         path: format!("/credit-notes/{id}/pdf"),
                         fallback_name: format!("{}.pdf", n.credit_note_number),
                         what: "the credit note PDF".to_string(),
@@ -697,6 +722,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
         if let Some(n) = note.as_ref() {
             div {
                 class: "mb-3 text-xs text-muted bg-surface-2 border border-line rounded-md px-3 py-2",
+                // SPEC-10.37.6
                 // PMS-1335: one statement per state in the MSP's voice.
                 // "Kept on record" and "cannot be reinstated" are
                 // explanatory assertions the style doc removes; the
@@ -718,6 +744,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
 
         match &*snap {
             None => rsx! { crate::components::DetailSkeleton {} },
+            // SPEC-10.37.9
             Some(None) => rsx! {
                 Card {
                     div { class: "py-8 text-center",
@@ -741,6 +768,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
                 let tax_amount = format_money_str(&n.tax_amount);
                 let total = format_money_str(&n.total);
                 let company_id = n.company_id.map(|c| c.to_string());
+                // SPEC-10.37.13
                 let company_name = n
                     .company_name
                     .clone()
@@ -755,6 +783,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
                     div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
                         div { class: "@5xl:col-span-2",
                             Card {
+                                // SPEC-10.37.10
                                 div { class: "flex justify-between mb-8",
                                     div {
                                         // card-heading-allow: the printed document's own title, not the card's label
@@ -850,6 +879,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
                                         span { class: "text-muted", "Total credited" }
                                         span { class: "text-lg font-bold", "{total}" }
                                     }
+                                    // SPEC-10.37.11
                                     if !voided_at.is_empty() {
                                         div { class: "flex justify-between",
                                             span { class: "text-muted", "Voided" }
@@ -859,6 +889,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
                                 }
                             }
 
+                            // SPEC-10.37.12: a failed invoice load also shows "Loading".
                             // The invoice's balance, on this page, so a void
                             // is seen to do something.
                             Card { title: "Invoice",
@@ -946,6 +977,7 @@ fn CreditNoteDetailBody(id: String) -> Element {
 /// `issue_credit_note_in_provider`). A Mokosh-local or Xero-delegated
 /// invoice needs none, so its form stays exactly as it was.
 fn requires_product_id(invoice_provider: &str) -> bool {
+    // SPEC-10.36.8
     invoice_provider.trim() == "quickbooks"
 }
 
@@ -960,6 +992,7 @@ fn credit_line_json(
     product_id: Option<&str>,
     sort_order: i32,
 ) -> serde_json::Value {
+    // SPEC-10.36.9
     serde_json::json!({
         "line_type": "service",
         "product_id": product_id,
@@ -1015,6 +1048,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
     let mut issue_date = use_signal(String::new);
     let mut tax_amount = use_signal(String::new);
     let mut notes = use_signal(String::new);
+    // SPEC-10.38.2
     let mut lines = use_signal(|| vec![CreditLine::default()]);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -1037,6 +1071,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
     let live_subtotal = credit_note_math::subtotal(&line_pairs);
     let live_tax = credit_note_math::tax(&tax_amount.read()).unwrap_or(Decimal::ZERO);
     let live_total = live_subtotal + live_tax;
+    // SPEC-10.38.3
     let remaining_label = remaining
         .map(crate::utils::money::format_money)
         .unwrap_or_else(|| "unknown".to_string());
@@ -1047,6 +1082,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
     let requires_product = requires_product_id(&props.invoice_provider);
 
     let invoice_id = props.invoice_id.clone();
+    // SPEC-10.38.10
     let handle_save = move |_| {
         if *saving.read() {
             return;
@@ -1055,6 +1091,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
 
         let mut guard = FormGuard::new();
         let reason_v = reason.read().trim().to_string();
+        // SPEC-10.38.4
         reason_err.set(guard.field(
             "credit_note_reason",
             &reason_v,
@@ -1063,6 +1100,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
         ));
 
         let tax_v = tax_amount.read().trim().to_string();
+        // SPEC-10.38.5
         let tax = match credit_note_math::tax(&tax_v) {
             Ok(t) => {
                 tax_err.set(String::new());
@@ -1109,6 +1147,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
             // unchanged. `note_invalid(None)` because the picker has no
             // per-index DOM id to focus, same as the empty-lines check
             // below.
+            // SPEC-10.38.6
             let product_err = if requires_product
                 && product_id
                     .as_deref()
@@ -1141,6 +1180,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                 idx as i32,
             ));
         }
+        // SPEC-10.38.7
         if snapshot.is_empty() {
             error.set("Add at least one line: a credit note must credit something.".to_string());
             return;
@@ -1148,6 +1188,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
         if guard.blocked() {
             return;
         }
+        // SPEC-10.38.8
         if let Some(remaining) = remaining {
             if let Some(msg) = credit_note_math::document_error(subtotal + tax, remaining) {
                 error.set(msg);
@@ -1157,6 +1198,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
 
         let issue_date_v = issue_date.read().trim().to_string();
         let notes_v = notes.read().trim().to_string();
+        // SPEC-10.38.9
         let mut body = serde_json::json!({
             "invoice_id": invoice_id,
             "reason": reason_v,
@@ -1217,6 +1259,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
     rsx! {
         Modal {
             open: true,
+            // SPEC-10.38.1
             title: format!("Credit Note for Invoice {}", props.invoice_number),
             size: ModalSize::Large,
             onclose: move |_| onclose.call(()),
@@ -1359,6 +1402,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                                 Button {
                                     variant: ButtonVariant::Ghost,
                                     onclick: move |_| {
+                                        // SPEC-10.38.11
                                         lines.write().remove(idx);
                                     },
                                     "Remove"
@@ -1441,6 +1485,7 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
 /// positive. Reported on the field and blocking the submit, through the same
 /// guard as the other fields so the first invalid one is focused.
 fn positive_field(guard: &mut FormGuard, id: &str, value: &str, label: &str) -> String {
+    // SPEC-10.38.4
     let base = guard.field(
         id,
         value,

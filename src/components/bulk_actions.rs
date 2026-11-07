@@ -30,11 +30,13 @@ pub type BulkSelection = Signal<HashSet<String>>;
 
 /// Helper: mount the page-scoped selection signal at component scope.
 /// Returns a fresh empty selection every mount.
+// SPEC-5.8.1
 pub fn use_bulk_selection() -> BulkSelection {
     use_signal(HashSet::<String>::new)
 }
 
 /// Helper: toggle a single id in the selection.
+// SPEC-5.8.2
 pub fn toggle_selected(selection: &mut BulkSelection, id: &str) {
     let mut set = selection.write();
     if set.contains(id) {
@@ -46,6 +48,7 @@ pub fn toggle_selected(selection: &mut BulkSelection, id: &str) {
 
 /// Helper: replace the selection with all the ids in `ids`. Used by the
 /// header checkbox to select / clear the current page.
+// SPEC-5.8.3: replaces, so off-page selections are dropped.
 pub fn set_all_selected(selection: &mut BulkSelection, ids: impl IntoIterator<Item = String>) {
     let next: HashSet<String> = ids.into_iter().collect();
     *selection.write() = next;
@@ -71,6 +74,7 @@ pub struct SelectRowCellProps {
 pub fn SelectRowCell(mut props: SelectRowCellProps) -> Element {
     let id_for_check = props.id.clone();
     let id_for_click = props.id.clone();
+    // SPEC-5.8.4
     let checked = props.selection.read().contains(&id_for_check);
     rsx! {
         td {
@@ -106,6 +110,7 @@ pub struct SelectAllHeaderProps {
 pub fn SelectAllHeader(mut props: SelectAllHeaderProps) -> Element {
     let ids_for_check = props.ids.clone();
     let ids_for_click = props.ids.clone();
+    // SPEC-5.8.5
     let all_selected = !ids_for_check.is_empty()
         && ids_for_check
             .iter()
@@ -119,6 +124,7 @@ pub fn SelectAllHeader(mut props: SelectAllHeaderProps) -> Element {
                 class: "h-4 w-4 rounded border-line text-accent focus:ring-accent",
                 aria_label: if all_selected { "Clear selection" } else { "Select all rows on this page" },
                 checked: all_selected,
+                // SPEC-5.8.6
                 onchange: move |_| {
                     if all_selected {
                         clear_selection(&mut props.selection);
@@ -148,6 +154,7 @@ pub struct BulkActionsBarProps {
 /// offers a Cancel button that clears the selection.
 #[component]
 pub fn BulkActionsBar(mut props: BulkActionsBarProps) -> Element {
+    // SPEC-5.8.7
     let count = props.selection.read().len();
     if count == 0 {
         return rsx! {};

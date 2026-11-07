@@ -36,6 +36,7 @@ pub struct OidcConfig {
 }
 
 impl OidcConfig {
+    // SPEC-3.6.1: compile-time keys and their defaults.
     pub const fn from_env() -> Self {
         Self {
             issuer: match option_env!("MOKOSH_OIDC_ISSUER") {
@@ -92,6 +93,7 @@ impl OidcConfig {
     /// set per session even though this is called from five different
     /// call sites and re-runs each render. WASM is single-threaded so
     /// the thread-local is effectively a process-global.
+    // SPEC-3.6.2: resolved once per session, then served from the cache.
     pub fn for_current_origin() -> Self {
         thread_local! {
             static CACHED: std::cell::RefCell<Option<OidcConfig>> =
@@ -122,6 +124,7 @@ impl OidcConfig {
     /// when no issuer resolves (`has_issuer()` is false), the SPA falls back to
     /// mokosh-server's `/api/v1/auth/login` for standalone username/password
     /// sign-in.
+    // SPEC-3.6.3: runtime value, then host derivation, then compile-time default.
     fn resolve() -> Self {
         let mut cfg = Self::from_env();
 
@@ -137,6 +140,7 @@ impl OidcConfig {
         // MAPPS-504: `None` on the desktop, which has no host to derive
         // from. A desktop install configures `oidc_issuer` / `hub_base_url`
         // explicitly (see `crate::platform::config`) or runs standalone.
+        // SPEC-3.6.4: only an `msp.`-prefixed host derives issuer, hub and docs.
         let host_rest = crate::platform::location::host()
             .and_then(|h| h.strip_prefix("msp.").map(str::to_string));
 
@@ -183,6 +187,7 @@ impl OidcConfig {
         // footer link added in MAPPS-570) to work out which knob is missing.
         // Fires once per session (this whole function is memoized by
         // `for_current_origin`), so it is not a per-render toast.
+        // SPEC-3.6.5: one warning per session when no docs URL resolved.
         if !cfg.has_docs() {
             tracing::warn!(
                 "Documentation URL is not configured; the Documentation menu \
@@ -203,6 +208,7 @@ impl OidcConfig {
         cfg
     }
 
+    // SPEC-3.6.8: trimmed base plus path, no added separator.
     pub fn hub_url(&self, path: &str) -> String {
         format!("{}{}", self.hub_base_url.trim_end_matches('/'), path)
     }
@@ -212,6 +218,7 @@ impl OidcConfig {
     /// When this is false the deployment has no bunyip OP, and the SPA falls
     /// back to standalone username/password login against mokosh-server's
     /// `/api/v1/auth/login` instead of redirecting to `/oauth2/authorize`.
+    // SPEC-3.6.6: a blank issuer counts as unconfigured.
     pub fn has_issuer(&self) -> bool {
         !self.issuer.trim().is_empty()
     }
@@ -222,6 +229,7 @@ impl OidcConfig {
     /// that copies `compose.example.yml` without filling this in falls
     /// back to standalone sign-in instead of a client id the OP has never
     /// registered.
+    // SPEC-3.6.6: unset and all-whitespace client ids both count as unconfigured.
     pub fn has_client_id(&self) -> bool {
         self.client_id.is_some_and(|s| !s.trim().is_empty())
     }
@@ -230,6 +238,7 @@ impl OidcConfig {
     /// at the token/authorize call sites, which only run once
     /// [`super::is_standalone`] has already confirmed `has_client_id()`;
     /// this is the last-line guard against a caller that skips that check.
+    // SPEC-3.6.7: the error text is shown to the user through FlowError::Config.
     pub fn require_client_id(&self) -> Result<&'static str, &'static str> {
         self.client_id
             .filter(|s| !s.trim().is_empty())
@@ -239,6 +248,7 @@ impl OidcConfig {
     /// MAPPS-453: absolute URL to a documentation article on the docs
     /// subdomain. `path` is joined to the configured base with one slash
     /// boundary, mirroring [`hub_url`](Self::hub_url).
+    // SPEC-3.6.8: same joining rule as hub_url.
     pub fn docs_url(&self, path: &str) -> String {
         format!("{}{}", self.docs_base_url.trim_end_matches('/'), path)
     }
@@ -246,6 +256,7 @@ impl OidcConfig {
     /// MAPPS-453: whether a documentation subdomain is configured. When false
     /// the Documentation menu entry and every `ContextualHelpLink` render
     /// nothing, so an unconfigured deploy shows no link to a missing docs site.
+    // SPEC-3.6.6: a blank docs base URL hides the Documentation entry and help links.
     pub fn has_docs(&self) -> bool {
         !self.docs_base_url.trim().is_empty()
     }
@@ -260,6 +271,7 @@ impl OidcConfig {
     /// `start_login` binding it onwards; before that there is nothing to
     /// redirect to, and saying so is what makes the caller fail loudly
     /// instead of handing the OP a `redirect_uri` it cannot honour.
+    // SPEC-3.6.9: pinned value wins; the error strings are surfaced as FlowError::Config.
     pub fn resolve_redirect_uri(&self) -> Result<String, &'static str> {
         if let Some(s) = self.redirect_uri {
             return Ok(s.to_string());
@@ -283,6 +295,7 @@ impl OidcConfig {
 /// host, e.g. `a8n.systems`). Split out of [`OidcConfig::resolve`] so the
 /// formula is unit-testable without a browser `window` to read
 /// `platform::location::host()` from.
+// SPEC-3.6.4: the docs host is `docs.` plus the apex.
 fn derive_docs_base_url(tld: &str) -> String {
     format!("https://docs.{tld}")
 }

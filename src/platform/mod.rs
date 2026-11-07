@@ -17,6 +17,7 @@
 //! target and produced bindings that panicked when called, which is the
 //! failure mode this arrangement exists to prevent.
 
+// SPEC-3.38.1: arch split, browser-only crates per SPEC-3.38.2
 pub mod anchor_dom;
 pub mod clipboard;
 pub mod clock;
@@ -29,6 +30,7 @@ pub mod currency;
 // MAPPS-817: the per-OS origin dioxus-desktop's webview sends, mirrored
 // here so docs/desktop.md and CORS_ORIGIN name the right value. Native
 // only, like loopback.rs: a browser tab has its own origin already.
+// SPEC-3.38.4
 #[cfg(not(target_arch = "wasm32"))]
 pub mod desktop_origin;
 pub mod dom;
@@ -39,6 +41,7 @@ pub mod log;
 // MAPPS-505: the RFC 8252 loopback redirect listener. Native only: it
 // exists because a desktop window has no origin for the OP to redirect
 // to, which is not a problem a browser has.
+// SPEC-3.38.3
 #[cfg(not(target_arch = "wasm32"))]
 pub mod loopback;
 pub mod prefs;

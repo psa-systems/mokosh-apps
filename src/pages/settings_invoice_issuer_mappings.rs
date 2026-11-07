@@ -159,6 +159,7 @@ struct ProductMappings {
 /// to branch on `is_company`, and a third and fourth surface would have
 /// made that a chain of booleans deciding a field name it could simply be
 /// told (MAPPS-1156).
+// SPEC-10.58.6
 fn upsert_body(field: &str, value: &str) -> serde_json::Value {
     serde_json::json!({ field: value })
 }
@@ -180,6 +181,7 @@ pub struct MappingRow {
 /// Records with no mapping come back with an empty `external_id`, which is
 /// the state the page exists to make visible: an unmapped company is one
 /// the provider will refuse an invoice for.
+// SPEC-10.57.7
 pub fn rows_from(names: &[(Uuid, String)], mapped: &HashMap<Uuid, String>) -> Vec<MappingRow> {
     names
         .iter()
@@ -192,6 +194,7 @@ pub fn rows_from(names: &[(Uuid, String)], mapped: &HashMap<Uuid, String>) -> Ve
 }
 
 /// How many of these are ready to invoice.
+// SPEC-10.58.1
 pub fn mapped_count(rows: &[MappingRow]) -> usize {
     rows.iter()
         .filter(|r| !r.external_id.trim().is_empty())
@@ -211,6 +214,7 @@ pub fn QuickBooksMappingsPage() -> Element {
 #[component]
 fn IssuerMappingsPage(issuer: Issuer) -> Element {
     use_page_title("Mappings");
+    // SPEC-10.57.1: gate before the body so no list request is made.
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Mappings" } };
     }
@@ -223,6 +227,7 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
     let mut notice = use_signal(String::new);
     let can_mutate = crate::hooks::use_can_mutate();
 
+    // SPEC-10.57.2, SPEC-10.57.6, SPEC-10.57.8
     let companies = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let names = crate::hooks::fetch::api::get_all_authed::<CompanyRow>(&format!(
@@ -251,6 +256,7 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
         ))
     });
 
+    // SPEC-10.57.5
     let products = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // Xero lines are free text, so it never needs one of these.
@@ -281,7 +287,7 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
         ))
     });
 
-    // MAPPS-1156: a bill names a vendor over there, on both providers.
+    // MAPPS-1156: a bill names a vendor over there, on both providers. SPEC-10.57.3
     let vendors = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let names = crate::hooks::fetch::api::get_all_authed::<VendorRow>("/vendors")
@@ -308,6 +314,7 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
         ))
     });
 
+    // SPEC-10.57.5
     let expense_accounts = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // A Xero bill line takes its account from the contact, so Xero
@@ -340,6 +347,7 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
         ))
     });
 
+    // SPEC-10.57.4
     // MAPPS-1168: the people a reimbursement can name. Listed by MEMBER
     // and not by mapping, like every other table here: the rows that
     // matter are the ones with nothing beside them, because on Xero those
@@ -380,6 +388,7 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
 
     rsx! {
         PageHeader {
+            // SPEC-10.57.1
             title: "{issuer.display} mappings",
             subtitle: "Every client, vendor and person this flows through has to name what they are called in {issuer.display}. A document for an unmapped record is refused.",
         }
@@ -404,6 +413,7 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
                         rows,
                         can_mutate,
                         on_error: move |e: String| error.set(e),
+                        // SPEC-10.58.7
                         on_saved: move |name: String| {
                             notice.set(format!("{name} is mapped."));
                         },
@@ -438,6 +448,7 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
                         heading: "People".to_string(),
                         empty: "This organization has no members yet.".to_string(),
                         label: format!("{} contact", issuer.display),
+                        // SPEC-10.58.4
                         help: if issuer.provider == XERO.provider {
                             format!("{} needs a contact on every reimbursement, so a claim from an unmapped person is refused.", issuer.display)
                         } else {
@@ -454,6 +465,7 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
                     }
                 },
             }
+            // SPEC-10.57.5: Xero renders neither this table nor Products.
             if issuer.provider == QUICKBOOKS.provider {
                 match expense_account_rows {
                     None => rsx! { crate::components::DetailSkeleton {} },
@@ -516,6 +528,7 @@ fn MappingTable(
     on_error: EventHandler<String>,
     on_saved: EventHandler<String>,
 ) -> Element {
+    // SPEC-10.58.1
     let ready = mapped_count(&rows);
     let total = rows.len();
     rsx! {
@@ -527,6 +540,7 @@ fn MappingTable(
                     "{ready} of {total} mapped"
                 }
             },
+            // SPEC-10.58.2
             if rows.is_empty() {
                 p { class: "text-sm text-muted", "{empty}" }
             } else {
@@ -573,6 +587,7 @@ fn MappingRowEditor(
         let name = row.name.clone();
         let id = row.id;
         move |_| {
+            // SPEC-10.58.6
             let path = format!(
                 "/invoice-issuer-mappings/{path_prefix}/{}/{id}",
                 issuer.provider
@@ -590,6 +605,7 @@ fn MappingRowEditor(
                     match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
                         .await
                     {
+                        // SPEC-10.58.7
                         Ok(_) => on_saved.call(name),
                         Err(e) => on_error.call(format!("Could not save the mapping: {e}")),
                     }
@@ -607,6 +623,7 @@ fn MappingRowEditor(
         div { class: "flex flex-wrap items-end gap-3",
             div { class: "min-w-48 flex-1",
                 p { class: "text-sm font-medium text-content", "{row.name}" }
+                // SPEC-10.58.3
                 if unmapped {
                     p { class: "text-sm text-muted",
                         "Not mapped, so an invoice for this one is refused."
@@ -626,6 +643,7 @@ fn MappingRowEditor(
             Button {
                 variant: ButtonVariant::Secondary,
                 loading: busy(),
+                // SPEC-10.58.5
                 disabled: !can_mutate || value.read().trim().is_empty(),
                 onclick: save,
                 data_testid: "save-mapping-{row.id}",

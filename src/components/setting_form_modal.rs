@@ -17,9 +17,11 @@ pub struct SettingFormModalProps {
     /// Whether the Delete button renders on an edit. Defaults to true;
     /// pass false for rows the server refuses to delete (e.g. system
     /// `is_system` lookups).
+    // SPEC-5.57.4: Delete is on by default.
     #[props(default = true)]
     pub deletable: bool,
     /// Title shown on the destructive-confirmation dialog (MAPPS-189).
+    // SPEC-5.57.6: default confirmation title and message.
     #[props(default = "Confirm deletion".to_string())]
     pub delete_title: String,
     /// Message shown on the destructive-confirmation dialog (MAPPS-189).
@@ -48,6 +50,7 @@ pub fn SettingFormModal(props: SettingFormModalProps) -> Element {
     // `ondelete` fires from the dialog's confirm action below.
     let mut confirming = use_signal(|| false);
 
+    // SPEC-5.57.2: footer order is Delete, spacer, Cancel, primary; SPEC-5.57.5: Delete only opens the dialog.
     let footer = rsx! {
         if is_edit && deletable {
             Button {
@@ -67,6 +70,7 @@ pub fn SettingFormModal(props: SettingFormModalProps) -> Element {
             variant: ButtonVariant::Primary,
             loading: props.saving,
             onclick: move |e| onsave.call(e),
+            // SPEC-5.57.3: label depends on is_edit.
             if is_edit { "Save Changes" } else { "{props.create_label}" }
         }
     };
@@ -76,8 +80,10 @@ pub fn SettingFormModal(props: SettingFormModalProps) -> Element {
             open: true,
             title: props.title.clone(),
             size: crate::components::ModalSize::Medium,
+            // SPEC-5.57.8: every modal close path reports onclose.
             onclose: move |_| onclose.call(()),
             footer,
+            // SPEC-5.57.1: error banner above the children.
             div { class: "space-y-4",
                 if !props.error.is_empty() {
                     ErrorBanner { "{props.error}" }
@@ -93,6 +99,7 @@ pub fn SettingFormModal(props: SettingFormModalProps) -> Element {
             cancel_text: "Cancel".to_string(),
             destructive: true,
             loading: deleting,
+            // SPEC-5.57.7: close then delete on confirm; cancel is ignored mid-delete.
             onconfirm: move |_| {
                 confirming.set(false);
                 ondelete.call(());

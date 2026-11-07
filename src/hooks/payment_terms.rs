@@ -12,11 +12,13 @@ use dioxus::prelude::*;
 
 /// `GET /payment-terms` and its admin-table create/update/delete calls all
 /// target this path.
+// SPEC-4.20.5
 pub const ENDPOINT: &str = "/payment-terms";
 
 /// A payment-term row as returned by `GET /payment-terms`, matching the
 /// former `billing::PaymentTermOpt`.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+// SPEC-4.20.6
 pub struct PaymentTermRow {
     pub id: uuid::Uuid,
     #[serde(default)]
@@ -34,6 +36,7 @@ pub struct PaymentTermRow {
 
 /// Provide the shared payment-terms list at the App root (MAPPS-1001: see
 /// [`crate::hooks::shared_list`]).
+// SPEC-4.20.7
 pub fn use_payment_terms_provider() {
     crate::hooks::shared_list::use_shared_list_provider::<PaymentTermRow>(
         "payment terms",
@@ -44,6 +47,7 @@ pub fn use_payment_terms_provider() {
 /// Ask for the cached payment-terms list. `enabled` is each caller's own
 /// gate; passing `true` from any single mount is enough to trigger (and
 /// thereafter share) the one underlying fetch.
+// SPEC-4.20.8
 pub fn use_payment_terms(enabled: bool) -> Resource<Vec<PaymentTermRow>> {
     crate::hooks::shared_list::use_shared_list::<PaymentTermRow>(enabled)
 }

@@ -26,11 +26,13 @@ static BOUND_PORT: AtomicU16 = AtomicU16::new(0);
 
 /// Path the OP is asked to redirect to. The same path the browser build
 /// uses, so both halves of the flow read alike.
+// SPEC-3.39.5
 const CALLBACK_PATH: &str = "/auth/callback";
 
 /// Cap on the request line we will buffer. An authorization response is a
 /// few hundred bytes; anything past this is not one, and reading it
 /// forever would be a way to hold the app open.
+// SPEC-3.40.9
 const MAX_REQUEST_LINE: usize = 8 * 1024;
 
 /// A bound, not-yet-serving loopback listener.
@@ -49,6 +51,8 @@ pub struct Listener {
 /// unreachable from the network, and `127.0.0.1` (not `localhost`) is
 /// what section 7.3 asks the redirect URI to name, because the name can
 /// resolve elsewhere.
+// SPEC-3.39.1: IPv4 loopback literal, ephemeral port; see also SPEC-3.39.2 to 3.42.4
+// SPEC-3.39.4: each failed step returns its own prefixed Err and leaves the recorded port untouched.
 pub fn bind() -> Result<Listener, String> {
     let inner = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .map_err(|e| format!("could not bind a loopback listener on 127.0.0.1: {e}"))?;
@@ -61,12 +65,14 @@ pub fn bind() -> Result<Listener, String> {
     inner
         .set_nonblocking(true)
         .map_err(|e| format!("could not put the loopback listener in non-blocking mode: {e}"))?;
+    // SPEC-3.39.3: recorded on every successful bind, overwritten each time, never cleared.
     BOUND_PORT.store(port, Ordering::SeqCst);
     Ok(Listener { inner, port })
 }
 
 /// Redirect URI of the listener bound most recently, or `None` when this
 /// process has not started a sign-in flow yet.
+// SPEC-3.39.5
 pub fn redirect_uri() -> Option<String> {
     match BOUND_PORT.load(Ordering::SeqCst) {
         0 => None,
@@ -79,6 +85,7 @@ fn loopback_uri(port: u16) -> String {
 }
 
 impl Listener {
+    // SPEC-3.39.6
     pub fn port(&self) -> u16 {
         self.port
     }
@@ -95,15 +102,20 @@ impl Listener {
     /// returns however it returns: one served redirect, a browser that
     /// connected and said nothing, or `timeout` elapsing because the user
     /// abandoned the flow in the browser and never came back.
+    // SPEC-3.40.1: SPEC-3.40.2 to 3.43.7, 3.43.12
+    // SPEC-3.40.12: the timeout below bounds only the accept; the request-line read has none.
     pub async fn serve_one(self, timeout: Duration) -> Result<String, String> {
         // `from_std` registers with the current runtime's IO driver and
         // panics when there is none. Check first, so a missing runtime is
         // an error the caller reports rather than a panic in a detached task.
+        // SPEC-3.40.3: no current runtime is an Err, not a panic.
         tokio::runtime::Handle::try_current()
             .map_err(|e| format!("no async runtime to serve the loopback redirect on: {e}"))?;
+        // SPEC-3.40.4: conversion failure is an Err naming the port.
         let listener = tokio::net::TcpListener::from_std(self.inner)
             .map_err(|e| format!("could not listen on 127.0.0.1:{}: {e}", self.port))?;
 
+        // SPEC-3.40.5: timeout elapsed -> Err (port released on drop); SPEC-3.40.6: accept failure -> Err.
         let (mut stream, _peer) = tokio::time::timeout(timeout, listener.accept())
             .await
             .map_err(|_| {
@@ -115,7 +127,9 @@ impl Listener {
             })?
             .map_err(|e| format!("the loopback connection failed: {e}"))?;
 
+        // SPEC-3.41.7: any error here returns before `respond`, so nothing is written.
         let line = read_request_line(&mut stream).await?;
+        // SPEC-3.40.7: Ok carries the query string with its leading `?`.
         let query = request_query(&line)?;
         respond(&mut stream).await?;
         Ok(query)
@@ -124,6 +138,7 @@ impl Listener {
 
 /// Read up to the first CRLF: the request line is all we need, and the
 /// browser sends headers we have no use for.
+// SPEC-3.40.8: SPEC-3.40.9 to 3.43.11
 async fn read_request_line(stream: &mut tokio::net::TcpStream) -> Result<String, String> {
     let mut buf: Vec<u8> = Vec::with_capacity(512);
     let mut chunk = [0u8; 512];
@@ -137,10 +152,12 @@ async fn read_request_line(stream: &mut tokio::net::TcpStream) -> Result<String,
                 "the loopback request line exceeded {MAX_REQUEST_LINE} bytes without ending"
             ));
         }
+        // SPEC-3.40.11: read failure and non-UTF-8 line are distinct Errs.
         let read = stream
             .read(&mut chunk)
             .await
             .map_err(|e| format!("could not read the loopback request: {e}"))?;
+        // SPEC-3.40.10: EOF before a CRLF is an Err.
         if read == 0 {
             return Err(
                 "the browser closed the loopback connection before sending a request".into(),
@@ -156,6 +173,7 @@ async fn read_request_line(stream: &mut tokio::net::TcpStream) -> Result<String,
 /// A request with no query is not an authorization response, and is an
 /// error rather than an empty string: the caller has to be able to tell
 /// "the OP answered" from "something else knocked on the port".
+// SPEC-3.41.1: SPEC-3.41.2 to 3.44.4
 fn request_query(line: &str) -> Result<String, String> {
     let mut parts = line.split_whitespace();
     let _method = parts
@@ -165,6 +183,7 @@ fn request_query(line: &str) -> Result<String, String> {
         .next()
         .ok_or_else(|| format!("the loopback request line named no target ({line})"))?;
     match target.split_once('?') {
+        // SPEC-3.41.3: query returned as-is, no decoding. SPEC-3.41.4: no query is an Err.
         Some((_path, query)) if !query.is_empty() => Ok(format!("?{query}")),
         _ => Err(format!(
             "the loopback request carried no authorization response ({target})"
@@ -176,6 +195,7 @@ fn request_query(line: &str) -> Result<String, String> {
 /// section 8.11: tell them the flow is done and to come back to the app.
 /// Deliberately unstyled - it is served by a socket, not by the app, so
 /// it has no stylesheet to reach for and nothing to match.
+// SPEC-3.41.6
 const DONE_PAGE: &str = concat!(
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
     "<title>Signed in</title></head><body>",
@@ -183,6 +203,7 @@ const DONE_PAGE: &str = concat!(
     "</body></html>"
 );
 
+// SPEC-3.41.5: SPEC-3.41.8
 async fn respond(stream: &mut tokio::net::TcpStream) -> Result<(), String> {
     let response = format!(
         "HTTP/1.1 200 OK\r\n\
@@ -206,6 +227,7 @@ async fn respond(stream: &mut tokio::net::TcpStream) -> Result<(), String> {
     // user has their page and the code is in hand. A half-close the peer
     // already performed is the ordinary reason this fails and is not worth
     // failing a completed sign-in over, but it still gets a line.
+    // SPEC-3.41.9
     if let Err(e) = stream.shutdown().await {
         tracing::debug!("loopback connection did not shut down cleanly: {e}");
     }

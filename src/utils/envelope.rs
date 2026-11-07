@@ -18,9 +18,11 @@ pub struct Paginated<T> {
     /// bare `#[serde(default)]`) keeps the envelope generic over row types
     /// that are not `Default`: serde's field-default inference would
     /// otherwise add a spurious `T: Default` bound.
+    // SPEC-4.54.1: a missing data array decodes to an empty list.
     #[serde(default = "Vec::new")]
     pub data: Vec<T>,
     /// Pagination totals; absent / partial `meta` decodes to zeroes.
+    // SPEC-4.54.1: a missing meta decodes to a zero total.
     #[serde(default)]
     pub meta: PaginatedMeta,
 }
@@ -32,6 +34,7 @@ pub struct Paginated<T> {
 /// serde side. An empty page is empty whatever its row type is, and without
 /// this a paged page cannot use `use_remote_resource`, which requires
 /// `T: Default` to render a loading state.
+// SPEC-4.54.3: an empty page for any T, with no T: Default bound.
 impl<T> Default for Paginated<T> {
     fn default() -> Self {
         Self {
@@ -45,6 +48,7 @@ impl<T> Default for Paginated<T> {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct PaginatedMeta {
     /// Total number of items across all pages.
+    // SPEC-4.54.2: u64, default 0; other meta fields are ignored.
     #[serde(default)]
     pub total: u64,
 }

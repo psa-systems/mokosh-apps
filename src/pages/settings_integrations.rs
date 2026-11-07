@@ -164,6 +164,7 @@ struct Integration {
 
 /// A server that does not send `available` is one that predates MAPPS-1121,
 /// and every provider it serves is one it would have let you connect.
+// SPEC-11.47.6
 fn default_available() -> bool {
     true
 }
@@ -171,6 +172,7 @@ fn default_available() -> bool {
 /// A server that does not send `configurable_here` predates MAPPS-1129, and
 /// therefore predates MAPPS-1122 listing the providers its routes refuse. Every
 /// provider such a server lists is one it will take a change for.
+// SPEC-11.47.6
 fn default_configurable_here() -> bool {
     true
 }
@@ -197,6 +199,7 @@ impl Integration {
     /// subsystem since PMS-1312 and only their CREDENTIAL lives elsewhere. So
     /// every control on their cards came back 404, and the capability
     /// checkboxes came back 404 once per tick.
+    // SPEC-11.48.3
     fn connectable(&self) -> bool {
         self.available && self.managed_elsewhere.is_none() && self.configurable_here
     }
@@ -219,6 +222,7 @@ impl Integration {
     /// payments has `payments` alone, and `invoicing` is the one whose
     /// description says Mokosh stops being the system of record for the
     /// document.
+    // SPEC-11.48.4, SPEC-11.48.5
     fn capability_summary(&self) -> (&'static str, Vec<CapabilityDescriptor>) {
         let delegated = self.delegated();
         if !delegated.is_empty() {
@@ -278,6 +282,7 @@ enum CapabilityForm {
 /// A function rather than four branches at the call site, so the four stay
 /// visibly four. `disconnected` says the capability set was kept, since that is
 /// the whole reason the server distinguishes it from `not_connected`.
+// SPEC-11.48.1
 fn status_copy(
     status: IntegrationStatus,
     form: CapabilityForm,
@@ -317,6 +322,7 @@ fn status_copy(
 /// kind renders the server's sentence with no link, which is the honest
 /// degradation: a new credential home should not produce a link to the wrong
 /// page.
+// SPEC-11.48.7, SPEC-11.48.8
 fn surface_route(kind: &str) -> Option<Route> {
     match kind {
         "payment_gateway" => Some(Route::PaymentGatewayConfig {}),
@@ -344,6 +350,7 @@ fn surface_route(kind: &str) -> Option<Route> {
 #[component]
 pub fn IntegrationsPage() -> Element {
     use_page_title("Connected Services");
+    // SPEC-11.47.1
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Connected Services" } };
     }
@@ -357,6 +364,7 @@ fn IntegrationsList() -> Element {
     // mutate: the routes are gone. A failed LOAD has its own banner below,
     // off `fetch_failed`.
 
+    // SPEC-11.47.2: the catalog read is this page's only request.
     let resource = use_resource(move || async move {
         let _reachable = crate::hooks::use_server_reachable();
         crate::pages::settings::load_operator_setting::<Vec<Integration>>(
@@ -387,6 +395,7 @@ fn IntegrationsList() -> Element {
         }
 
         div { class: "space-y-6",
+            // SPEC-11.47.3
             if fetch_failed {
                 Card { ErrorBanner { "Could not load the integrations." } }
             }
@@ -402,6 +411,7 @@ fn IntegrationsList() -> Element {
             }
             // Server order, not sorted here: the registry decides what comes
             // first and re-sorting would be a second opinion about it.
+            // SPEC-11.47.4, SPEC-11.47.5
             for integration in integrations {
                 IntegrationCard { integration: integration.clone() }
             }
@@ -420,6 +430,7 @@ fn IntegrationCard(integration: Integration) -> Element {
     } else {
         CapabilityForm::Listed
     };
+    // SPEC-11.48.2
     let (badge, tone, line) = if integration.available {
         status_copy(integration.status, form)
     } else {
@@ -442,6 +453,7 @@ fn IntegrationCard(integration: Integration) -> Element {
                 p { class: "text-sm text-muted", "{integration.description}" }
                 p { class: "text-sm text-content", "{line}" }
 
+                // SPEC-11.47.7
                 if let Some(last_error) = integration.last_error.as_ref() {
                     ErrorBanner { "{last_error}" }
                 }
@@ -451,6 +463,7 @@ fn IntegrationCard(integration: Integration) -> Element {
                 // payment gateway, a contact-sync source and anything added
                 // later; the three used to be a managed-elsewhere sentence, a
                 // credential-elsewhere sentence, and nothing at all.
+                // SPEC-11.48.6
                 if let Some(setup) = integration.setup.as_ref() {
                     div { class: "space-y-1",
                         p { class: "text-sm text-muted",

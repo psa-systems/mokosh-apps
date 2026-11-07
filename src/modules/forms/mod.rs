@@ -6,6 +6,7 @@
 //! visitor (no ids, no author, no KB article), so sharing one struct would
 //! mean optional fields that are always absent on one of the two surfaces.
 
+// SPEC-3.14.1: form DTOs come from one module and are re-exported here.
 pub mod models;
 
 pub use models::*;

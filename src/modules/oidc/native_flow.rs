@@ -35,6 +35,7 @@ use super::flow::FlowError;
 /// abandoned sign-in must not hold a socket for the life of the process.
 /// Comfortably inside the 10-minute `PendingFlow` TTL, so the flow the
 /// redirect would complete is still alive when it arrives.
+// SPEC-3.8.11: 5 minutes, which must stay under the 10-minute pending-flow lifetime.
 const REDIRECT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// `error` code reported to `/auth/callback` when the loopback half of
@@ -42,6 +43,7 @@ const REDIRECT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// shaped like one so the failure travels the single path the callback
 /// page already classifies and renders (`classify_flow_error` shows it,
 /// like every other non-recoverable token-endpoint code).
+// SPEC-3.8.10: the code under which a local failure reaches /auth/callback (shown, not retried).
 pub(super) const LOOPBACK_ERROR_CODE: &str = "loopback_failed";
 
 /// Whether a flow is already waiting on its listener. `AuthGuard` calls
@@ -55,6 +57,7 @@ static IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// `complete_login` reads on the web: a URL query string, leading `?`
 /// included. Process-global rather than thread-local because the task
 /// that fills it is polled by a multi-threaded runtime.
+// SPEC-3.8.13: process-wide; the lock is recovered after poisoning.
 static CAPTURED_QUERY: Mutex<Option<String>> = Mutex::new(None);
 
 /// What `/auth/callback` should complete, or `None` when no flow has
@@ -78,6 +81,7 @@ fn set_captured_query(value: Option<String>) {
 
 /// Start (or decline to restart) the loopback sign-in.
 pub(super) fn start_login(cfg: &OidcConfig, return_to: String) -> Result<(), FlowError> {
+    // SPEC-3.8.7: a second call while one flow waits is a no-op.
     if IN_PROGRESS.swap(true, Ordering::SeqCst) {
         tracing::debug!("a loopback sign-in is already waiting for its redirect");
         return Ok(());
@@ -87,6 +91,7 @@ pub(super) fn start_login(cfg: &OidcConfig, return_to: String) -> Result<(), Flo
     // `/auth/callback`. Read it before anything is bound or opened: with
     // no router there is nowhere to deliver a code and nowhere to report,
     // so the flow must not start at all.
+    // SPEC-3.8.8: no router means the flow does not start.
     let Some(router) = dioxus::prelude::try_consume_context::<RouterContext>() else {
         IN_PROGRESS.store(false, Ordering::SeqCst);
         return Err(FlowError::Redirect(
@@ -94,6 +99,7 @@ pub(super) fn start_login(cfg: &OidcConfig, return_to: String) -> Result<(), Flo
         ));
     };
 
+    // SPEC-3.8.10: a start failure releases the flag and is shown on the callback screen.
     kickoff(cfg, return_to, router).inspect_err(|e| {
         // Nothing is waiting on a listener, so the next attempt must be
         // allowed to run.
@@ -107,6 +113,7 @@ pub(super) fn start_login(cfg: &OidcConfig, return_to: String) -> Result<(), Flo
 }
 
 fn kickoff(cfg: &OidcConfig, return_to: String, router: RouterContext) -> Result<(), FlowError> {
+    // SPEC-3.8.9: stale response cleared, bind before URL, own browser, typed failures.
     // A previous flow's response must never satisfy this one.
     set_captured_query(None);
 
@@ -121,6 +128,7 @@ fn kickoff(cfg: &OidcConfig, return_to: String, router: RouterContext) -> Result
         ))
     })?;
 
+    // SPEC-3.8.12: success and failure both store a query, release the flag and navigate.
     dioxus::core::spawn_forever(async move {
         match listener.serve_one(REDIRECT_TIMEOUT).await {
             Ok(query) => set_captured_query(Some(query)),
@@ -144,6 +152,7 @@ fn kickoff(cfg: &OidcConfig, return_to: String, router: RouterContext) -> Result
 /// The navigation is deferred to a task because `start_login` is called
 /// from inside a render, and routing from there is the router writing to
 /// itself mid-render.
+// SPEC-3.8.10: stores the error query and defers the navigation to a task.
 fn report_failure(router: RouterContext, description: &str) {
     set_captured_query(Some(error_query(LOOPBACK_ERROR_CODE, description)));
     dioxus::core::spawn_forever(async move {
@@ -153,6 +162,7 @@ fn report_failure(router: RouterContext, description: &str) {
 
 /// Hand the captured response, whatever it says, to `/auth/callback`.
 fn navigate_to_callback(router: RouterContext) {
+    // SPEC-3.8.12: a failed navigation is logged, not dropped.
     if let Some(failure) = router.push(crate::Route::AuthCallback {}) {
         super::log_auth_error(&format!(
             "loopback sign-in could not reach /auth/callback: {failure:?}"
@@ -163,6 +173,7 @@ fn navigate_to_callback(router: RouterContext) {
 /// Encode a local failure the way the OP encodes its own
 /// (`?error=&error_description=`), so it reaches the user through the
 /// one path that already classifies and renders an authorization error.
+// SPEC-3.8.10: `?error=<code>&error_description=<text>`, both percent-encoded.
 fn error_query(code: &str, description: &str) -> String {
     format!(
         "?error={}&error_description={}",
@@ -208,6 +219,7 @@ mod tests {
     /// still find a live `PendingFlow` to complete.
     #[test]
     fn the_redirect_timeout_fits_inside_the_pending_flow_ttl() {
+        // SPEC-3.8.11: pins the timeout below the pending-flow lifetime.
         assert!(REDIRECT_TIMEOUT.as_millis() < u128::from(PENDING_FLOW_TTL_MS));
     }
 }
