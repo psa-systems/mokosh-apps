@@ -41,9 +41,13 @@ use crate::pages::settings_contact_sync::{
 use crate::Route;
 
 /// The status read: one response carries both providers' connections.
+// SPEC-8.7.4: the overview read this page polls and refreshes from; the
+// connect, runs, disconnect and settings calls are at their own call sites
+// below.
 const STATUS_PATH: &str = "/integrations/contact-sync";
 
 /// The tenant switch for this integration (server PMS-1341).
+// SPEC-8.3.1: `"integrations"` category, `icloud_contacts_enabled` key.
 const SETTING_CATEGORY: &str = "integrations";
 const SETTING_KEY: &str = "icloud_contacts_enabled";
 
@@ -53,6 +57,8 @@ const SETTING_KEY: &str = "icloud_contacts_enabled";
 pub const APPLE_ID_URL: &str = "https://appleid.apple.com";
 
 /// How often the card re-reads while an import is queued or running.
+// SPEC-8.3.2: polls every 3000ms while this connection shows an active
+// import.
 const POLL_MS: u32 = 3_000;
 
 /// What the admin is agreeing to before they paste a password (the PSA-70 K
@@ -188,6 +194,8 @@ pub fn copy_for(state: &CardState) -> StateCopy {
 #[derive(Serialize)]
 struct NoBody {}
 
+// SPEC-8.2.7: this page's own copy of the setting-write shape shared with
+// the Google and Microsoft pages, sent to `PUT /settings`.
 #[derive(Serialize)]
 struct SettingWrite {
     category: &'static str,
@@ -216,6 +224,8 @@ struct ConnectResponse {
 #[component]
 pub fn ICloudContactsSettingsPage() -> Element {
     use_page_title("iCloud Contacts");
+    // SPEC-8.4.1: AdminOnlyNotice instead of the page body for a non-admin;
+    // the server's own admin check is the real gate.
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "iCloud Contacts" } };
     }
@@ -261,6 +271,9 @@ fn ICloudContactsSettingsBody() -> Element {
         .map(|o| card_state_of(o.icloud_enabled, true, o.icloud_connection.as_ref()));
     let syncing = matches!(state, Some(CardState::Syncing { .. }));
 
+    // SPEC-8.3.2/SPEC-8.6.3: stops polling as soon as it is no longer
+    // active; `polling` guards against stacking a second in-flight poll
+    // before the previous one has both slept and refreshed the overview.
     // Re-read while an import is in flight, and stop when it is not.
     let mut polling = use_signal(|| false);
     use_effect(move || {
@@ -292,8 +305,9 @@ fn ICloudContactsSettingsBody() -> Element {
                 .await
                 {
                     Ok(answer) => {
-                        // The password is never read back, so it is cleared here
-                        // rather than left in a field that suggests it was kept.
+                        // SPEC-8.4.5: the password is never read back, so it is
+                        // cleared here rather than left in a field that
+                        // suggests it was kept.
                         app_password.set(String::new());
                         notice.set(if answer.reconnected {
                             "Reconnected. Imports resume on the next sync.".to_string()
@@ -323,9 +337,12 @@ fn ICloudContactsSettingsBody() -> Element {
                 .await
                 {
                     Ok(_) => overview.restart(),
+                    // SPEC-8.5.5: same "{action}: {e}" shape as SPEC-8.5.4,
+                    // naming iCloud through the caller's own `after` text.
                     Err(e) => error.set(format!("{after}: {e}")),
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = (path, after);
             busy.set(false);
@@ -350,6 +367,8 @@ fn ICloudContactsSettingsBody() -> Element {
                 .await
                 {
                     Ok(_) => overview.restart(),
+                    // SPEC-8.5.5: same shape as SPEC-8.5.4's enable/disable
+                    // failure message.
                     Err(e) => {
                         error.set(format!("Could not change the setting: {e}"));
                         // The save did not happen, so the box goes back to
@@ -359,6 +378,7 @@ fn ICloudContactsSettingsBody() -> Element {
                     }
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = value;
             busy.set(false);
@@ -388,6 +408,8 @@ fn ICloudContactsSettingsBody() -> Element {
                 let actions = actions_for(&state);
                 let connection: Option<Connection> = data.icloud_connection.clone();
                 let connected_account = connection.as_ref().map(|c| c.account_email.clone());
+                // SPEC-8.6.1: one `busy` flag disables every mutating
+                // control on the page for the duration of any one action.
                 let disabled = busy() || !can_mutate;
                 let enabled = data.icloud_enabled;
                 rsx! {
@@ -474,6 +496,9 @@ fn ICloudContactsSettingsBody() -> Element {
                     // Not hidden behind the Reconnect button, because what
                     // reconnecting NEEDS is a new password, and a button that
                     // reveals a field is one click more for no information.
+                    // SPEC-8.1.22: the Apple ID and app-specific-password
+                    // fields render only while the state allows connecting
+                    // or reconnecting.
                     if enabled && (actions.connect || actions.reconnect) {
                         Card { class: "mt-4",
                             // card-heading-allow: a focus target (tabindex + onmounted set_focus), which the title prop cannot carry
@@ -519,6 +544,10 @@ fn ICloudContactsSettingsBody() -> Element {
                                     data_testid: "icloud-app-password",
                                 }
                             }
+                            // SPEC-8.1.17/SPEC-8.4.4: the consent points are
+                            // rendered above the submit button below, so
+                            // there is no way to fire the connect call
+                            // without seeing them first.
                             ul { class: "mt-4 list-disc space-y-1 pl-5 text-sm text-muted",
                                 for point in CONSENT_POINTS {
                                     li { "{point}" }
@@ -541,6 +570,8 @@ fn ICloudContactsSettingsBody() -> Element {
                             label: "Allow iCloud Contacts for this organization",
                             checked: wanted().unwrap_or(enabled),
                             disabled,
+                            // SPEC-8.1.17: turning on writes immediately with
+                            // no confirmation; turning off confirms first.
                             onchange: move |e: FormEvent| {
                                 wanted.set(Some(e.checked()));
                                 if e.checked() {
@@ -559,6 +590,8 @@ fn ICloudContactsSettingsBody() -> Element {
                         ConfirmDialog {
                             open: confirm_disconnect(),
                             title: "Disconnect iCloud Contacts?",
+                            // SPEC-8.9.3: disconnecting removes only the
+                            // stored credential; imported contacts stay.
                             message: disconnect_message_from("iCloud", connected_account.as_deref()),
                             confirm_text: "Disconnect",
                             destructive: true,

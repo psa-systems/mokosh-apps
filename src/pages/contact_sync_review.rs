@@ -43,10 +43,13 @@ use crate::components::{
 };
 use crate::Route;
 
+// SPEC-8.7.1: the review queue's own read and resolve endpoints.
 const QUEUE_PATH: &str = "/integrations/contact-sync/review-queue";
 const RESOLVE_PATH: &str = "/integrations/contact-sync/review-queue/resolve";
 
 /// One record waiting on a reviewer (`ReviewItem`, PMS-1215).
+// SPEC-8.2.1: every field but `external_id` defaults on absence, so an
+// older or newer server payload still decodes.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ReviewItem {
     /// MAPPS-916: the source the record waits in (PMS-1290). The queue spans
@@ -313,6 +316,8 @@ pub enum Decision {
 
 /// The shortcut for a key pressed inside a record. Plain letters only: a
 /// modifier means the key was meant for the browser or the system.
+// SPEC-8.1.3: l/L, c/C, s/S case-insensitively, ignored whenever any
+// modifier is held.
 pub fn shortcut(key: &str, modified: bool) -> Option<Decision> {
     if modified {
         return None;
@@ -347,6 +352,8 @@ pub fn announcement(
 }
 
 /// `POST .../resolve`. Typed rather than a `json!` literal (MAPPS-685).
+// SPEC-8.2.1: snake_case action tag; `connection_id` is omitted via
+// `skip_serializing_if` rather than serialized as `null`.
 #[derive(Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum ResolveBody {
@@ -381,6 +388,8 @@ pub fn ContactImportReviewPage() -> Element {
         crate::hooks::fetch::api::get_authed::<Vec<ReviewItem>>(QUEUE_PATH)
             .await
             .map_err(|e| {
+                // SPEC-8.5.1: logged here; "Could not load the review queue:
+                // {e}" is rendered below from this same error.
                 tracing::error!("import review queue load failed: {e}");
                 e
             })
@@ -446,6 +455,9 @@ pub fn ContactImportReviewPage() -> Element {
                 )
                 .await;
                 match result {
+                    // SPEC-8.1.5: drop the record locally (no reload), move
+                    // focus to the next heading or the page title, and
+                    // announce the outcome.
                     Ok(_) => {
                         let mut next = items().unwrap_or_default();
                         next.retain(|i| i.key() != item.key());
@@ -467,9 +479,11 @@ pub fn ContactImportReviewPage() -> Element {
                         };
                         crate::platform::dom::focus_by_id(&target);
                     }
+                    // SPEC-8.5.1: scoped to this record, not the whole page.
                     Err(e) => error.set(format!("Could not answer {}: {e}", item.source.name())),
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = (body, target_name, index, decision);
             busy.set(false);
@@ -505,6 +519,8 @@ pub fn ContactImportReviewPage() -> Element {
         if !error().is_empty() {
             ErrorBanner { class: "mb-4", "{error}" }
         }
+        // SPEC-8.1.1: loading skeleton, error banner, empty state, or a
+        // count line plus one `ReviewCard` per queued record.
         match (loaded, list) {
             (None, _) | (Some(Ok(_)), None) => rsx! { crate::components::DetailSkeleton {} },
             (Some(Err(e)), _) => rsx! {
@@ -541,10 +557,16 @@ pub fn ContactImportReviewPage() -> Element {
                                     .get(&item.key())
                                     .copied()
                                     .or_else(|| item.candidates.first().map(|c| c.contact_id)),
+                                // SPEC-8.6.1: `busy` is one page-wide signal,
+                                // so answering one record disables every
+                                // other record's controls too.
                                 disabled: busy() || !can_mutate,
                                 onchoose: move |(key, contact_id): (String, Uuid)| {
                                     chosen.write().insert(key, contact_id);
                                 },
+                                // SPEC-8.1.4: Skip routes through the confirm
+                                // dialog below; Link and Create answer right
+                                // away.
                                 ondecide: move |decision: Decision| {
                                     if decision == Decision::Skip {
                                         confirm_skip.set(Some(index));
@@ -558,6 +580,8 @@ pub fn ContactImportReviewPage() -> Element {
                 }
             }
         }
+        // SPEC-8.1.4: exact title and confirm label.
+        // SPEC-8.9.1: the message states the Skip answer is permanent.
         ConfirmDialog {
             open: confirm_skip().is_some(),
             title: "Skip this contact?",
@@ -580,6 +604,9 @@ pub fn ContactImportReviewPage() -> Element {
     }
 }
 
+// SPEC-8.1.2: card heading, candidate fieldset with the
+// Link/Create new/Skip action set, the multi-candidate hint, and Link
+// disabled unless a candidate is chosen from a non-empty list.
 #[component]
 fn ReviewCard(
     index: usize,
@@ -769,6 +796,7 @@ pub fn ImportReviewLink() -> Element {
         .and_then(|s| s.connection.as_ref())
         .map(|c| c.open_reviews)
         .unwrap_or(0);
+    // SPEC-8.1.6: nothing when there are zero open reviews.
     if waiting == 0 {
         return rsx! {};
     }

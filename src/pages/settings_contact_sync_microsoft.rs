@@ -40,9 +40,12 @@ use crate::pages::settings_contact_sync::{
 use crate::Route;
 
 /// The status read: one response carries every provider's connection.
+// SPEC-8.7.5: this GET plus the authorize/runs/disconnect/settings calls below
+// are the full set of endpoints this page calls.
 const STATUS_PATH: &str = "/integrations/contact-sync";
 
 /// The tenant switch for this integration (server PMS-1512).
+// SPEC-8.3.1: tenant setting under category "integrations".
 const SETTING_CATEGORY: &str = "integrations";
 const SETTING_KEY: &str = "microsoft_contacts_enabled";
 
@@ -168,6 +171,8 @@ pub fn copy_for(state: &CardState) -> StateCopy {
 #[derive(Serialize)]
 struct NoBody {}
 
+// SPEC-8.2.7: shared shape with the Google and iCloud pages' own setting-write
+// body, sent to `PUT /settings`.
 #[derive(Serialize)]
 struct SettingWrite {
     category: &'static str,
@@ -178,6 +183,7 @@ struct SettingWrite {
 /// `POST /integrations/contact-sync/microsoft/authorize` answers where to send
 /// the browser. The SPA navigates rather than the server redirecting, so this
 /// page can say what is about to happen first (PSA-70 K).
+// SPEC-8.2.7: `authorize_url` defaults to an empty string on absence.
 #[derive(Deserialize)]
 struct AuthorizeResponse {
     #[serde(default)]
@@ -187,6 +193,7 @@ struct AuthorizeResponse {
 #[component]
 pub fn MicrosoftContactsSettingsPage() -> Element {
     use_page_title("Microsoft 365 Contacts");
+    // SPEC-8.4.1: AdminOnlyNotice instead of the body for a non-admin.
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Microsoft 365 Contacts" } };
     }
@@ -213,6 +220,8 @@ fn MicrosoftContactsSettingsBody() -> Element {
 
     let snap = overview.read_unchecked().clone();
     let data = snap.as_ref().and_then(|o| o.as_ref()).cloned();
+    // SPEC-8.1.24: reuses `card_state_of` from settings_contact_sync.rs
+    // (SPEC-8.1.13) rather than its own copy of the state machine.
     let state = data.as_ref().map(|o| {
         card_state_of(
             o.microsoft_enabled,
@@ -223,6 +232,9 @@ fn MicrosoftContactsSettingsBody() -> Element {
     let syncing = matches!(state, Some(CardState::Syncing { .. }));
 
     // Re-read while an import is in flight, and stop when it is not.
+    // SPEC-8.3.2/SPEC-8.6.3: polls every `POLL_MS` while syncing, and the
+    // `polling` guard keeps a second tick from stacking before this one has
+    // both slept and restarted the resource.
     let mut polling = use_signal(|| false);
     use_effect(move || {
         if syncing && !polling() {
@@ -261,16 +273,21 @@ fn MicrosoftContactsSettingsBody() -> Element {
                         {
                             // A desktop host has no document to navigate; say
                             // where Microsoft is rather than doing nothing.
+                            // SPEC-8.5.5: Microsoft's own wording for the
+                            // reused informational-banner shape.
                             error.set(format!("Open this to continue: {}", resp.authorize_url));
                             busy.set(false);
                         }
                     }
                     Err(e) => {
+                        // SPEC-8.5.5: same shape as SPEC-8.5.4's failed-connect
+                        // message, naming no provider of its own.
                         error.set(format!("Could not start the connection: {e}"));
                         busy.set(false);
                     }
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             busy.set(false);
         });
@@ -292,6 +309,7 @@ fn MicrosoftContactsSettingsBody() -> Element {
                     Err(e) => error.set(format!("{after}: {e}")),
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = (path, after);
             busy.set(false);
@@ -319,6 +337,7 @@ fn MicrosoftContactsSettingsBody() -> Element {
                     Err(e) => error.set(format!("Could not change the setting: {e}")),
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = value;
             busy.set(false);
@@ -345,9 +364,13 @@ fn MicrosoftContactsSettingsBody() -> Element {
             },
             (Some(data), Some(state)) => {
                 let copy = copy_for(&state);
+                // SPEC-8.1.24: reuses `actions_for` from settings_contact_sync.rs
+                // (SPEC-8.1.14) for the enabled action set.
                 let actions = actions_for(&state);
                 let connection: Option<Connection> = data.microsoft_connection.clone();
                 let connected_account = connection.as_ref().map(|c| c.account_email.clone());
+                // SPEC-8.6.1: shared by every mutating button below, so each
+                // disables itself for the duration of its own action.
                 let disabled = busy() || !can_mutate;
                 let enabled = data.microsoft_enabled;
                 rsx! {
@@ -358,6 +381,8 @@ fn MicrosoftContactsSettingsBody() -> Element {
                                 "aria-live": "polite",
                                 "data-testid": "microsoft-sync-state",
                                 span { "aria-hidden": "true", class: "text-muted",
+                                    // SPEC-8.1.24: reuses `StateIcon` from
+                                    // settings_contact_sync.rs.
                                     StateIcon { state: state.clone() }
                                 }
                                 Badge { variant: copy.tone, "{copy.badge}" }
@@ -440,6 +465,9 @@ fn MicrosoftContactsSettingsBody() -> Element {
 
                     // Said before the redirect, not after: the consent screen is
                     // where the data starts moving.
+                    // SPEC-8.1.17/SPEC-8.4.4: shown before the connect call can
+                    // fire, and reachable only alongside the connect/reconnect
+                    // button, never bypassed by it.
                     if enabled && data.microsoft_configured && (actions.connect || actions.reconnect) {
                         Card { class: "mt-4",
                             title: "What connecting does",
@@ -458,6 +486,9 @@ fn MicrosoftContactsSettingsBody() -> Element {
                             Button {
                                 disabled,
                                 variant: if enabled { ButtonVariant::Secondary } else { ButtonVariant::Primary },
+                                // SPEC-8.1.17: turning off requires the
+                                // confirmation below; turning on writes
+                                // immediately with none.
                                 onclick: move |_| {
                                     if enabled { confirm_off.set(true) } else { write_enabled(true) }
                                 },
@@ -473,6 +504,8 @@ fn MicrosoftContactsSettingsBody() -> Element {
                     ConfirmDialog {
                         open: confirm_disconnect(),
                         title: "Disconnect Microsoft 365 Contacts?",
+                        // SPEC-8.9.3: reuses the shared message naming that only
+                        // the credential is removed; imported contacts stay.
                         message: disconnect_message_from("Microsoft 365", connected_account.as_deref()),
                         confirm_text: "Disconnect",
                         destructive: true,

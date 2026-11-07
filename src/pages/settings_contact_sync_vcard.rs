@@ -47,11 +47,17 @@ pub const UNGROUPED: &str = "mokosh:ungrouped";
 
 /// The server's own file limit (`vcard::Limits::DEFAULT`), checked here only
 /// to avoid sending a file that cannot be accepted.
+// SPEC-8.3.5: a client-side mirror only; the server's own limit is
+// authoritative, not this constant.
 pub const MAX_BYTES: usize = 10 * 1024 * 1024;
 
+// SPEC-8.7.8: this base path covers the upload POST/GET; the preview, import
+// and run-polling calls below build on it or on their own fixed path.
 const UPLOADS: &str = "/integrations/contact-sync/vcard/uploads";
 const POLL_MS: u32 = 3_000;
 
+// SPEC-8.2.6: `CardProblem`, `UploadedFile`, `Uploaded` and `RecentUpload`
+// below each default their optional fields on absence.
 /// A card the reader could not import, or imported with something to say.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct CardProblem {
@@ -109,17 +115,23 @@ pub struct RecentUpload {
 /// What a prior upload's row says happened to it, in the order the reader
 /// cares about: a run in flight or finished says more than the file's own
 /// `discarded_at`.
+// SPEC-8.1.25: a finished/queued/running run's own status text first, then
+// "Expired" once discarded with no run, then "Not imported yet".
 pub fn upload_status(row: &RecentUpload) -> &'static str {
     match row.latest_run.as_ref().map(|r| r.status.as_str()) {
         Some("completed") => "Imported",
         Some("failed") => "Import failed",
         Some("cancelled") => "Cancelled",
         Some("queued") | Some("running") => "Importing…",
+        // SPEC-8.9.6: no retention of its own; only reads the server's
+        // reported expiry as this status.
         _ if row.discarded_at.is_some() => "Expired",
         _ => "Not imported yet",
     }
 }
 
+// SPEC-8.2.6: unlike the group-import and Google wizards, `group_ids` here is
+// always a non-optional list, never omitted.
 #[derive(Serialize)]
 struct PreviewBody {
     group_ids: Vec<String>,
@@ -131,6 +143,7 @@ struct ImportBody {
 }
 
 /// Where the page is. `Importing` holds the run it polls.
+// SPEC-8.1.25: the four-step flow (Upload, Choose, Review, Importing).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     Upload,
@@ -206,6 +219,8 @@ pub fn file_headline(file: &UploadedFile) -> String {
 }
 
 /// Refuse a file here only when the server certainly would.
+// SPEC-8.4.7/SPEC-8.5.8: a UX shortcut only, not the security or validity
+// boundary; the two fixed messages below are its only refusals.
 pub fn precheck(file_name: &str, size: usize) -> Result<(), String> {
     if size == 0 {
         return Err(format!("{file_name} is empty."));
@@ -224,6 +239,7 @@ pub fn is_finished(status: &str) -> bool {
 }
 
 /// A run's progress in words.
+// SPEC-8.5.8: the fixed text for each run status, in order.
 pub fn run_progress(run: &Run) -> String {
     match run.status.as_str() {
         "queued" => "Waiting to start. The import runs on the server; you can leave this page.".to_string(),
@@ -246,6 +262,7 @@ pub fn run_progress(run: &Run) -> String {
 #[component]
 pub fn VcardImportPage() -> Element {
     use_page_title("Import a vCard file");
+    // SPEC-8.4.1: AdminOnlyNotice instead of the body for a non-admin.
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Import a vCard file" } };
     }
@@ -276,6 +293,9 @@ fn VcardImportBody() -> Element {
     });
 
     // Read the run while it can still change, and stop when it cannot.
+    // SPEC-8.3.2/SPEC-8.6.3: polls every `POLL_MS` while a run is active, and
+    // the `polling` guard keeps a second tick from stacking before this one
+    // has both slept and refreshed the run.
     use_effect(move || {
         let Step::Importing(run_id) = step() else {
             return;
@@ -289,12 +309,14 @@ fn VcardImportBody() -> Element {
             crate::platform::timer::sleep_ms(POLL_MS).await;
             #[cfg(feature = "app")]
             {
+                // SPEC-8.7.8: `GET /integrations/contact-sync/runs/{run_id}`.
                 let path = format!("/integrations/contact-sync/runs/{run_id}");
                 match crate::hooks::fetch::api::get_authed::<Run>(&path).await {
                     Ok(latest) => run.set(Some(latest)),
                     Err(e) => tracing::error!("vCard import run load failed: {e}"),
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = run_id;
             polling.set(false);
@@ -340,9 +362,12 @@ fn VcardImportBody() -> Element {
                 }
                 Err(e) => {
                     tracing::error!("vCard upload failed: {e}");
+                    // SPEC-8.4.7/SPEC-8.5.8: the server's own message for an
+                    // upload `precheck` did not catch.
                     error.set(format!("The file was not accepted: {e}"));
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = (mime, bytes);
             busy.set(false);
@@ -355,6 +380,7 @@ fn VcardImportBody() -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-8.7.8: `POST .../vcard/uploads/{file_id}/preview`.
                 let path = format!("{UPLOADS}/{file_id}/preview");
                 let body = PreviewBody {
                     group_ids: ids.into_iter().collect(),
@@ -368,6 +394,7 @@ fn VcardImportBody() -> Element {
                     });
                 exact.set(Some(result));
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = (file_id, ids);
         });
@@ -379,6 +406,7 @@ fn VcardImportBody() -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-8.7.8: `POST .../vcard/uploads/{file_id}/import`.
                 let path = format!("{UPLOADS}/{file_id}/import");
                 let body = ImportBody {
                     group_ids: ids.into_iter().collect(),
@@ -390,10 +418,12 @@ fn VcardImportBody() -> Element {
                     }
                     Err(e) => {
                         tracing::error!("vCard import did not start: {e}");
+                        // SPEC-8.5.8: failed import start.
                         error.set(format!("The import did not start: {e}"));
                     }
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = (file_id, ids);
             busy.set(false);
@@ -447,7 +477,10 @@ fn VcardImportBody() -> Element {
                         FileField {
                             name: "vcard_file",
                             label: "vCard file",
+                            // SPEC-8.1.25: the Upload step accepts only these.
                             accept: ".vcf,.vcard,text/vcard,text/x-vcard",
+                            // SPEC-8.6.1: disabled for the duration of the
+                            // upload call.
                             disabled: busy() || !can_mutate,
                             help: "A .vcf file of one contact or a whole address book, up to 10 MB. Versions 2.1, 3.0 and 4.0 are all read.",
                             onchange: upload,

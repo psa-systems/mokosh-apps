@@ -1763,6 +1763,485 @@ per-call gating described at SPEC-7.3.3.
   the same tab.
 
 
+## 8. Contact sync and import
+
+Scope: `src/pages/contact_sync_review.rs`, `src/pages/settings_contact_roles.rs`,
+`src/pages/settings_contact_sync.rs`,
+`src/pages/settings_contact_sync_group_import.rs`,
+`src/pages/settings_contact_sync_icloud.rs`,
+`src/pages/settings_contact_sync_import.rs`,
+`src/pages/settings_contact_sync_microsoft.rs`,
+`src/pages/settings_contact_sync_vcard.rs`.
+
+`settings_contact_sync.rs` is the Google Contacts settings page, but it also
+defines the `Overview`/`Connection`/`Run`/`RunFailure` wire types,
+`card_state_of`, `copy_for`'s shared shape, `SyncCadence`, `RunProgress`,
+`FailureList`, `ConnectionFacts` and `disconnect_message_from`, which
+`settings_contact_sync_icloud.rs` and `settings_contact_sync_microsoft.rs`
+reuse for their own provider; a requirement stated once in this section
+against `settings_contact_sync.rs` applies to the iCloud and Microsoft pages
+wherever they call the same function, and is not restated per provider.
+`settings_contact_sync_group_import.rs` is likewise shared between the
+`ICloudContactsImportPage` and `MicrosoftContactsImportPage` routes through
+one `Vendor`-parameterized `GroupImportBody` component.
+
+### 8.1 Interfaces
+
+- **SPEC-8.1.1**: `ContactImportReviewPage` (`src/pages/contact_sync_review.rs`)
+  must render a loading skeleton while the review queue loads, an error
+  banner "Could not load the review queue: {e}" on failure, an empty state
+  titled "Nothing to review" when the queue is empty, and otherwise a count
+  line and one `ReviewCard` per queued record.
+- **SPEC-8.1.2**: `ReviewCard` must render a card heading
+  "{kind} {index+1} of {total}: {name}", a native radio-button fieldset of
+  candidates with an `aria-keyshortcuts`-labelled Link/Create new/Skip
+  action set, and, whenever more than one candidate is present, a hint
+  "{n} Mokosh contacts could be this person. Choose one to link, or create a
+  new contact."; the Link action must be disabled unless a candidate is
+  chosen from a non-empty candidate list.
+- **SPEC-8.1.3**: `ReviewCard`'s keyboard shortcut handler must map a plain
+  (no Ctrl/Alt/Meta) `l`/`L` to Link, `c`/`C` to Create, and `s`/`S` to Skip,
+  case-insensitively, and must ignore the key entirely whenever any
+  modifier is held.
+- **SPEC-8.1.4**: `ReviewCard` must require confirmation ("Skip this
+  contact?", confirm label "Skip it") before sending a Skip answer, and must
+  send a Link or Create answer immediately with no confirmation.
+- **SPEC-8.1.5**: After an answer resolves, `ReviewCard` must remove that
+  record from the local queue without reloading it from the server, move
+  focus to the next remaining record's heading (or to the page title if the
+  queue is now empty), and announce the outcome through a polite live
+  region using one of the fixed templates "Linked {source} to {target}.",
+  "Linked {source}.", "Created a new contact for {source}.", or "Skipped
+  {source}; it will not be imported.", followed by "Nothing left to
+  review.", "1 left to review.", or "{n} left to review."
+- **SPEC-8.1.6**: `ImportReviewLink` must render nothing when the contact
+  sync overview reports zero open reviews, and otherwise a link to
+  `Route::ContactImportReview` reading "Review imports ({waiting})".
+- **SPEC-8.1.7**: `ContactRolesListPage` (`src/pages/settings_contact_roles.rs`)
+  must render a 3-row loading table while the role list loads, an inline
+  error banner "Could not load portal roles. Refresh the page to retry." on
+  a reachable-server failure (or a full unavailable notice when the server
+  is unreachable), an empty-table message "No portal roles yet. Click New
+  role to add one." when the list is empty, and otherwise one row per role
+  with Name, Capabilities, Contacts and a per-row Delete action.
+- **SPEC-8.1.8**: `ContactRoleRow`'s Delete action must be disabled, in this
+  priority order, for a built-in role ("Built-in roles cannot be deleted."),
+  then for a role with at least one assigned contact ("{n} contact(s) hold
+  this role; remove those assignments first.", singular wording for
+  exactly one), then whenever the server is unreachable ("Can't delete
+  while the server is unreachable."), and must otherwise require
+  confirmation (`Delete portal role "{name}"`, "This cannot be undone.")
+  before deleting.
+- **SPEC-8.1.9**: `ContactRoleRow` must truncate a role's capability list to
+  60 characters with a trailing "..." in the table cell, while exposing the
+  untruncated list through the cell's tooltip text, and must render "-" for
+  an empty capability list and for a contact count the server did not
+  return.
+- **SPEC-8.1.10**: `ContactRoleEditPage` must skip the role fetch and start
+  from a blank form when its route id is the literal string `"new"`,
+  otherwise fetching `GET /portal-roles/{id}` and rendering a loading state
+  until both that fetch and the capability-descriptor fetch resolve, an
+  unavailable notice when the server is unreachable, or "Could not load
+  this role. Refresh the page to retry." on any other role-fetch failure.
+- **SPEC-8.1.11**: `ContactRoleEditForm` must render a required name field
+  (max 64 characters) and a capability checkbox per descriptor grouped by
+  the descriptor's `group` in first-appearance order, must render every
+  checkbox disabled for a built-in role while keeping the name field
+  editable, and must show "Built-in role. You can rename it, but its
+  capability set is fixed." in place of "Name the role and pick the
+  capabilities it grants." when the role is built-in.
+- **SPEC-8.1.12**: `GoogleContactsSettingsPage` (`src/pages/settings_contact_sync.rs`)
+  must render `AdminOnlyNotice` for a non-admin and otherwise
+  `GoogleContactsSettingsBody`, which must show a loading skeleton while the
+  overview loads and "Could not load the Google Contacts connection." if
+  the fetch fails or no card state can be derived from it.
+- **SPEC-8.1.13**: `card_state_of` must classify the overview into exactly
+  one `CardState`, checked in this order: the organization switch is off;
+  no deployment client is configured and never connected; never connected
+  but configured; an import run is queued or running; the connection needs
+  reconnecting; the connection is throttled; three or more consecutive
+  failures; the latest finished run failed with at least one failed record;
+  the connection's own `sync_status` is `"failed"`; no groups/labels/folders
+  are selected; otherwise healthy.
+- **SPEC-8.1.14**: `copy_for` must map every `CardState` from SPEC-8.1.13 to
+  a fixed badge text and tone, headline and next-step sentence, and
+  `actions_for` must map the same state to the exact subset of
+  {connect, reconnect, sync_now, disconnect, choose_labels} enabled for it;
+  both functions are defined once in `settings_contact_sync.rs` and reused
+  verbatim by the iCloud and Microsoft pages for their own copy and action
+  sets.
+- **SPEC-8.1.15**: `SyncCadence` must offer the fixed interval list 10, 15,
+  30, 60, 120, 240, 480 and 1440 minutes, injecting the connection's current
+  interval into the list when it is not already one of them, and must make
+  no network call when the chosen value equals the current one.
+- **SPEC-8.1.16**: `RunProgress` must render "{processed} of {total}
+  contacts read ({p}%)" once a run reports a total, or "Reading contacts
+  from {source}..." before one is known; `FailureList` must list failure
+  reasons most-frequent first (ties broken alphabetically) and append
+  "{unlisted} more not listed" whenever the run's failed-record count
+  exceeds the number of failure reasons returned; `ConnectionFacts` must
+  show the account identifier, the last sync time or "Never", a label/group
+  count ("None chosen"/"1 label"/"{n} labels"), and, only when non-zero, a
+  "Deleted in {source}" count suffixed ", kept in Mokosh".
+- **SPEC-8.1.17**: Connecting (on any of the Google, iCloud or Microsoft
+  pages) must show the provider's fixed consent-point list before the
+  connect call fires; turning the organization switch off must show a
+  confirmation naming what is kept before writing it, while turning it on
+  must write the setting immediately with no confirmation. Only
+  `settings_contact_sync.rs` (Google) additionally re-syncs the checkbox
+  from the server when the turn-off confirmation is cancelled, rather
+  than leaving it in its optimistic unticked state; the iCloud and
+  Microsoft pages' cancel path does not do this, tracked as a separate
+  parity defect, not a requirement of this section.
+- **SPEC-8.1.18**: `settings_contact_sync.rs`'s `return_banner` must map a
+  `contact_sync` query parameter of `"connected"`, `"reconnected"`, or
+  `"failed"` to one fixed success or error banner each, and any other value
+  or its absence to no banner.
+- **SPEC-8.1.19**: `GroupImportBody` (`src/pages/settings_contact_sync_group_import.rs`)
+  is one component parameterized by a `Vendor` constant (`ICLOUD` or
+  `MICROSOFT`) that `ICloudContactsImportPage` and
+  `MicrosoftContactsImportPage` each render behind their own admin-only
+  gate, with every vendor-specific string (display name, group noun, hint
+  text) coming from that constant.
+- **SPEC-8.1.20**: `GroupImportBody`'s group list must rename the server's
+  ungrouped bucket to "Contacts in no group" regardless of the name the
+  server sent, and must sort it after every named group, which are
+  themselves sorted case-insensitively by name.
+- **SPEC-8.1.21**: `GroupImportBody` must present a two-step stepper
+  ("1. Choose {groups}", "2. Review and import"); the Review step must show
+  "Working out exactly what this selection would do..." until the
+  exact-selection preview resolves, and its Start action must stay disabled
+  until that preview has resolved successfully.
+- **SPEC-8.1.22**: `ICloudContactsSettingsPage` (`src/pages/settings_contact_sync_icloud.rs`)
+  must render, behind its admin-only gate, an Apple ID field (type email)
+  and an app-specific-password field (type password, with the help text
+  "Not your Apple ID password. Mokosh stores it encrypted and never shows
+  it again.") whenever the card state allows connecting or reconnecting,
+  labelling the submit action "Connect iCloud account" or "Save password"
+  depending on which.
+- **SPEC-8.1.23**: `GoogleContactsImportPage`/`GoogleContactsImportBody`
+  (`src/pages/settings_contact_sync_import.rs`) must list the account's own
+  labels alphabetically (case-insensitively), then the fixed `STARRED` label,
+  then the fixed `EVERYTHING` label last, with `EVERYTHING`'s row name
+  forced to "Every contact in the account" regardless of the server's name
+  for it; its Review step must show exact totals from a server preview and
+  keep Start disabled until that preview succeeds.
+- **SPEC-8.1.24**: `MicrosoftContactsSettingsPage`/`Body` (`src/pages/settings_contact_sync_microsoft.rs`)
+  must reuse `card_state_of`/`actions_for`/`StateIcon` from
+  `settings_contact_sync.rs` (SPEC-8.1.13/8.1.14) and supply its own
+  Microsoft-specific badge/headline/next-step text and its own four-item
+  `CONSENT_POINTS` list, shown only while the state allows connecting or
+  reconnecting.
+- **SPEC-8.1.25**: `VcardImportPage`/`VcardImportBody` (`src/pages/settings_contact_sync_vcard.rs`)
+  must drive a four-step flow (Upload, Choose, Review, Importing) behind an
+  admin-only gate; the Upload step must accept only `.vcf`/`.vcard`
+  (`text/vcard`/`text/x-vcard`) files and must list the account's recent
+  uploads with their own loading, empty and unavailable states; its
+  `upload_status` must report, in order, a finished/queued/running run's
+  own status text, then "Expired" once the upload record is discarded with
+  no run, then "Not imported yet".
+
+### 8.2 Data model
+
+- **SPEC-8.2.1**: `contact_sync_review.rs`'s `ReviewItem`, `SourceSnapshot`,
+  `SnapshotPhone` and `Candidate` must default every field but
+  `ReviewItem.external_id` and `Candidate.contact_id`/`match_reason` on
+  absence, so an older or newer server payload still decodes; its
+  `ResolveBody` must tag the action as `link`, `create` or `skip`
+  (snake_case) and must omit `connection_id` from the request body when it
+  is `None` rather than serializing it as `null`.
+- **SPEC-8.2.2**: `settings_contact_roles.rs`'s `PortalRoleWire` must
+  default `capabilities` and `is_builtin` on absence and must leave
+  `contacts_count` as `None` (rendered "-") rather than `0` when the server
+  omits it, since the server does not currently return it; its
+  `CreateRoleBody` must always send both `name` and `capabilities`, while
+  `UpdateRoleBody` must send each of `name`/`capabilities` only when it
+  changed, and must never send a changed `capabilities` for a built-in
+  role.
+- **SPEC-8.2.3**: `settings_contact_sync.rs`'s `Overview` must default
+  `enabled`/`icloud_enabled`/`microsoft_enabled` to `true` and
+  `configured`/`microsoft_configured` to `false` on absence, and must
+  resolve a named provider's connection through `connection_for(provider)`
+  (`"icloud"`/`"microsoft"` to their own field, anything else including
+  `"google"` to the Google field); its `Connection` must default
+  `sync_interval_minutes` to 60 and every count field
+  (`consecutive_failures`, `open_reviews`, `deleted_in_source`) to 0 on
+  absence; its `Run` must default every count field to 0, `failures` to
+  empty (capped at 50 by the server), and must treat `status` in
+  {`"queued"`, `"running"`} as active.
+- **SPEC-8.2.4**: `settings_contact_sync_group_import.rs`'s `PreviewBody`
+  must omit `group_ids` from the request body for the initial, unfiltered
+  preview rather than sending it as `null`, while its `SelectionBody`
+  always sends a `group_ids` list; its `UNGROUPED` sentinel
+  (`"mokosh:ungrouped"`) identifies the server's placeholder group for
+  records in no group, shared with the vCard wizard's identical sentinel.
+- **SPEC-8.2.5**: `settings_contact_sync_import.rs`'s `Preview`,
+  `PreviewGroup`, `PreviewRecord` and `Totals` must default every field on
+  absence; its fixed label constants `EVERYTHING`
+  (`"contactGroups/myContacts"`) and `STARRED`
+  (`"contactGroups/starred"`) identify Google's built-in labels among the
+  account's own.
+- **SPEC-8.2.6**: `settings_contact_sync_vcard.rs`'s `CardProblem`,
+  `UploadedFile`, `Uploaded` and `RecentUpload` must default their optional
+  fields on absence; unlike the group-import and Google wizards, its
+  `PreviewBody`/`ImportBody` always send a non-optional `group_ids` list.
+- **SPEC-8.2.7**: `settings_contact_sync_microsoft.rs`'s `AuthorizeResponse`
+  must default `authorize_url` to an empty string on absence; its
+  `SettingWrite` (shared shape with the Google and iCloud pages' own
+  setting-write body) carries `category`, `key` and the boolean `value`
+  sent to `PUT /settings`.
+
+### 8.3 Configuration
+
+- **SPEC-8.3.1**: The organization-level enable switch for each provider is
+  a tenant setting under category `"integrations"`, keys
+  `google_contacts_enabled`, `icloud_contacts_enabled` and
+  `microsoft_contacts_enabled`, written through `PUT /settings` and read
+  back from the shared `Overview`.
+- **SPEC-8.3.2**: The Google, iCloud, Microsoft and vCard pages must each
+  poll `GET /integrations/contact-sync` (or, for vCard, the run endpoint)
+  every 3000 milliseconds while their own connection shows an active
+  import, and must stop polling as soon as it is no longer active.
+- **SPEC-8.3.3**: `settings_contact_sync.rs`'s `cadence_minutes` offers the
+  fixed list 10, 15, 30, 60, 120, 240, 480, 1440 minutes (`cadence_label`
+  rendering 1440 as "Once a day", 60 as "Every hour", another multiple of
+  60 as "Every {n} hours", and anything else as "Every {m} minutes"); the
+  server accepts any value from 5 to 1440 inclusive.
+- **SPEC-8.3.4**: `settings_contact_sync.rs`'s `FAILING_AFTER` constant (3)
+  is the consecutive-failure count at which `card_state_of` reports
+  `FailingRepeatedly` (SPEC-8.1.13); per the comment at
+  `settings_contact_sync.rs:61`, the server sends its own
+  failing-repeatedly notification at the same count, a claim this client
+  file states but does not itself enforce.
+- **SPEC-8.3.5**: `settings_contact_sync_vcard.rs`'s `MAX_BYTES` constant
+  (10 MiB) is a client-side mirror of the server's own upload size limit,
+  checked only to skip a doomed upload before sending it; the server's
+  limit, not this constant, is authoritative.
+- **SPEC-8.3.6**: Every network call on every page in this scope must
+  compile to a no-op under a build with neither the `app` nor the `web`
+  feature enabled, consistent with the pattern cited at SPEC-6.3.6.
+
+### 8.4 Security
+
+- **SPEC-8.4.1**: Every settings and import page in this scope except
+  `ContactRolesListPage` and `ContactRoleEditPage` (`GoogleContactsSettingsPage`,
+  `ICloudContactsSettingsPage`, `MicrosoftContactsSettingsPage`,
+  `GoogleContactsImportPage`, `ICloudContactsImportPage`,
+  `MicrosoftContactsImportPage`, `VcardImportPage`) must render
+  `AdminOnlyNotice` instead of its body for a non-admin; this client-side
+  gate is not itself sufficient authorization, and every mutating call
+  these pages make must rely on the server's own admin check, consistent
+  with SPEC-6.4.14. `ContactRolesListPage` and `ContactRoleEditPage` render
+  no such in-page gate even though their Settings-surface registration is
+  staff-admin-only (`SurfaceVisibility::StaffAdmin` in `settings.rs`), unlike
+  every other page in this list; this gap is tracked as a separate defect,
+  not a requirement of this section.
+- **SPEC-8.4.2**: `ContactRoleEditForm`'s capability checkboxes must be
+  rendered disabled for a built-in role and its submit must never send a
+  changed `capabilities` value for one (SPEC-8.2.2), as a client-side
+  mirror of the server's own read-only enforcement of a built-in role's
+  capability set.
+- **SPEC-8.4.3**: `ContactRoleRow`'s delete action must only fire from the
+  confirm dialog's own confirm action, never from the row's bare click
+  handler, and the dialog itself must be reachable only once the three
+  disable conditions in SPEC-8.1.8 all pass.
+- **SPEC-8.4.4**: Connecting a Google, iCloud or Microsoft account must
+  show that provider's fixed consent-point list (naming what is read, that
+  nothing is written back, where it is stored, and how to revoke it)
+  before the authorize or connect call fires; the user cannot bypass this
+  dialog to connect directly.
+- **SPEC-8.4.5**: `settings_contact_sync_icloud.rs` must clear its
+  `app_password` form field to empty immediately after a successful
+  connect call, so the submitted password is never redisplayed.
+- **SPEC-8.4.6**: `settings_contact_sync_group_import.rs` must append
+  `?provider={vendor.provider}` to every call it makes on the shared
+  preview/selection/runs endpoints, so a Microsoft group import can never
+  be mistaken by the server for a Google one through an unqualified path.
+- **SPEC-8.4.7**: `settings_contact_sync_vcard.rs`'s client-side `precheck`
+  (empty file, oversized file) is a UX shortcut only, not the security or
+  validity boundary; it must refuse a file only when the server certainly
+  would, and the server's own message is what is shown when the server
+  itself refuses an upload `precheck` did not catch.
+
+### 8.5 Error handling and observability
+
+- **SPEC-8.5.1**: `contact_sync_review.rs` must log an error and show
+  "Could not load the review queue: {e}" when the queue fails to load, and
+  must show "Could not answer {name}: {e}" scoped to that record when an
+  answer fails.
+- **SPEC-8.5.2**: `settings_contact_roles.rs` must log an error and show
+  "Could not load portal roles. Refresh the page to retry." on a list-load
+  failure, and must log a separate error and render the edit form with an
+  empty capability list ("No capabilities available. The server did not
+  return any capability descriptors.", rather than blocking the form)
+  when the capability-descriptor fetch fails.
+- **SPEC-8.5.3**: `ContactRoleEditForm` must reject an empty (after
+  trimming) name with "Name is required.", a name over 64 characters with
+  "Name must be 64 characters or fewer.", and, only when creating a new
+  role, zero selected capabilities with "Pick at least one capability.";
+  a save failure must show the server's own message when the server
+  returned a non-empty one, otherwise a generic fallback.
+- **SPEC-8.5.4**: `settings_contact_sync.rs` must log an error and show
+  "Could not load the Google Contacts connection." on an overview-load
+  failure; a failed connect attempt must show "Could not start the
+  connection: {e}" (or, on a non-wasm build whose authorize call
+  succeeded, an informational "Open this address in a browser to connect:
+  {url}" reusing the same banner); a failed sync-now or disconnect must
+  show "{action}: {e}" ("Could not start an import"/"Could not
+  disconnect"); a failed cadence change must show "Could not change how
+  often this syncs: {e}"; a failed enable/disable write must show "Could
+  not change the setting: {e}".
+- **SPEC-8.5.5**: `settings_contact_sync_icloud.rs` and
+  `settings_contact_sync_microsoft.rs` must apply the same error-message
+  shapes as SPEC-8.5.4 for their own sync-now, disconnect and
+  enable/disable actions, each naming its own provider. For a failed
+  connect attempt, `settings_contact_sync_microsoft.rs` must additionally
+  match SPEC-8.5.4's connect shape ("Could not start the connection: {e}",
+  or on a non-wasm build "Open this to continue: {url}" once the
+  authorize call itself succeeded, or "Could not open Microsoft's
+  sign-in page: {e}" when the authorize call itself fails), while
+  `settings_contact_sync_icloud.rs` must instead show the connect
+  endpoint's own error text verbatim with no added wrapper, since its
+  connect flow is a direct credential submission rather than an
+  authorize-URL redirect.
+- **SPEC-8.5.6**: `settings_contact_sync_group_import.rs` must show "Could
+  not read the {vendor.display} account: {e}" when the initial group
+  preview fails, "Could not save the groups: {e}" when the selection save
+  fails (stopping before starting the run), and "The groups are saved, but
+  the import did not start: {e}" when the run-start call fails after the
+  selection was saved.
+- **SPEC-8.5.7**: `settings_contact_sync_import.rs` must show "Could not
+  read the Google account: {e}" on a load failure, "Could not save the
+  labels: {e}" on a selection-save failure, and "The labels are saved, but
+  the import did not start: {e}" on a run-start failure after a saved
+  selection; its `summary` must render "No contacts carry the chosen
+  labels, so this import would change nothing." when the selection
+  resolves to zero counted contacts and no excluded ones.
+- **SPEC-8.5.8**: `settings_contact_sync_vcard.rs`'s `precheck` must reject
+  an empty file with "{file_name} is empty." and a file over 10 MiB with
+  "{file_name} is larger than 10 MB, the most one import accepts. Export
+  the contacts in smaller groups and import each file."; an upload the
+  server rejects must show "The file was not accepted: {e}"; a failed
+  import start must show "The import did not start: {e}"; its
+  `run_progress` must render, by run status, "Waiting to start. The import
+  runs on the server; you can leave this page." (queued), "Importing:
+  {processed} of {total} contacts read." or "Importing: reading the
+  file." (running), a fixed created/linked/updated/queued-for-review
+  summary (completed), "The import was cancelled. What it had already
+  written is kept." (cancelled), or the run's own error text (any other
+  failure).
+- **SPEC-8.5.9**: `settings_contact_sync_group_import.rs`'s preview-load
+  failure must be logged with a message naming the vendor whose preview
+  failed, not a vendor fixed at compile time; a code-versus-intent
+  contradiction at `settings_contact_sync_group_import.rs:191`, where the
+  log message is hardcoded to say "icloud" even while importing for
+  Microsoft, is tracked as a separate defect (see the PR body) and is not
+  itself a requirement of this section.
+
+### 8.6 Concurrency and ordering
+
+- **SPEC-8.6.1**: Every mutating action on every page in this scope must
+  disable its own control (and, where one page exposes several concurrent
+  actions, every other mutating control on the page) for the duration of
+  that action, so a second submit cannot be issued while the first is still
+  in flight.
+- **SPEC-8.6.2**: `ContactRoleRow`'s delete handler must additionally check
+  its own in-flight flag and return immediately if a delete for that row
+  is already running, rather than relying on the disabled button alone.
+- **SPEC-8.6.3**: The Google, iCloud, Microsoft and vCard pages' poll loops
+  (SPEC-8.3.2) must each guard against stacking more than one in-flight
+  poll: a loop must not schedule its next tick until the previous one has
+  both slept and refreshed its resource.
+- **SPEC-8.6.4**: `settings_contact_sync_group_import.rs` and
+  `settings_contact_sync_import.rs` must each perform the selection write
+  before the run-start call, and must abort before starting the run
+  whenever the selection write fails.
+- **SPEC-8.6.5**: `settings_contact_sync_group_import.rs` and
+  `settings_contact_sync_import.rs` must each seed their local selection
+  state from the saved overview connection at most once, on first load,
+  never overwriting an in-progress local choice on a later overview
+  refresh.
+- **SPEC-8.6.6**: `settings_contact_sync.rs`'s `confirm_off` cancel path
+  must restart the overview resource to resync the enable checkbox's
+  visual state, since the checkbox optimistically unticks before the
+  confirmation is answered.
+
+### 8.7 Integrations
+
+- **SPEC-8.7.1**: `contact_sync_review.rs` must call
+  `GET /integrations/contact-sync/review-queue` and
+  `POST /integrations/contact-sync/review-queue/resolve`.
+- **SPEC-8.7.2**: `settings_contact_roles.rs` must call `GET /portal-roles`,
+  `GET /portal-roles/{id}`, `POST /portal-roles`, `PUT /portal-roles/{id}`,
+  `DELETE /portal-roles/{id}` and `GET /portal-roles/capabilities`.
+- **SPEC-8.7.3**: `settings_contact_sync.rs` must call
+  `GET /integrations/contact-sync`,
+  `POST /integrations/contact-sync/google/authorize`,
+  `POST /integrations/contact-sync/google/disconnect`,
+  `POST /integrations/contact-sync/runs`,
+  `PUT /integrations/contact-sync/schedule?provider={provider}` and
+  `PUT /settings`.
+- **SPEC-8.7.4**: `settings_contact_sync_icloud.rs` must call
+  `GET /integrations/contact-sync`,
+  `POST /integrations/contact-sync/icloud/connect`,
+  `POST /integrations/contact-sync/runs?provider=icloud`,
+  `POST /integrations/contact-sync/icloud/disconnect` and `PUT /settings`.
+- **SPEC-8.7.5**: `settings_contact_sync_microsoft.rs` must call
+  `GET /integrations/contact-sync`,
+  `POST /integrations/contact-sync/microsoft/authorize`,
+  `POST /integrations/contact-sync/runs?provider=microsoft`,
+  `POST /integrations/contact-sync/microsoft/disconnect` and
+  `PUT /settings`.
+- **SPEC-8.7.6**: `settings_contact_sync_group_import.rs` must call
+  `POST /integrations/contact-sync/preview?provider={provider}`,
+  `PUT /integrations/contact-sync/selection?provider={provider}`,
+  `POST /integrations/contact-sync/runs?provider={provider}` and
+  `GET /integrations/contact-sync`.
+- **SPEC-8.7.7**: `settings_contact_sync_import.rs` must call
+  `POST /integrations/contact-sync/preview`,
+  `PUT /integrations/contact-sync/selection` and
+  `POST /integrations/contact-sync/runs` for the Google account, with no
+  `provider` parameter (the server's default provider for this family of
+  calls is Google).
+- **SPEC-8.7.8**: `settings_contact_sync_vcard.rs` must call
+  `POST /integrations/contact-sync/vcard/uploads`,
+  `GET /integrations/contact-sync/vcard/uploads`,
+  `POST /integrations/contact-sync/vcard/uploads/{file_id}/preview`,
+  `POST /integrations/contact-sync/vcard/uploads/{file_id}/import` and
+  `GET /integrations/contact-sync/runs/{run_id}`.
+
+### 8.8 Build and deployment
+
+None of the files in this section's scope add a build or packaging step of
+their own; they compile under the same `app`/`web` feature gating
+`src/main.rs` and `Cargo.toml` define (see SPEC-1.3.1), consistent with the
+pattern cited at SPEC-6.3.6 and restated as SPEC-8.3.6 for this scope.
+
+### 8.9 Retention and cleanup
+
+- **SPEC-8.9.1**: A Skip answer in `contact_sync_review.rs` is permanent:
+  the record is never imported by any later sync or file import and is
+  never offered to a reviewer again; Link and Create likewise never undo.
+- **SPEC-8.9.2**: `settings_contact_roles.rs`'s role delete is a hard,
+  non-reversible delete with no soft-delete path, and is reachable only
+  once none of SPEC-8.1.8's three disable conditions apply.
+- **SPEC-8.9.3**: Disconnecting a Google, iCloud or Microsoft account must
+  remove only the stored provider credential; every contact already
+  imported stays as a local record, and an in-progress import run stops.
+- **SPEC-8.9.4**: Turning a provider's organization switch off must keep
+  its connection, every already-imported contact and its review queue
+  intact, resuming from where it stopped when the switch is turned back
+  on.
+- **SPEC-8.9.5**: A contact deleted at the source (Google, iCloud or
+  Microsoft) must be kept as a local record in Mokosh; `ConnectionFacts`
+  (SPEC-8.1.16) must report that count rather than deleting the record.
+- **SPEC-8.9.6**: This scope implements no retention or expiry of an
+  uploaded vCard file; `settings_contact_sync_vcard.rs` only reads and
+  displays a file's server-reported expiry (`discarded_at`) as its
+  "Expired" status (SPEC-8.1.25). The file's retention period itself is a
+  server contract this page cites in its own help text, not a requirement
+  this client enforces.
+
 ## 12. Knowledge base
 
 Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
