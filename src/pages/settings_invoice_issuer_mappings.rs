@@ -465,7 +465,7 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
                     }
                 },
             }
-            // SPEC-10.57.5: Xero renders neither this table nor Products.
+            // SPEC-10.57.5: Xero renders neither this table nor the item one.
             if issuer.provider == QUICKBOOKS.provider {
                 match expense_account_rows {
                     None => rsx! { crate::components::DetailSkeleton {} },
