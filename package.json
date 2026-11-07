@@ -12,7 +12,7 @@
     "@tailwindcss/cli": "^4.3.3",
     "@tailwindcss/forms": "^0.5.11",
     "@tailwindcss/typography": "^0.5.20",
-    "concurrently": "^8.2.2",
+    "concurrently": "^10.0.6",
     "tailwindcss": "^4.3.3"
   }
 }
