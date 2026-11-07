@@ -1884,12 +1884,11 @@ one `Vendor`-parameterized `GroupImportBody` component.
   pages) must show the provider's fixed consent-point list before the
   connect call fires; turning the organization switch off must show a
   confirmation naming what is kept before writing it, while turning it on
-  must write the setting immediately with no confirmation. Only
-  `settings_contact_sync.rs` (Google) additionally re-syncs the checkbox
-  from the server when the turn-off confirmation is cancelled, rather
-  than leaving it in its optimistic unticked state; the iCloud and
-  Microsoft pages' cancel path does not do this, tracked as a separate
-  parity defect, not a requirement of this section.
+  must write the setting immediately with no confirmation. The Google
+  (`settings_contact_sync.rs`) and iCloud pages additionally re-sync the
+  checkbox from the server when the turn-off confirmation is cancelled,
+  rather than leaving it in its optimistic unticked state; the Microsoft
+  page's cancel path is the one that still does not do this.
 - **SPEC-8.1.18**: `settings_contact_sync.rs`'s `return_banner` must map a
   `contact_sync` query parameter of `"connected"`, `"reconnected"`, or
   `"failed"` to one fixed success or error banner each, and any other value
