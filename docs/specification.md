@@ -1098,10 +1098,7 @@ storage keys listed under Security and Retention and cleanup below.
   `contact_portal/portal_id_login.rs`) must clear any session of the
   other plane (staff clears a contact session, contact clears a staff
   session) before writing the new plane's token, so a browser never
-  holds a live staff and a live contact session together. `create_org.rs`
-  and `pick_tenant.rs` write a staff token without this clear; that gap
-  is tracked as MAPPS-1199 and is not itself a
-  requirement of this section.
+  holds a live staff and a live contact session together.
 - **SPEC-6.4.2**: `login.rs`'s platform-login-first attempt must be
   skipped whenever an MFA or approval code is already present, or
   whenever the current host resolves to a tenant subdomain, and its
@@ -2023,19 +2020,15 @@ one `Vendor`-parameterized `GroupImportBody` component.
 
 ### 8.4 Security
 
-- **SPEC-8.4.1**: Every settings and import page in this scope except
-  `ContactRolesListPage` and `ContactRoleEditPage` (`GoogleContactsSettingsPage`,
-  `ICloudContactsSettingsPage`, `MicrosoftContactsSettingsPage`,
-  `GoogleContactsImportPage`, `ICloudContactsImportPage`,
-  `MicrosoftContactsImportPage`, `VcardImportPage`) must render
-  `AdminOnlyNotice` instead of its body for a non-admin; this client-side
-  gate is not itself sufficient authorization, and every mutating call
-  these pages make must rely on the server's own admin check, consistent
-  with SPEC-6.4.14. `ContactRolesListPage` and `ContactRoleEditPage` render
-  no such in-page gate even though their Settings-surface registration is
-  staff-admin-only (`SurfaceVisibility::StaffAdmin` in `settings.rs`), unlike
-  every other page in this list; this gap is tracked as a separate defect,
-  not a requirement of this section.
+- **SPEC-8.4.1**: Every settings and import page in this scope
+  (`GoogleContactsSettingsPage`, `ICloudContactsSettingsPage`,
+  `MicrosoftContactsSettingsPage`, `GoogleContactsImportPage`,
+  `ICloudContactsImportPage`, `MicrosoftContactsImportPage`,
+  `VcardImportPage`, `ContactRolesListPage`, `ContactRoleEditPage`) must
+  render `AdminOnlyNotice` instead of its body for a non-admin; this
+  client-side gate is not itself sufficient authorization, and every
+  mutating call these pages make must rely on the server's own admin
+  check, consistent with SPEC-6.4.14.
 - **SPEC-8.4.2**: `ContactRoleEditForm`'s capability checkboxes must be
   rendered disabled for a built-in role and its submit must never send a
   changed `capabilities` value for one (SPEC-8.2.2), as a client-side
@@ -2132,11 +2125,8 @@ one `Vendor`-parameterized `GroupImportBody` component.
   failure).
 - **SPEC-8.5.9**: `settings_contact_sync_group_import.rs`'s preview-load
   failure must be logged with a message naming the vendor whose preview
-  failed, not a vendor fixed at compile time; a code-versus-intent
-  contradiction at `settings_contact_sync_group_import.rs:191`, where the
-  log message is hardcoded to say "icloud" even while importing for
-  Microsoft, is tracked as a separate defect (see the PR body) and is not
-  itself a requirement of this section.
+  failed, not a vendor fixed at compile time; the log message names the
+  vendor via `vendor.provider`.
 
 ### 8.6 Concurrency and ordering
 
@@ -2973,12 +2963,8 @@ status/type vocabularies below.
   `ProjectDetailPage` (`src/pages/projects.rs:1538-1548`) must resolve
   an id-only project manager against the loaded user roster, the same
   way the task-assignee fallback at `src/pages/projects.rs:2242-2247`
-  does; the code instead passes an empty roster to that lookup, so a
-  project manager who has no server-sent name but whose id the roster
-  can resolve is shown "Unknown" instead of their name. The code is
-  wrong here; this requirement states the intended behavior, and the
-  gap is tracked as a separate defect (see the PR body), not fixed in
-  this change.
+  does; the fallback resolves through `user_name_with_tooltip_prefer`
+  with the loaded roster, matching the task-assignee fallback.
 
 ### 13.6 Concurrency and ordering
 
@@ -3082,7 +3068,7 @@ status/type vocabularies below.
   `CompanyPicker`, `use_user_roster` and `use_task_statuses` hooks, and
   must prefer each row's server-sent display name over a client-side
   roster join wherever the server sends one (see SPEC-13.5.21 for the
-  one site that does not).
+  project-manager fallback).
 
 ### 13.8 Build and deployment
 
