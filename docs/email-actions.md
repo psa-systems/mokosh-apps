@@ -107,8 +107,8 @@ the server records `is_email_sent` on the note row, and the journal line reads
 
 The invoice entry is the only one not keyed on a URL. The send is `PUT /invoices/{id}`
 with `{"status": "sent"}`, a path shared with Edit, Void and the invoice delete
-in `src/pages/contacts.rs`, and matching that shape flags two files that send
-nothing (`src/pages/contacts.rs` and `src/modules/billing/routes.rs`). The guard
+in `src/pages/contacts.rs`, and matching that shape flags one file that sends
+nothing (`src/pages/contacts.rs`). The guard
 keys on `invoice_send_path(` instead, a helper that exists because the call
 sends mail. A send whose endpoint is not dedicated needs a symbol like that.
 
