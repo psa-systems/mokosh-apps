@@ -89,9 +89,8 @@ manifests (`build.rs`, `Cargo.toml`, `Dioxus.toml`, `package.json`,
 `index.html`, `input.css`, `renovate.json`, `.env.example`, `.gitmodules`,
 `.dockerignore`, `.gitignore`, `justfile`), the container and compose
 definitions (`Dockerfile`, `compose.yml`, `compose.dev-sso.yml`,
-`config/variables.toml`, and every file under `oci-build/`), the CI
-workflows under `.forgejo/workflows/`, and the dev container definition under
-`.devcontainer/`.
+`config/variables.toml`, and every file under `oci-build/`), and the CI
+workflows under `.forgejo/workflows/`.
 
 ### 1.1 Interfaces
 
@@ -196,8 +195,6 @@ format owned by this scope is the operator-facing configuration catalog:
 - **SPEC-1.3.12**: `renovate.json` must declare which dependency managers are
   enabled and how their updates are grouped, and must pin `getrandom` below
   `0.5` until the ecosystem's rand-core transition lands.
-- **SPEC-1.3.13**: `.devcontainer/devcontainer.json` must pin an exact base
-  image and declare the ports the in-container dev server needs forwarded.
 - **SPEC-1.3.14**: `src/branding.rs` must be the only reader of the
   `brand_name`, `brand_logo_url` and `brand_hero_url` runtime configuration
   fields, trimming a configured value and falling back to the built-in
