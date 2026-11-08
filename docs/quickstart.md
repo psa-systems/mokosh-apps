@@ -89,7 +89,7 @@ either profile, and `just restart` is `down` followed by `dev-sso`.
 
 | Port | Where | What |
 | --- | --- | --- |
-| 4300 | [`Dioxus.toml`](../Dioxus.toml) | The `[server]` port in the `dx` runtime server config. |
+| 4301 | [`Dioxus.toml`](../Dioxus.toml) | The `[server]` port in the `dx` runtime server config. |
 | 4301 | [`compose.yml`](../compose.yml) | The `dx serve` dev port, published as `${HOST_IP}:4301` and `127.0.0.1:4301`. |
 
 `Dioxus.toml` also proxies `/api/*` to `http://server:8080/api/`, the
