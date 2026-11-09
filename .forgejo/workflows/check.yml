@@ -186,7 +186,7 @@ jobs:
         # Version-keyed tarball cache. A hit skips the ~5s download; a
         # version bump misses the key, downloads once, and the sha256 check
         # below is the safety net if a wrong-version file comes back.
-        uses: https://github.com/actions/cache@v4
+        uses: https://github.com/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /tmp/cargo-audit.tgz
           key: cargo-audit-tarball-0.22.2-linux
