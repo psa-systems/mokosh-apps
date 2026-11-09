@@ -434,9 +434,9 @@ those files' own behavior belongs to the sections that own them.
   exit 0 only if every case behaved as expected, exit nonzero otherwise; the
   script must not scan the real tree in this mode.
   `check-company-id-copy.sh`, `check-auth-error-prose.sh`,
-  `check-runner-labels.sh`, `check-cancel-routes.sh`, and
-  `check-csp-host-derived-origin.sh` carry no `--self-test` mode (the first
-  three have no synthetic fixture to construct; `check-cancel-routes.sh`'s
+  `check-cancel-routes.sh`, and `check-csp-host-derived-origin.sh` carry
+  no `--self-test` mode (the first two have no synthetic fixture to
+  construct; `check-cancel-routes.sh`'s
   pinned-list diff and `check-csp-host-derived-origin.sh`'s three live HTTP
   scenarios run against real source on every invocation, which is their own
   test of the guard).
@@ -605,9 +605,12 @@ those files' own behavior belongs to the sections that own them.
   occur rather than stopping at the first.
 - **SPEC-2.5.4**: `check-runner-labels.sh` must independently check, and
   report every failing one of, three conditions on `.forgejo/workflows/*.yml`:
-  the Rust-build job in `check.yml` requesting the heavy runner label, no
-  workflow referencing a retired `*_LATEST` runner label, and `check.yml`
-  not installing OS packages at run time.
+  the Rust-build job in `check.yml` (the job named `cargo`) requesting the
+  heavy runner label in its own `runs-on`, not merely the label appearing
+  somewhere in the file; no workflow referencing a retired `*_LATEST`
+  runner label; and `check.yml` not installing OS packages at run time. A
+  missing `check.yml`, or no `cargo` job with a `runs-on`, must exit 2
+  (SPEC-2.5.1).
 - **SPEC-2.5.5**: `check-cancel-routes.sh` must fail if the sorted set of
   `Link`-rendered Cancel destinations across `src/pages/*.rs` differs at all
   from its pinned expected set, printing a diff of expected versus actual so

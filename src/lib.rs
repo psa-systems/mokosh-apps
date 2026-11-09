@@ -3682,3 +3682,56 @@ mod url_token_strip {
         }
     }
 }
+
+/// SPEC-1.8.1 / PMS-884: `dx` substitutes its own feature list for this
+/// crate's defaults, so every invocation that targets the browser passes
+/// `--features web`, or the bundle compiles and then panics at launch. The
+/// compile guard in `main.rs` names the Dockerfiles and the `build` recipe;
+/// `package.json`'s scripts were the copy nobody checked (MAPPS-1224).
+#[cfg(test)]
+mod browser_builds_pass_the_web_feature {
+    /// Every line of `src` that runs `dx build` or `dx serve` for the browser.
+    fn browser_dx_lines(src: &str) -> Vec<&str> {
+        src.lines()
+            .filter(|l| runs_dx(l))
+            .filter(|l| !l.trim_start().starts_with('#') && !l.contains("--platform desktop"))
+            .filter(|l| !l.contains("print"))
+            .collect()
+    }
+
+    /// `dx build` or `dx serve` as a command, not inside `docker buildx build`.
+    fn runs_dx(line: &str) -> bool {
+        ["dx build", "dx serve"].iter().any(|cmd| {
+            line.match_indices(cmd)
+                .any(|(i, _)| i == 0 || !line.as_bytes()[i - 1].is_ascii_alphanumeric())
+        })
+    }
+
+    #[test]
+    fn every_browser_dx_invocation_names_the_web_feature() {
+        let sources = [
+            ("package.json", include_str!("../package.json")),
+            ("justfile", include_str!("../justfile")),
+            ("Dockerfile", include_str!("../Dockerfile")),
+            (
+                "oci-build/Dockerfile",
+                include_str!("../oci-build/Dockerfile"),
+            ),
+        ];
+        let mut seen = 0;
+        for (name, src) in sources {
+            for line in browser_dx_lines(src) {
+                seen += 1;
+                assert!(
+                    line.contains("--features web"),
+                    "{name}: `{}` does not pass --features web",
+                    line.trim()
+                );
+            }
+        }
+        assert!(
+            seen >= 5,
+            "found only {seen} dx invocations; the scan lost its targets"
+        );
+    }
+}
