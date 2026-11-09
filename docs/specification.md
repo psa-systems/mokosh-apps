@@ -2366,13 +2366,19 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
   paired with its predecessor; this scope persists no server schema
   of its own, only wire DTOs already owned by `crate::modules::kb`.
 - **SPEC-12.2.4**: `place` (`kb_inline.rs:28-50`) must consider only
-  root, non-deleted comments as anchor owners, must silently skip a
-  root comment with no anchor or an unparsable anchor, and must
+  root, non-deleted comments as anchor owners, must skip a root
+  comment with no anchor or an unparsable anchor (neither marked nor
+  an orphan), and must
   classify an anchor that fails to resolve against the current
   rendered text as an orphan (its comment id collected) distinct from
   one that resolves; resolved ranges must be sorted by start offset
   before overlaps are split, and the resulting fragments converted
-  1:1 to `MarkSpec { start, end, ids }` in document order.
+  1:1 to `MarkSpec { start, end, ids }` in document order. An
+  unparsable anchor must not be silent: `InlineComments` logs each
+  live root `unreadable_anchors` names at warn with its comment id,
+  once per change of body or anchors, and `CommentThread` logs a
+  thread whose anchor `anchor_unreadable` rejects once per mount, since
+  it shows no quote.
 - **SPEC-12.2.5**: `orphaned_by_edit` (`kb_inline.rs:56-68`) must
   report exactly the quoted text of a root, non-deleted, anchored
   comment whose anchor resolved against the rendered text before an
@@ -2492,7 +2498,13 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 - **SPEC-12.5.6**: A failed comments fetch must render "Could not load
   the comments." alongside, not instead of, the version-history half
   of the stream, which continues to render from whatever versions did
-  load (`kb_activity.rs:176,263-265`). Resolve/unresolve failure must
+  load (`kb_activity.rs:176,263-265`). Likewise a failed versions
+  fetch must render "Could not load the history." on the History and
+  All tabs while the comments keep rendering. An empty stream must not
+  show its empty-state text ("No history to show." and the others)
+  when a slice that tab shows failed to load (`empty_state`). A version
+  with no `created_at` sorts first and shows "-"; its id must be
+  logged at warn once per load (`undated_versions`). Resolve/unresolve failure must
   render "Could not {verb} the thread: {message}"; comment edit
   failure must render "Could not save the comment: {e}"; comment
   delete failure must render inside the confirm dialog itself, not the
@@ -2503,10 +2515,16 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
   longer match any loaded comment, it must render "These comments are
   no longer in the list ({n})." instead of an empty list
   (`kb_inline.rs:214-216`). If `anchor_dom::text_of` resolves to
-  `None` (the body element is not yet in the DOM), both the placement
-  effect and the selection-capture handler must return without
-  marking, logging, or showing an error
-  (`kb_inline.rs:117-119,184-186`).
+  `None` (the body element is not yet in the DOM), the placement
+  effect must return without marking, logging, or showing an error
+  (`kb_inline.rs:117-119`). The "Comment on selection" handler answers
+  a click, so it must instead log at warn and show "The article text
+  is not ready yet. Try again in a moment." With no selection it shows
+  "Select some of the article text first, then press this."; with a
+  selection `Anchor::capture` cannot anchor (only whitespace, or past
+  the end of the text) it must log the range and the text length at
+  warn and show "That selection cannot be attached to the article.
+  Select a few words of the text instead." (`capture_selection`).
 
 ### 12.6 Concurrency and ordering
 
