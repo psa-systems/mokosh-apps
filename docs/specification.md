@@ -2297,7 +2297,9 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
   `/kb/articles/{id}/helpful` or `/kb/articles/{id}/not_helpful` and
   update its counts and `my_vote` from the response; both buttons must
   be disabled while a vote is in flight or `can_mutate` is false
-  (`knowledge_base.rs:5054-5150`).
+  (`knowledge_base.rs:5054-5150`). A failed vote POST must leave the
+  counts and `my_vote` unchanged, log at error with the article id, and
+  toast "Your vote was not recorded: {message}" (`vote_failed`).
 - **SPEC-12.1.9**: `ArticleToc` must render nothing for an article
   with no headings, and otherwise a nested "On this page" list whose
   links intercept the click (no router hash navigation), scroll the
@@ -2366,13 +2368,19 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
   paired with its predecessor; this scope persists no server schema
   of its own, only wire DTOs already owned by `crate::modules::kb`.
 - **SPEC-12.2.4**: `place` (`kb_inline.rs:28-50`) must consider only
-  root, non-deleted comments as anchor owners, must silently skip a
-  root comment with no anchor or an unparsable anchor, and must
+  root, non-deleted comments as anchor owners, must skip a root
+  comment with no anchor or an unparsable anchor (neither marked nor
+  an orphan), and must
   classify an anchor that fails to resolve against the current
   rendered text as an orphan (its comment id collected) distinct from
   one that resolves; resolved ranges must be sorted by start offset
   before overlaps are split, and the resulting fragments converted
-  1:1 to `MarkSpec { start, end, ids }` in document order.
+  1:1 to `MarkSpec { start, end, ids }` in document order. An
+  unparsable anchor must not be silent: `InlineComments` logs each
+  live root `unreadable_anchors` names at warn with its comment id,
+  once per change of body or anchors, and `CommentThread` logs a
+  thread whose anchor `anchor_unreadable` rejects once per mount, since
+  it shows no quote.
 - **SPEC-12.2.5**: `orphaned_by_edit` (`kb_inline.rs:56-68`) must
   report exactly the quoted text of a root, non-deleted, anchored
   comment whose anchor resolved against the rendered text before an
@@ -2470,7 +2478,11 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 - **SPEC-12.5.2**: The task-list toggle PUT must, on failure, toast
   "Could not save that change: {message}" and re-fetch the article to
   put the checkbox back, because the DOM has already flipped the box
-  before the request resolves (`knowledge_base.rs:2196-2209`).
+  before the request resolves (`knowledge_base.rs:2196-2209`). A toggle
+  whose index `toggle_task` cannot find must not PUT; it must log at
+  warn with the index and article id, toast "Could not apply that
+  change: the checklist has changed. Try again.", and re-fetch the
+  article the same way.
 - **SPEC-12.5.3**: A 422 on article save whose field name matches
   `template_variables[N]`/`template_variables.N` (`parse_tplvar_index`,
   `knowledge_base.rs:507-519`) must route to that row's inline error
@@ -2492,7 +2504,13 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 - **SPEC-12.5.6**: A failed comments fetch must render "Could not load
   the comments." alongside, not instead of, the version-history half
   of the stream, which continues to render from whatever versions did
-  load (`kb_activity.rs:176,263-265`). Resolve/unresolve failure must
+  load (`kb_activity.rs:176,263-265`). Likewise a failed versions
+  fetch must render "Could not load the history." on the History and
+  All tabs while the comments keep rendering. An empty stream must not
+  show its empty-state text ("No history to show." and the others)
+  when a slice that tab shows failed to load (`empty_state`). A version
+  with no `created_at` sorts first and shows "-"; its id must be
+  logged at warn once per load (`undated_versions`). Resolve/unresolve failure must
   render "Could not {verb} the thread: {message}"; comment edit
   failure must render "Could not save the comment: {e}"; comment
   delete failure must render inside the confirm dialog itself, not the
@@ -2502,18 +2520,49 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 - **SPEC-12.5.7**: If the inline-comment dialog's `open_at` ids no
   longer match any loaded comment, it must render "These comments are
   no longer in the list ({n})." instead of an empty list
-  (`kb_inline.rs:214-216`). If `anchor_dom::text_of` resolves to
-  `None` (the body element is not yet in the DOM), both the placement
-  effect and the selection-capture handler must return without
-  marking, logging, or showing an error
+  (`kb_inline.rs:214-216`). With no selection the "Comment on
+  selection" handler shows "Select some of the article text first,
+  then press this."; with a selection `Anchor::capture` cannot anchor
+  (only whitespace, or past the end of the text) it must log the range
+  and the text length at warn and show "That selection cannot be
+  attached to the article. Select a few words of the text instead."
+  (`capture_selection`). If `anchor_dom::text_of` resolves to `None`
+  (the body element is not yet in the DOM), the placement effect must
+  return without marking, logging, or showing an error, while the
+  handler, which answers a click, must log at warn and show "The
+  article text is not ready yet. Try again in a moment."
   (`kb_inline.rs:117-119,184-186`).
+- **SPEC-12.5.8**: When the article list feeding `KbTreeNav` fails to
+  load, on `KBArticleListPage` or `KBArticleDetailPage`, the rail must
+  render "Could not load the article list." (`role="alert"`) instead of
+  the category tree, never an empty rail that reads as a knowledge base
+  with no articles (`KbTreeNav`'s `load_failed`).
+- **SPEC-12.5.9**: A failed `GET /kb/articles/{id}/vote` seed must keep
+  the counts from the article payload, leave `my_vote` unset, and log
+  at warn with the article id.
+- **SPEC-12.5.10**: `KBArticleDetailPage` must render a templated
+  article with no picks when the template picks it serialized itself
+  fail to parse, and must log that parse failure at error
+  (`parse_template_picks`).
+- **SPEC-12.5.11**: Before an edit save, `ArticleForm` must warn about
+  inline comments the edit orphans (`orphan_check`). When the comments
+  could not be read (the fetch failed or has not finished), it must not
+  save as if none were anchored: it must open a "Could not check for
+  inline comments" confirmation naming the reason, whose "Save anyway"
+  saves and whose "Go back" returns to the form. A create has nothing
+  anchored and is never asked.
+- **SPEC-12.5.12**: The category form's sort order accepts any `i32`,
+  negatives included, and blank as `0`; any other value must be refused
+  on the field with "Enter a whole number between -2147483648 and
+  2147483647." (`parse_sort_order`).
 
 ### 12.6 Concurrency and ordering
 
 - **SPEC-12.6.1**: Every list/detail page's resources must read
   `active_tenant_generation()` inside the `use_resource` closure so an
   org switch or token swap re-fetches (`knowledge_base.rs:564,580,
-  1038,1068,1371,1385,1601,1612,1635,1658,1732,2354,2519,3063`).
+  1038,1068,1371,1385,1601,1612,1635,1658,1732,2354,2519,3063`),
+  including `KBArticleDetailPage`'s vote seed and scoped company names.
   `use_reactive!` must bind the route `id` prop into
   `KBArticleDetailPage`'s article, versions, and comments resources,
   so an in-app article-to-article navigation restarts the fetch rather
