@@ -5,8 +5,8 @@
   "scripts": {
     "build:css": "bun x @tailwindcss/cli -i ./input.css -o ./assets/styles.css --minify",
     "watch:css": "bun x @tailwindcss/cli -i ./input.css -o ./assets/styles.css --watch",
-    "dev": "concurrently \"bun x @tailwindcss/cli -i ./input.css -o ./assets/styles.css --watch\" \"dx serve\"",
-    "build": "bun run build:css && dx build --release"
+    "dev": "concurrently \"bun x @tailwindcss/cli -i ./input.css -o ./assets/styles.css --watch\" \"dx serve --features web\"",
+    "build": "bun run build:css && dx build --release --features web"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.3.3",

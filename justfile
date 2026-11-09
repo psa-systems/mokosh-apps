@@ -183,6 +183,7 @@ check-defined-colors:
 # MAPPS-398 / DEV-769: keep check.yml on the heavy runner label, no *_LATEST labels, no run-time package installs
 [group: 'check']
 check-runner-labels:
+    bash scripts/check-runner-labels.sh --self-test
     bash scripts/check-runner-labels.sh
 
 # MAPPS-680: a literal parenthesis inside a Nushell `$"..."` string is a subexpression, so `(MAPPS-421)` ran as an external command and killed the publish job after the image was already pushed. `nu --ide-check` parses it clean, because the failure is at run time. --self-test first, so a guard that stopped guarding fails loudly.

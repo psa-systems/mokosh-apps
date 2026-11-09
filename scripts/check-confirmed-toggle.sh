@@ -32,6 +32,18 @@ cd "$(dirname "$0")/.." || exit 2
 # Report `<file>:<line>` for every confirming Checkbox block with no intent in
 # its `checked:`. Blocks are delimited by the indentation of the `Checkbox {`
 # line, which is what rustfmt guarantees about an rsx! child.
+# SPEC-2.5.1: the reason the invariant cannot be evaluated under <root>, or
+# nothing when it can. `find` failing on a missing root happens inside the
+# pipe below, where its status is lost and the empty output read as a pass
+# (MAPPS-1224).
+cannot_evaluate() {
+  if [ ! -d "$1" ]; then
+    echo "$1 is not a directory"
+  elif [ -z "$(find "$1" -name '*.rs' -type f -print -quit)" ]; then
+    echo "$1 holds no .rs file to scan"
+  fi
+}
+
 run_guard() {
   local root="$1"
   find "$root" -name '*.rs' -type f -print0 | while IFS= read -r -d '' file; do
@@ -153,10 +165,28 @@ EOF
     status=1
   fi
 
+  # SPEC-2.5.1: nothing to check is exit 2, never a pass.
+  bash "$0" "$tmp/missing" >/dev/null 2>&1
+  if [ "$?" -ne 2 ]; then
+    echo "confirmed-toggle guard: SELF-TEST FAIL (a missing root did not exit 2)"
+    status=1
+  fi
+  mkdir -p "$tmp/empty"
+  bash "$0" "$tmp/empty" >/dev/null 2>&1
+  if [ "$?" -ne 2 ]; then
+    echo "confirmed-toggle guard: SELF-TEST FAIL (a root with no .rs file did not exit 2)"
+    status=1
+  fi
+
   [ "$status" -eq 0 ] && echo "confirmed-toggle guard: self-test OK"
   exit "$status"
 fi
 
+why="$(cannot_evaluate "${1:-src}")"
+if [ -n "$why" ]; then
+  echo "confirmed-toggle guard: CANNOT EVALUATE ($why)"
+  exit 2
+fi
 hits="$(run_guard "${1:-src}")"
 if [ -z "$hits" ]; then
   echo "confirmed-toggle guard: OK"
