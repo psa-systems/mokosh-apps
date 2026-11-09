@@ -2514,17 +2514,18 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 - **SPEC-12.5.7**: If the inline-comment dialog's `open_at` ids no
   longer match any loaded comment, it must render "These comments are
   no longer in the list ({n})." instead of an empty list
-  (`kb_inline.rs:214-216`). If `anchor_dom::text_of` resolves to
-  `None` (the body element is not yet in the DOM), the placement
-  effect must return without marking, logging, or showing an error
-  (`kb_inline.rs:117-119`). The "Comment on selection" handler answers
-  a click, so it must instead log at warn and show "The article text
-  is not ready yet. Try again in a moment." With no selection it shows
-  "Select some of the article text first, then press this."; with a
-  selection `Anchor::capture` cannot anchor (only whitespace, or past
-  the end of the text) it must log the range and the text length at
-  warn and show "That selection cannot be attached to the article.
-  Select a few words of the text instead." (`capture_selection`).
+  (`kb_inline.rs:214-216`). With no selection the "Comment on
+  selection" handler shows "Select some of the article text first,
+  then press this."; with a selection `Anchor::capture` cannot anchor
+  (only whitespace, or past the end of the text) it must log the range
+  and the text length at warn and show "That selection cannot be
+  attached to the article. Select a few words of the text instead."
+  (`capture_selection`). If `anchor_dom::text_of` resolves to `None`
+  (the body element is not yet in the DOM), the placement effect must
+  return without marking, logging, or showing an error, while the
+  handler, which answers a click, must log at warn and show "The
+  article text is not ready yet. Try again in a moment."
+  (`kb_inline.rs:117-119,184-186`).
 
 ### 12.6 Concurrency and ordering
 
