@@ -75,7 +75,7 @@ base, team (Revoke), settings (incl. the RMM device-mapping and alert-rule rows
 and the organization logo Remove), calendar, time, dashboards, request forms
 (draft Discard), and quotes (Cancel quote). The one cascading delete - delete
 company - uses the type-to-confirm gate. There is no tenant-delete in the SPA
-today (the admin tenant page is a read-only roster).
+today (there is no admin tenant page at all).
 
 ## Testing
 
