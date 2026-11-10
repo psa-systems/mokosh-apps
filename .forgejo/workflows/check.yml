@@ -21,8 +21,9 @@
 # check-ci-parity.sh compares `just check` command lines against
 # `run:` blocks in THIS file (not per-job), so splitting is safe for
 # that guard: every command still appears in some job's run block.
-# check-runner-labels.sh looks for the BASE_HEAVY string anywhere in
-# check.yml, which the cargo job below still carries.
+# check-runner-labels.sh requires the `cargo` job itself to run on
+# BASE_HEAVY, so renaming that job, or moving the compile to another job,
+# means updating the guard too.
 name: Check
 
 # SPEC-1.10.1: trigger set and the paths-ignore list below.
@@ -193,7 +194,7 @@ jobs:
         # Version-keyed tarball cache. A hit skips the ~5s download; a
         # version bump misses the key, downloads once, and the sha256 check
         # below is the safety net if a wrong-version file comes back.
-        uses: https://github.com/actions/cache@v4
+        uses: https://github.com/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /tmp/cargo-audit.tgz
           key: cargo-audit-tarball-0.22.2-linux
@@ -243,15 +244,17 @@ jobs:
 
   guards:
     name: bash + nu + just guards
-    # Base-medium label: nothing in this job invokes `cargo`. Every step
+    # Base-medium label: nothing in this job compiles or links. Every step
     # is a bash / nu / just invocation that greps source files, reads
-    # manifests, resolves Markdown links, or compares strings. The dev
-    # image's compile toolchain would sit idle, so take a base-medium
-    # slot and leave BASE_HEAVY for the cargo job above.
+    # manifests, resolves Markdown links, or compares strings; the one
+    # cargo call, `cargo update` inside check-types-pin.sh, only resolves
+    # the lockfile, and the base image ships cargo for it (as
+    # types-pin-drift.yml relies on too). The dev image's compile
+    # toolchain would sit idle, so take a base-medium slot and leave
+    # BASE_HEAVY for the cargo job above.
     #
-    # check-runner-labels.sh validates that THIS file contains
-    # BASE_HEAVY (the cargo job does, so the string-level grep passes)
-    # and that no job installs OS packages at run time.
+    # check-runner-labels.sh validates that the `cargo` job runs on
+    # BASE_HEAVY and that no job installs OS packages at run time.
     runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_MEDIUM }}
 
     # Backstop, not a target. The guard set is ~38 shell/nu/just
@@ -295,7 +298,9 @@ jobs:
         run: just check-justfile
 
       - name: Runner-label guard
-        run: bash scripts/check-runner-labels.sh
+        run: |
+          bash scripts/check-runner-labels.sh --self-test
+          bash scripts/check-runner-labels.sh
 
       # MAPPS-680: inside a Nushell `$"..."` string every `(` opens a
       # subexpression, so `(MAPPS-421)` in a build-oci-image.yml message ran as

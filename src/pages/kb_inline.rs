@@ -24,6 +24,47 @@ use crate::pages::knowledge_base::KB_ARTICLE_BODY_ID;
 use crate::platform::anchor_dom::{self, MarkPosition, MarkSpec};
 use crate::utils::anchor::{self, Anchor};
 
+/// The selection hint: nothing selected inside the article.
+const NO_SELECTION_HINT: &str = "Select some of the article text first, then press this.";
+/// The selection hint: the article body could not be read (SPEC-12.5.7).
+const NOT_READY_HINT: &str = "The article text is not ready yet. Try again in a moment.";
+/// The selection hint: a selection exists but cannot be anchored, such as
+/// one that is only spaces or line breaks.
+const UNANCHORABLE_HINT: &str =
+    "That selection cannot be attached to the article. Select a few words of the text instead.";
+
+/// A comment that carries an anchor this client cannot read. `place` skips it,
+/// so it is neither marked nor an orphan; the callers log it so a malformed
+/// anchor is findable rather than silently invisible (SPEC-12.2.4, MAPPS-1226).
+pub fn anchor_unreadable(c: &KbComment) -> bool {
+    c.anchor
+        .as_ref()
+        .is_some_and(|json| Anchor::from_json(json).is_none())
+}
+
+/// The live roots whose anchor cannot be read, by id.
+pub fn unreadable_anchors(roots: &[KbComment]) -> Vec<uuid::Uuid> {
+    roots
+        .iter()
+        .filter(|c| !c.deleted && c.parent_id.is_none() && anchor_unreadable(c))
+        .map(|c| c.id)
+        .collect()
+}
+
+/// Turn the reader's selection into an anchor, or the hint that says why it
+/// could not be. A selection that exists but cannot be anchored gets its own
+/// message and a log of the range, instead of the "select something" hint
+/// that claimed there was no selection at all.
+fn capture_selection(text: &str, range: std::ops::Range<usize>) -> Result<Anchor, &'static str> {
+    Anchor::capture(text, range.clone()).ok_or_else(|| {
+        tracing::warn!(
+            "kb inline comment: selection {range:?} in a {} character body cannot be anchored",
+            text.chars().count()
+        );
+        UNANCHORABLE_HINT
+    })
+}
+
 /// Resolve every anchored, live root against `text`: the fragments to mark,
 /// in document order, and the roots that no longer resolve.
 // SPEC-12.2.4: only live root comments own anchors; unresolved anchors are orphans.
@@ -124,6 +165,13 @@ pub fn InlineComments(
                 };
                 // SPEC-12.6.5: clear, place, apply, then measure, in that order.
                 anchor_dom::clear_highlights(KB_ARTICLE_BODY_ID);
+                // Once per change of body or anchors, not per placement pass:
+                // the editor preview runs `place` on a timer.
+                for id in unreadable_anchors(&roots) {
+                    tracing::warn!(
+                        "kb inline comment {id} has an anchor this client cannot read; not marked"
+                    );
+                }
                 let (specs, orphan_ids) = place(&text, &roots);
                 anchor_dom::apply_highlights(KB_ARTICLE_BODY_ID, &specs);
                 // SPEC-12.21.3: publish orphan ids to the stream.
@@ -190,20 +238,24 @@ pub fn InlineComments(
                         spawn(async move {
                             let Some(range) = anchor_dom::selection_in(KB_ARTICLE_BODY_ID).await else {
                                 // SPEC-12.1.15: no live selection.
-                                hint.set("Select some of the article text first, then press this.".to_string());
+                                hint.set(NO_SELECTION_HINT.to_string());
                                 return;
                             };
+                            // SPEC-12.5.7: after a click the reader expects an
+                            // answer, so an unreadable body says so.
                             let Some(text) = anchor_dom::text_of(KB_ARTICLE_BODY_ID).await else {
+                                tracing::warn!("kb inline comment: the article body could not be read after a selection");
+                                hint.set(NOT_READY_HINT.to_string());
                                 return;
                             };
-                            match Anchor::capture(&text, range) {
-                                // SPEC-12.21.4: captured selection opens the composer and clears hint and selection.
-                                Some(a) => {
+                            // SPEC-12.21.4: captured selection opens the composer and clears hint and selection.
+                            match capture_selection(&text, range) {
+                                Ok(a) => {
                                     hint.set(String::new());
                                     pending.set(Some(a));
                                     anchor_dom::clear_selection();
                                 }
-                                None => hint.set("Select some of the article text first, then press this.".to_string()),
+                                Err(why) => hint.set(why.to_string()),
                             }
                         });
                     },
@@ -366,6 +418,70 @@ Then call the customer back.
             orphaned_by_edit(before, before, &[root("Restart the router", "", "", false)])
                 .is_empty()
         );
+    }
+
+    /// MAPPS-1226: an anchor that does not parse is skipped by `place`, so
+    /// nothing marked it and nothing called it an orphan. It is now named.
+    #[test]
+    fn an_unreadable_anchor_is_named_rather_than_silently_skipped() {
+        let mut broken = root("x", "", "", false);
+        broken.anchor = Some(serde_json::json!({ "type": "Nonsense" }));
+        let fine = root("Restart", "", "", false);
+        let mut unanchored = root("y", "", "", false);
+        unanchored.anchor = None;
+        let mut deleted = broken.clone();
+        deleted.id = uuid::Uuid::new_v4();
+        deleted.deleted = true;
+        let all = [broken.clone(), fine.clone(), unanchored.clone(), deleted];
+        assert!(anchor_unreadable(&broken));
+        assert!(!anchor_unreadable(&fine) && !anchor_unreadable(&unanchored));
+        assert_eq!(unreadable_anchors(&all), vec![broken.id], "live roots only");
+        let (specs, orphans) = place("Restart the router", &all);
+        assert_eq!(specs.len(), 1);
+        assert!(orphans.is_empty(), "still not an orphan: it never resolved");
+        let src = include_str!("kb_inline.rs");
+        let head = &src[..src.find("mod tests").expect("this module")];
+        assert!(head.contains("for id in unreadable_anchors(&roots) {"));
+    }
+
+    /// MAPPS-1226: a selection that exists but cannot be anchored is not told
+    /// to "select some text first".
+    #[test]
+    fn a_selection_that_cannot_be_anchored_says_why() {
+        let text = "Restart   the router";
+        assert!(capture_selection(text, 0..7).is_ok());
+        assert_eq!(
+            capture_selection(text, 7..10).unwrap_err(),
+            UNANCHORABLE_HINT,
+            "spaces only"
+        );
+        assert_eq!(
+            capture_selection(text, 5..99).unwrap_err(),
+            UNANCHORABLE_HINT,
+            "past the end"
+        );
+        assert_ne!(UNANCHORABLE_HINT, NO_SELECTION_HINT);
+    }
+
+    /// MAPPS-1226: the click on "Comment on selection" always answers, even
+    /// when the body cannot be read.
+    #[test]
+    fn an_unreadable_body_after_a_click_shows_a_hint() {
+        let src = include_str!("kb_inline.rs");
+        let head = &src[..src.find("mod tests").expect("this module")];
+        let click = &head[head
+            .find("anchor_dom::selection_in(KB_ARTICLE_BODY_ID)")
+            .expect("the click")..];
+        let miss = &click[click
+            .find("anchor_dom::text_of(KB_ARTICLE_BODY_ID).await else {")
+            .expect("the read")..];
+        let miss = &miss[..miss.find("return;").expect("the early return")];
+        assert!(
+            miss.contains("hint.set(NOT_READY_HINT.to_string());"),
+            "{miss}"
+        );
+        assert!(miss.contains("tracing::warn!"));
+        assert!(click.contains("match capture_selection(&text, range)"));
     }
 
     #[test]

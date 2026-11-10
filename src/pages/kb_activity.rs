@@ -131,6 +131,37 @@ pub fn build_stream(
     out
 }
 
+/// The versions with no `created_at`. `Entry::at` sorts them as the epoch,
+/// first in the stream, and the row shows "-"; the card logs these ids once
+/// per load so the gap is findable (MAPPS-1226).
+pub fn undated_versions(versions: &[KbArticleVersion]) -> Vec<uuid::Uuid> {
+    versions
+        .iter()
+        .filter(|v| v.created_at.is_none())
+        .map(|v| v.id)
+        .collect()
+}
+
+/// What an empty stream says, or `None` when the slice the tab shows failed
+/// to load: its error banner explains the emptiness, and "No history to
+/// show." under "Could not load the history." would claim there is none
+/// (SPEC-12.5.6, MAPPS-1226).
+pub fn empty_state(tab: Tab, comments_failed: bool, versions_failed: bool) -> Option<&'static str> {
+    let failed = match tab {
+        Tab::Comments => comments_failed,
+        Tab::History => versions_failed,
+        Tab::All => comments_failed || versions_failed,
+    };
+    if failed {
+        return None;
+    }
+    Some(match tab {
+        Tab::Comments => "No comments yet. Start the discussion below.",
+        Tab::History => "No history to show.",
+        Tab::All => "Nothing has happened here yet.",
+    })
+}
+
 // SPEC-12.3.6: the only persisted state in this scope.
 const TAB_PREF: &str = "kb_activity_tab";
 const RESOLVED_PREF: &str = "kb_activity_show_resolved";
@@ -154,6 +185,13 @@ pub fn ArticleActivity(
     let mut show_resolved = use_signal(|| crate::utils::prefs::get_bool(RESOLVED_PREF, false));
     let mut settings_open = use_signal(|| false);
     let mut error = use_signal(String::new);
+    use_effect(move || {
+        if let Some(Some(versions)) = &*versions_resource.read() {
+            for id in undated_versions(versions) {
+                tracing::warn!("kb article version {id} has no created_at; it sorts first in the activity stream");
+            }
+        }
+    });
     let auth = crate::hooks::auth::use_auth();
     let (me, my_name, my_avatar, is_admin) = {
         let a = auth.read();
@@ -181,6 +219,9 @@ pub fn ArticleActivity(
     let versions: Vec<KbArticleVersion> = versions_snap.clone().flatten().unwrap_or_default();
     let stream = build_stream(&comments, &versions, tab(), show_resolved());
     let comments_failed = matches!(comments_snap, Some(None));
+    // The fetch already logged the failure (`knowledge_base.rs`); this is the
+    // reader's half of it.
+    let versions_failed = matches!(versions_snap, Some(None));
     let loading = comments_snap.is_none();
     // SPEC-12.6.4: mutations restart the shared comments resource.
     let on_changed = EventHandler::new(move |_: ()| comments_resource.restart());
@@ -275,17 +316,16 @@ pub fn ArticleActivity(
                 if comments_failed {
                     ErrorBanner { "Could not load the comments." }
                 }
+                if versions_failed && tab() != Tab::Comments {
+                    ErrorBanner { "Could not load the history." }
+                }
 
                 // SPEC-12.20.2: loading and per-tab empty states.
                 if loading && stream.is_empty() {
                     p { class: "text-sm text-subtle", "Loading…" }
                 } else if stream.is_empty() {
-                    p { class: "text-sm text-subtle italic",
-                        match tab() {
-                            Tab::Comments => "No comments yet. Start the discussion below.",
-                            Tab::History => "No history to show.",
-                            Tab::All => "Nothing has happened here yet.",
-                        }
+                    if let Some(text) = empty_state(tab(), comments_failed, versions_failed) {
+                        p { class: "text-sm text-subtle italic", "{text}" }
                     }
                 } else {
                     ul { class: "space-y-4",
@@ -421,6 +461,16 @@ fn CommentThread(
 ) -> Element {
     let mut replying = use_signal(|| false);
     let mut busy = use_signal(|| false);
+    // MAPPS-1226: a thread whose anchor does not parse shows no quote; once
+    // per mount, name it in the log so the missing quote is findable.
+    use_hook(|| {
+        if crate::pages::kb_inline::anchor_unreadable(&root) {
+            tracing::warn!(
+                "kb comment {} has an anchor this client cannot read; no quote shown",
+                root.id
+            );
+        }
+    });
     let resolved = root.resolved_at.is_some();
     let root_id = root.id;
     let reply_count = root.replies.len();
@@ -960,6 +1010,57 @@ mod tests {
         assert!(build_stream(&comments, &versions, Tab::History, true)
             .iter()
             .all(|e| matches!(e, Entry::Version { .. })));
+    }
+
+    /// MAPPS-1226: a failed history load was flattened to an empty list and
+    /// read "No history to show." with no error.
+    #[test]
+    fn a_failed_history_load_is_not_an_empty_history() {
+        assert_eq!(empty_state(Tab::History, false, true), None);
+        assert_eq!(empty_state(Tab::All, false, true), None);
+        assert_eq!(empty_state(Tab::All, true, false), None);
+        assert_eq!(
+            empty_state(Tab::Comments, false, true),
+            Some("No comments yet. Start the discussion below."),
+            "the history failing says nothing about the comments"
+        );
+        assert_eq!(
+            empty_state(Tab::History, false, false),
+            Some("No history to show.")
+        );
+        let src = include_str!("kb_activity.rs");
+        let head = &src[..src.find("mod tests").expect("this module")];
+        assert!(head.contains("let versions_failed = matches!(versions_snap, Some(None));"));
+        assert!(head.contains("ErrorBanner { \"Could not load the history.\" }"));
+    }
+
+    /// MAPPS-1226: a version with no timestamp sorts as the epoch; its id is
+    /// logged so the odd ordering can be traced.
+    #[test]
+    fn an_undated_version_is_named() {
+        let mut undated = version(3, 11);
+        undated.created_at = None;
+        let dated = version(2, 10);
+        assert_eq!(
+            undated_versions(&[dated, undated.clone()]),
+            vec![undated.id]
+        );
+        let src = include_str!("kb_activity.rs");
+        let head = &src[..src.find("mod tests").expect("this module")];
+        assert!(head.contains("for id in undated_versions(versions) {"));
+    }
+
+    /// MAPPS-1226: a thread with an unreadable anchor showed no quote and
+    /// left no trace.
+    #[test]
+    fn a_thread_with_an_unreadable_anchor_is_logged() {
+        let src = include_str!("kb_activity.rs");
+        let head = &src[..src.find("mod tests").expect("this module")];
+        let thread = &head[head.find("fn CommentThread(").expect("the thread")..];
+        assert!(thread.contains("if crate::pages::kb_inline::anchor_unreadable(&root) {"));
+        let mut c = comment(9, false);
+        c.anchor = Some(serde_json::json!({ "type": "Nonsense" }));
+        assert!(crate::pages::kb_inline::anchor_unreadable(&c));
     }
 
     #[test]

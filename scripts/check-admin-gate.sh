@@ -100,6 +100,19 @@ component_gates() {
   return 1
 }
 
+# SPEC-2.5.1: the reason the invariant cannot be evaluated under <root>, or
+# nothing when it can. A missing registry or one with no StaffAdmin surface
+# (a renamed variant, a moved file) makes `run_guard` print nothing, which
+# would otherwise read as a pass (MAPPS-1224).
+cannot_evaluate() {
+  local registry="$1/src/pages/settings.rs"
+  if [ ! -f "$registry" ]; then
+    echo "$registry does not exist"
+  elif [ -z "$(staff_routes "$registry")" ]; then
+    echo "$registry holds no SurfaceVisibility::StaffAdmin surface"
+  fi
+}
+
 # SPEC-2.10.3: resolve each route to its page component, then SPEC-2.10.4 and SPEC-2.10.5 per route.
 run_guard() {
   local root="$1" route body ref mod file comp target
@@ -225,10 +238,28 @@ EOF
     status=1
   fi
 
+  # SPEC-2.5.1: nothing to check is exit 2, never a pass.
+  bash "$0" "$tmp/missing" >/dev/null 2>&1
+  if [ "$?" -ne 2 ]; then
+    echo "admin-gate guard: SELF-TEST FAIL (a missing settings.rs did not exit 2)"
+    status=1
+  fi
+  sed -i 's/SurfaceVisibility::StaffAdmin/SurfaceVisibility::Always/' "$tmp/src/pages/settings.rs"
+  bash "$0" "$tmp" >/dev/null 2>&1
+  if [ "$?" -ne 2 ]; then
+    echo "admin-gate guard: SELF-TEST FAIL (a registry with no StaffAdmin surface did not exit 2)"
+    status=1
+  fi
+
   [ "$status" -eq 0 ] && echo "admin-gate guard: self-test OK"
   exit "$status"
 fi
 
+why="$(cannot_evaluate "${1:-.}")"
+if [ -n "$why" ]; then
+  echo "admin-gate guard: CANNOT EVALUATE ($why)"
+  exit 2
+fi
 hits="$(run_guard "${1:-.}")"
 if [ -z "$hits" ]; then
   echo "admin-gate guard: OK"
