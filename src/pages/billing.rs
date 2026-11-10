@@ -4632,6 +4632,19 @@ const PAYMENT_NOTES_MAX: usize = 2000;
 /// clear "out of range" message rather than a misleading parse error.
 const PAYMENT_AMOUNT_MAX: i64 = 10_000_000_000;
 
+/// MAPPS-1229: whether an amount has more than two significant decimals.
+/// `scale()` counts trailing zeros, so "5.100" was refused as three decimal
+/// places although its value is 5.10.
+fn more_than_two_decimals(d: Decimal) -> bool {
+    d.normalize().scale() > 2
+}
+
+/// MAPPS-1229: the 64-character button-label cap applies to what is sent,
+/// which is the trimmed label.
+fn button_label_too_long(label: &str) -> bool {
+    label.trim().chars().count() > 64
+}
+
 #[derive(Props, Clone, PartialEq)]
 struct RecordPaymentModalProps {
     // MAPPS-235: when set, the modal edits this existing payment (PUT
@@ -4777,7 +4790,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         guard.note_invalid(Some("payment_amount"));
                         String::new()
                     }
-                    Ok(d) if d.scale() > 2 => {
+                    Ok(d) if more_than_two_decimals(d) => {
                         amount_err.set("Amount must have at most 2 decimal places.".to_string());
                         guard.note_invalid(Some("payment_amount"));
                         String::new()
@@ -4852,16 +4865,30 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                 // visible to this tenant) before recording, so a well-formed
                 // but unknown ID gets a field message instead of an opaque
                 // server FK error (MAPPS-215).
+                // MAPPS-1229: only a not-found answer is "no such invoice";
+                // a network error, a 5xx or a 401 is logged and shown as
+                // what it is, so the person does not go hunting for a typo.
                 if let Some(id) = invoice_uuid {
-                    if crate::hooks::fetch::api::get_authed::<InvoiceDetail>(&format!(
+                    match crate::hooks::fetch::api::get_authed_typed::<InvoiceDetail>(&format!(
                         "/invoices/{id}"
                     ))
                     .await
-                    .is_err()
                     {
-                        invoice_err.set("No invoice found with that ID.".to_string());
-                        saving.set(false);
-                        return;
+                        Ok(_) => {}
+                        Err(crate::hooks::fetch::api::ApiError::Status { code: 404, .. }) => {
+                            invoice_err.set("No invoice found with that ID.".to_string());
+                            saving.set(false);
+                            return;
+                        }
+                        Err(err) => {
+                            tracing::error!("payment invoice check failed for {id}: {err}");
+                            error.set(format!(
+                                "Could not check the invoice: {}",
+                                err.user_message()
+                            ));
+                            saving.set(false);
+                            return;
+                        }
                     }
                 }
                 let result = if is_edit {
@@ -5698,7 +5725,12 @@ fn TaxRateListBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        let token = crate::hooks::fetch::api::current_access_token()?;
+        // MAPPS-1229: a missing token is a load failure like any other, and
+        // the banner it produces should have a log line behind it.
+        let Some(token) = crate::hooks::fetch::api::current_access_token() else {
+            tracing::error!("tax rate list load failed: no access token");
+            return None;
+        };
         let path = format!("/tax-rates?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTaxRate>>(&path, &token)
             .await
@@ -6228,7 +6260,10 @@ fn PaymentGatewayConfigBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        let token = crate::hooks::fetch::api::current_access_token()?;
+        let Some(token) = crate::hooks::fetch::api::current_access_token() else {
+            tracing::error!("payment gateway list load failed: no access token");
+            return None;
+        };
         crate::hooks::fetch::api::get_all_with_auth::<RemoteGateway>("/payment-gateways", &token)
             .await
             .inspect_err(|e| tracing::error!("payment gateway list load failed: {e}"))
@@ -6924,7 +6959,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         // MAPPS-671: 64-char cap mirrors the server's validator; catching it
         // here gives a field-level error rather than a form-level 422.
         let cdn = client_display_name.read().clone();
-        if cdn.chars().count() > 64 {
+        if button_label_too_long(&cdn) {
             client_display_name_err.set("Button label must be 64 characters or fewer.".to_string());
             return;
         }
@@ -7247,14 +7282,35 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                                 size: ButtonSize::Small,
                                                 onclick: move |_| {
                                                     let u = url.clone();
+                                                    // MAPPS-1229: the toast follows the write. The
+                                                    // promise was dropped, so a refused write (no
+                                                    // permission, insecure context) still said
+                                                    // "copied" and logged nothing.
                                                     #[cfg(target_arch = "wasm32")]
-                                                    if let Some(win) = web_sys::window() {
-                                                        let _ = win.navigator().clipboard().write_text(&u);
-                                                        crate::hooks::toast::push_toast(
-                                                            crate::components::AlertType::Success,
-                                                            "Webhook endpoint copied to clipboard.".to_string(),
-                                                        );
-                                                    }
+                                                    spawn(async move {
+                                                        let written = match web_sys::window() {
+                                                            Some(win) => wasm_bindgen_futures::JsFuture::from(
+                                                                win.navigator().clipboard().write_text(&u),
+                                                            )
+                                                            .await
+                                                            .map(|_| ())
+                                                            .map_err(|e| format!("{e:?}")),
+                                                            None => Err("no window".to_string()),
+                                                        };
+                                                        match written {
+                                                            Ok(()) => crate::hooks::toast::push_toast(
+                                                                crate::components::AlertType::Success,
+                                                                "Webhook endpoint copied to clipboard.".to_string(),
+                                                            ),
+                                                            Err(e) => {
+                                                                tracing::warn!("webhook endpoint copy failed: {e}");
+                                                                crate::hooks::toast::push_toast(
+                                                                    crate::components::AlertType::Error,
+                                                                    "Could not copy the webhook endpoint. Select it and copy it by hand.".to_string(),
+                                                                );
+                                                            }
+                                                        }
+                                                    });
                                                     #[cfg(not(target_arch = "wasm32"))]
                                                     let _ = u;
                                                 },
@@ -8744,6 +8800,103 @@ mod pay_option_tests {
         assert_eq!(rendered.len(), 1);
         assert_eq!(rendered[0].provider.as_deref(), Some("stripe"));
         assert_eq!(rendered[0].label, "Pay with card");
+    }
+}
+
+/// MAPPS-1229: the five findings from the payments, tax-rate and gateway
+/// specification pass. The two checks are tested directly; the rest live in
+/// resources and handlers that run only under `app`, so they are pinned as
+/// source.
+#[cfg(test)]
+mod mapps1229_tests {
+    use super::{button_label_too_long, more_than_two_decimals};
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    fn code() -> String {
+        let src = include_str!("billing.rs");
+        src[..src.find("mod mapps1229_tests").expect("this module")]
+            .lines()
+            .map(|l| l.find("//").map_or(l, |i| &l[..i]))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Finding 1: any failure of the pre-save check said "No invoice found".
+    #[test]
+    fn only_a_404_is_no_such_invoice() {
+        let code = code();
+        let check = &code[code
+            .find("if let Some(id) = invoice_uuid {")
+            .expect("the check")..];
+        let check = &check[..check.find("let result = if is_edit").expect("end of check")];
+        let not_found = check
+            .find("ApiError::Status { code: 404, .. }) => { invoice_err.set(\"No invoice found with that ID.\"")
+            .expect("the 404 arm");
+        let other = check
+            .find(
+                "Err(err) => { tracing::error!(\"payment invoice check failed for {id}: {err}\");",
+            )
+            .expect("the other arm");
+        assert!(not_found < other);
+        assert!(check.contains(
+            "error.set(format!( \"Could not check the invoice: {}\", err.user_message()"
+        ));
+        assert!(
+            !check.contains(".is_err()"),
+            "no failure collapses into not-found"
+        );
+    }
+
+    /// Finding 2: the copy toast fired whether or not the write succeeded.
+    #[test]
+    fn the_copy_toast_follows_the_write() {
+        let code = code();
+        assert!(!code.contains("let _ = win.navigator().clipboard().write_text(&u);"));
+        let copy = &code[code
+            .find("win.navigator().clipboard().write_text(&u),")
+            .expect("the write")..];
+        let success = copy
+            .find("\"Webhook endpoint copied to clipboard.\"")
+            .expect("success toast");
+        let failure = copy
+            .find("tracing::warn!(\"webhook endpoint copy failed: {e}\");")
+            .expect("failure log");
+        assert!(copy.find("match written {").expect("awaited") < success.min(failure));
+    }
+
+    /// Finding 3: a missing token rendered the banner with no log line.
+    #[test]
+    fn a_missing_token_is_logged() {
+        let code = code();
+        assert!(code.contains(
+            r#"tracing::error!("tax rate list load failed: no access token"); return None;"#
+        ));
+        assert!(code.contains(
+            r#"tracing::error!("payment gateway list load failed: no access token"); return None;"#
+        ));
+    }
+
+    /// Finding 4: the cap was checked on the untrimmed label.
+    #[test]
+    fn the_button_label_cap_applies_to_the_trimmed_label() {
+        let sixty_four = "a".repeat(64);
+        assert!(!button_label_too_long(&format!(" {sixty_four} ")));
+        assert!(button_label_too_long(&"a".repeat(65)));
+        assert!(code().contains("if button_label_too_long(&cdn) {"));
+    }
+
+    /// Finding 5: "5.100" was refused as three decimal places.
+    #[test]
+    fn trailing_zeros_are_not_decimal_places() {
+        let d = |s: &str| Decimal::from_str(s).expect("decimal");
+        assert!(!more_than_two_decimals(d("5.100")));
+        assert!(!more_than_two_decimals(d("5.10")));
+        assert!(more_than_two_decimals(d("5.105")));
+        assert!(code().contains("Ok(d) if more_than_two_decimals(d) => {"));
     }
 }
 
