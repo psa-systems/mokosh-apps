@@ -9,6 +9,11 @@
 //! Items card: add via `POST /contracts/{id}/items`, edit via
 //! `PUT /contract-items/{id}`, delete via `DELETE /contract-items/{id}`
 //! (MAPPS-196).
+//!
+//! SPEC-13.7.4: contract endpoints used across this file: `GET`/`POST`
+//! `/contracts`, `GET`/`PUT`/`DELETE /contracts/{id}`, the items calls above,
+//! `GET /contracts/{id}/hour-balance`, and `GET /contacts/companies` for the
+//! company picker.
 
 use dioxus::prelude::*;
 use rust_decimal::Decimal;
@@ -96,6 +101,7 @@ struct CompanyOption {
 
 /// Contract list page. Fetches `GET /contracts` (paginated) with optional
 /// `company_id` / `status` / `contract_type` filters.
+// SPEC-13.1.8: list fetch for ContractListPage.
 #[component]
 pub fn ContractListPage() -> Element {
     // MAPPS-271: gate the page on `can_manage_billing` before mounting
@@ -116,6 +122,8 @@ pub fn ContractListPage() -> Element {
     // Staff / platform sessions bypass `use_capability` unconditionally,
     // so the pre-pivot behaviour is preserved for every existing role.
     let contact_can_read = crate::hooks::capabilities::use_capability("contracts:read");
+    // SPEC-13.4.1: lifecycle view gated on can_manage_billing() or, for a
+    // contact session, contracts:read.
     if !use_can_manage_billing() && !contact_can_read {
         // MAPPS-775: the portal's own state for a customer, for the reason on
         // the invoice and quote lists.
@@ -152,6 +160,8 @@ fn ContractListBody() -> Element {
     let mut type_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
 
+    // SPEC-13.2.3: contract-status options; no client-side transition
+    // restriction among them.
     let status_options = vec![
         SelectOption::new("", "All Statuses"),
         SelectOption::new("draft", "Draft"),
@@ -159,6 +169,7 @@ fn ContractListBody() -> Element {
         SelectOption::new("expired", "Expired"),
         SelectOption::new("cancelled", "Cancelled"),
     ];
+    // SPEC-13.2.3: contract-type options.
     let type_options = vec![
         SelectOption::new("", "All Types"),
         SelectOption::new("managed_services", "Managed Services"),
@@ -173,6 +184,8 @@ fn ContractListBody() -> Element {
     // MAPPS-575: NOT narrowed to active. An archived company's contracts still
     // exist and looking at them is exactly what archiving-instead-of-deleting
     // is for, so it has to stay selectable here.
+    // SPEC-13.6.3: read active_tenant_generation() inside the async closure
+    // so a tenant switch reruns this fetch.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // The dropdown shows its placeholder alone for a tenant with no
@@ -191,6 +204,8 @@ fn ContractListBody() -> Element {
                 Some(rows)
             }
             Err(e) => {
+                // SPEC-13.5.7: company filter logs its own failure and
+                // degrades to an empty dropdown, no banner.
                 tracing::error!(
                     "contract company filter load failed, the dropdown will be empty: {e}"
                 );
@@ -223,9 +238,11 @@ fn ContractListBody() -> Element {
         async move {
             // F1: subscribe to the active-tenant generation so an org
             // switch re-runs this resource.
+            // SPEC-13.6.3: read inside the async closure, not outside it.
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-357: subscribe to reachability so the list auto-refetches
             // on reconnect and a failed load can render ContentUnavailable.
+            // SPEC-13.6.4: track use_server_reachable() on the primary resource.
             let _reachable = crate::hooks::use_server_reachable();
             // MAPPS-604: allow either bearer; server scopes to
             // `contact.company_id` on the contact plane.
@@ -247,6 +264,8 @@ fn ContractListBody() -> Element {
                     urlencoding_minimal(&contract_type)
                 ));
             }
+            // SPEC-13.5.7: log the list load failure; the banner/unavailable
+            // split is rendered below from `fetch_failed` and `reachable`.
             crate::hooks::fetch::api::get_authed_any::<Paginated<ContractResponse>>(&path)
                 .await
                 .inspect_err(|e| tracing::error!("contract list load failed: {e}"))
@@ -271,6 +290,7 @@ fn ContractListBody() -> Element {
     // Contract / Rate Cards are navigation and Clear filters is a filter
     // reset, so there is nothing here to gate on `can_mutate`.)
     let reachable = crate::hooks::use_server_reachable();
+    // SPEC-13.5.7: full-page unavailable state while unreachable.
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Contracts".to_string() }
@@ -303,6 +323,8 @@ fn ContractListBody() -> Element {
         }
 
         // Filters
+        // SPEC-13.6.1: each filter resets the current page to 1 (no
+        // free-text search box here to debounce).
         Card { class: "mb-6",
             div { class: "flex flex-col sm:flex-row gap-4",
                 div { class: "flex-1",
@@ -337,6 +359,7 @@ fn ContractListBody() -> Element {
             }
         }
 
+        // SPEC-13.5.7: inline banner while reachable, "Could not load" text.
         if fetch_failed {
             ErrorBanner { class: "mb-3", "Could not load contracts. Refresh the page to retry." }
         }
@@ -744,6 +767,8 @@ fn validate_quantity(raw: &str, label: &str) -> Result<Decimal, String> {
 /// slot, so this is the second read of an already-checked value. It stays a
 /// hard error, and logs, because reaching it means the two disagreed
 /// (MAPPS-703).
+// SPEC-13.5.12: logs a warning and reports a row-numbered error when this
+// parse disagrees with the form's own prior validation.
 fn parse_item_quantity(raw: &str, row: usize) -> Result<Decimal, String> {
     // MAPPS-582: `clean_strict` is what `validate_quantity` accepted, so an
     // invisible character cannot pass validation and then fail here.
@@ -862,6 +887,8 @@ struct ContractFormProps {
     initial: ContractFormValues,
 }
 
+// SPEC-13.1.8: shared create/edit form (name/company/type/status/value/
+// dates/contract number/notes, plus initial line items on create).
 #[component]
 fn ContractForm(props: ContractFormProps) -> Element {
     let initial = props.initial.clone();
@@ -964,6 +991,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
         opts
     };
 
+    // SPEC-13.1.8 / SPEC-13.2.3: create/edit form field, contract-type options.
     let type_options = vec![
         SelectOption::new("managed_services", "Managed Services"),
         SelectOption::new("block_hours", "Block Hours"),
@@ -971,12 +999,15 @@ fn ContractForm(props: ContractFormProps) -> Element {
         SelectOption::new("fixed_price", "Fixed Price"),
         SelectOption::new("warranty", "Warranty"),
     ];
+    // SPEC-13.1.8 / SPEC-13.2.3: create/edit form field, contract-status
+    // options; no client-side transition restriction among them.
     let status_options = vec![
         SelectOption::new("draft", "Draft"),
         SelectOption::new("active", "Active"),
         SelectOption::new("expired", "Expired"),
         SelectOption::new("cancelled", "Cancelled"),
     ];
+    // SPEC-13.1.8 / SPEC-13.2.3: create/edit form field, billing-cycle options.
     let cycle_options = vec![
         SelectOption::new("monthly", "Monthly"),
         SelectOption::new("quarterly", "Quarterly"),
@@ -996,6 +1027,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
 
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
+        // SPEC-13.6.5: ignore a second submit while one is already in flight.
         if *is_submitting.read() {
             return;
         }
@@ -1011,6 +1043,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
         // Collect every field error before returning (MAPPS-211) so the user
         // sees all problems at once, each attached to its own field, rather
         // than the form aborting on the first failure.
+        // SPEC-13.5.8: collects name/value/dates/contract number/notes errors.
         let mut ok = true;
 
         // Name (required, length-capped).
@@ -1149,6 +1182,8 @@ fn ContractForm(props: ContractFormProps) -> Element {
             // non-empty one (each id matches the field's `name`/DOM id). Line-item
             // row errors have no single focusable id, so they fall back to no
             // focus (still blocked) when no top-level field is also invalid.
+            // SPEC-13.5.8: fixed focus order name, company, value, start date,
+            // end date, contract number, notes.
             let first_invalid = [
                 ("name", !name_err.read().is_empty()),
                 ("company", !company_err.read().is_empty()),
@@ -1215,6 +1250,8 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                 // the contract; surface it and still land
                                 // on the detail page so the user can fix
                                 // it there.
+                                // SPEC-13.5.9: no rollback on a failed initial
+                                // item; still navigates to the new contract.
                                 let new_id = created.id.to_string();
                                 if let Err(err) = create_items(&new_id, &items_snapshot).await {
                                     error.set(format!("Contract saved, but an item failed: {err}"));
@@ -1289,6 +1326,8 @@ fn ContractForm(props: ContractFormProps) -> Element {
     // MAPPS-357: block the create/save submit while the server is unreachable
     // so a write cannot silently fail (edits are discarded, not queued). The
     // read subscribes this form so the button re-enables on reconnect.
+    // SPEC-13.4.9: mutating control disabled while use_can_mutate() reports
+    // the server unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
 
     // PMS-352 AC3: feed the create-flow CompanyPicker its "already selected"
@@ -1579,6 +1618,8 @@ fn ContractForm(props: ContractFormProps) -> Element {
 
 /// POST each entered line item to `/contracts/{id}/items`. Blank rows
 /// (no name) are skipped. Returns the first error encountered.
+// SPEC-13.8.1: `app`-feature gate, compiles to a no-op (not an error) when
+// that feature is disabled.
 #[cfg(feature = "app")]
 async fn create_items(contract_id: &str, items: &[ItemFormValues]) -> Result<(), String> {
     use crate::modules::contracts::UpsertContractItemRequest;
@@ -1628,6 +1669,8 @@ pub struct ContractDetailPageProps {
     pub id: String,
 }
 
+// SPEC-13.1.9: Summary card, editable allotment, Line Items card and
+// hour-balance card are composed below.
 #[component]
 pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
     let id_str = props.id.clone();
@@ -1643,6 +1686,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-357: re-run on reconnect so the outage state self-heals.
+            // SPEC-13.6.4: primary detail resource tracks use_server_reachable().
             let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<ContractResponse>(&format!("/contracts/{id}"))
                 .await
@@ -1650,6 +1694,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                 .ok()
         }
     });
+    // SPEC-13.1.9: Line Items card fetch.
     let mut items_resource = use_resource(move || {
         let id = id_for_items.clone();
         async move {
@@ -1664,6 +1709,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
             .ok()
         }
     });
+    // SPEC-13.1.9: hour-balance card fetch.
     let balance_resource = use_resource(move || {
         let id = id_for_balance.clone();
         async move {
@@ -1742,6 +1788,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
     };
 
     rsx! {
+        // SPEC-13.9.2: contract delete confirmation states it cannot be undone.
         crate::components::ConfirmDialog {
             open: confirming_delete(),
             title: "Delete contract".to_string(),
@@ -1784,6 +1831,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                     variant: ButtonVariant::Danger,
                     loading: *deleting.read(),
                     // MAPPS-357: block delete while the server is unreachable.
+                    // SPEC-13.4.9: mutating control disabled while unreachable.
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                     onclick: move |_| {
@@ -1875,11 +1923,13 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                                 }
                             }
 
+                            // SPEC-13.1.9: Line Items card and hour-balance card.
                             ContractItemsCard { items_resource, editing_item, can_mutate }
                             ContractHourBalanceCard { balance_resource, items_resource, can_mutate }
                         }
 
                         div { class: "space-y-6",
+                            // SPEC-13.1.9: Summary card.
                             Card { title: "Summary",
                                 dl { class: "space-y-4",
                                     div { class: "flex justify-between",
@@ -1918,6 +1968,8 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                     // Refresh the items table and the contract itself so
                     // per-row totals and the Summary "Value" reflect the
                     // change (the server derives Value from items).
+                    // SPEC-13.6.6: restart items_resource and contract_resource
+                    // after a successful line-item save.
                     items_resource.restart();
                     contract_resource.restart();
                 },
@@ -2022,6 +2074,7 @@ fn ContractItemsCard(
 /// the server's `contract_items.item_type` CHECK set (MAPPS-190); the create
 /// form and the detail-page Add/Edit modal share this single list so they
 /// cannot drift apart.
+// SPEC-13.2.3: line-item-type options.
 fn contract_item_type_options() -> Vec<SelectOption> {
     vec![
         SelectOption::new("recurring_service", "Recurring Service"),
@@ -2036,6 +2089,8 @@ fn contract_item_type_options() -> Vec<SelectOption> {
 /// exposes only name, type, quantity, and unit price; on edit, `original`
 /// retains every other field of the existing row so a `PUT` (full replace)
 /// does not wipe description, included hours, rollover settings, etc.
+// SPEC-13.2.4: retains the original row so the PUT merge below never wipes
+// a field this form does not expose.
 #[derive(Clone, Debug, PartialEq)]
 struct ContractItemFormState {
     /// Full original row when editing (enables Delete; preserves unexposed
@@ -2130,6 +2185,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
     let original_for_save = original.clone();
     let contract_for_save = props.contract_id.clone();
     let new_sort_order = initial.new_sort_order;
+    // SPEC-13.6.5: ignore a second submit while one is already in flight.
     let handle_save = move |_| {
         if *saving.read() || *deleting.read() {
             return;
@@ -2220,6 +2276,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 use crate::modules::contracts::UpsertContractItemRequest;
                 // Preserve the fields the form does not expose so an edit
                 // (full-replace PUT) does not clear them.
+                // SPEC-13.2.4: merge `orig` back into the PUT body.
                 let body = UpsertContractItemRequest {
                     name: name_val.clone(),
                     description: orig.as_ref().and_then(|o| o.description.clone()),
@@ -2262,6 +2319,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 };
                 match result {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-13.5.10: verb-specific failure, inside the modal.
                     Err(err) => error.set(format!("Could not save line item: {err}")),
                 }
             }
@@ -2295,6 +2353,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 .await
                 {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-13.5.10: verb-specific failure, inside the modal.
                     Err(err) => {
                         error.set(format!(
                             "Could not delete line item: {}",
@@ -2379,6 +2438,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 oninput: clear_on_edit(unit_price, price_err),
             }
         }
+        // SPEC-13.9.2: line-item delete confirmation states it cannot be undone.
         crate::components::ConfirmDialog {
             open: *confirm_delete.read(),
             title: "Delete line item".to_string(),
@@ -2437,6 +2497,7 @@ fn ContractHourBalanceCard(
             Button {
                 variant: ButtonVariant::Secondary,
                 // MAPPS-357: block while the server is unreachable.
+                // SPEC-13.4.9: mutating control disabled while unreachable.
                 disabled: !can_mutate,
                 title: (!can_mutate).then(|| "Can't edit the allotment while the server is unreachable".to_string()),
                 onclick: move |_| editing_allotment.set(block_item.clone()),
@@ -2524,6 +2585,8 @@ fn ContractHourBalanceCard(
                     editing_allotment.set(None);
                     // Refresh both the balance headline/table and the items
                     // table so the new allotment and remaining balance show.
+                    // SPEC-13.6.6: restart balance_resource and items_resource
+                    // after a successful allotment save.
                     balance_resource.restart();
                     items_resource.restart();
                 },
@@ -2634,6 +2697,7 @@ fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
                 .await
                 {
                     Ok(_) => onsaved.call(()),
+                    // SPEC-13.5.10: verb-specific failure, inside the modal.
                     Err(err) => {
                         error.set(format!("Could not save allotment: {}", err.user_message()))
                     }
@@ -2683,6 +2747,8 @@ pub fn RateCardListPage(
     #[props(default = false)]
     open_create: bool,
 ) -> Element {
+    // SPEC-13.4.3: rate cards render only for a session with
+    // use_can_manage_billing() true.
     let can_edit = use_can_manage_billing();
     // MAPPS-271: same posture as ContractListPage above. `list_rate_cards`
     // on the server is `RequireFinance`-gated, so a non-finance role
@@ -2719,6 +2785,7 @@ fn RateCardListBody(open_create: bool, can_edit: bool) -> Element {
     });
     let current_page = (*page.read()).max(1);
 
+    // SPEC-13.1.10 / SPEC-13.7.4: rate-card list fetch (GET /rate-cards).
     let mut rate_cards_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // MAPPS-357: subscribe to reachability so the list auto-refetches on
@@ -2894,6 +2961,7 @@ pub struct RateCardDetailPageProps {
 
 #[component]
 pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
+    // SPEC-13.4.4: edit/add-rate affordances gate on use_can_manage_billing().
     let can_edit = use_can_manage_billing();
     let navigator = use_navigator();
     let id_str = props.id.clone();
@@ -2904,8 +2972,9 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
     let mut editing_card = use_signal(|| None::<RateCardFormState>);
     let mut editing_item = use_signal(|| None::<RateCardItemFormState>);
 
-    // The list endpoint is the only read for a single card's metadata
-    // (there is no GET /rate-cards/{id}); pull a page and find the row.
+    // SPEC-13.1.10 / SPEC-13.7.4: the list endpoint is the only read for a
+    // single card's metadata (there is no GET /rate-cards/{id}); pull a page
+    // and find the row.
     let mut card_resource = use_resource(move || {
         let id = id_for_card.clone();
         async move {
@@ -2919,6 +2988,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
             rows.into_iter().find(|c| c.id.to_string() == id)
         }
     });
+    // SPEC-13.7.5: rate items fetch (GET /rate-cards/{id}/items).
     let mut items_resource = use_resource(move || {
         let id = id_for_items.clone();
         async move {
@@ -2968,6 +3038,8 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
     // ContentUnavailable rather than the "Could not load" card below. A
     // Some(None) while still reachable is the real not-found and keeps the
     // existing branch. `can_mutate` gates the Edit Card / Add Rate controls.
+    // SPEC-13.4.4: `can_edit` (use_can_manage_billing()) gates the Edit Card
+    // button above and the Add Rate / row-click affordances below.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
     let fetch_failed = matches!(*card_snapshot, Some(None));
@@ -3228,8 +3300,8 @@ fn RateCardItemsCard(
 // ============================================================================
 // Rate-card editing (MAPPS-160)
 //
-// Cards: POST/PUT /rate-cards, DELETE /rate-cards/{id}. Items: upsert via
-// POST /rate-cards/{id}/items (keyed on work_type_id), DELETE
+// SPEC-13.7.5: Cards: POST/PUT /rate-cards, DELETE /rate-cards/{id}. Items:
+// upsert via POST /rate-cards/{id}/items (keyed on work_type_id), DELETE
 // /rate-card-items/{id}. All writes require a finance role server-side
 // (`RequireFinance`); the UI gates the affordances on the same capability.
 // ============================================================================
@@ -3354,6 +3426,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
             #[cfg(feature = "app")]
             {
                 match id {
+                    // SPEC-13.5.10: verb-specific failure, inside the modal.
                     None => match crate::hooks::fetch::api::post_authed::<RateCardResponse, _>(
                         "/rate-cards",
                         &body,
@@ -3391,6 +3464,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
             // ConfirmDialog before this fires, so just perform the delete.
             #[cfg(feature = "app")]
             {
+                // SPEC-13.5.10: verb-specific failure, inside the modal.
                 match crate::hooks::fetch::api::delete_authed(&format!("/rate-cards/{id}")).await {
                     Ok(()) => ondeleted.call(()),
                     Err(err) => error.set(format!("Could not delete rate card: {err}")),
@@ -3409,6 +3483,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
             error: error.read().clone(),
             create_label: "Create Rate Card".to_string(),
             delete_title: "Delete rate card".to_string(),
+            // SPEC-13.9.2: rate-card delete confirmation states it cannot be undone.
             delete_message: "Delete this rate card? This cannot be undone.".to_string(),
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
@@ -3545,6 +3620,8 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
         emergency_err.set(String::new());
         let mut ok = true;
 
+        // SPEC-13.5.11: work type required, hourly rate required and
+        // numeric, after-hours/emergency optional numbers.
         let wt = work_type_id.read().trim().to_string();
         let work_type_uuid = if wt.is_empty() {
             wt_err.set("Pick a work type.".to_string());
@@ -3591,6 +3668,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
         // bypasses it), so reject negative rates client-side too. Route each
         // negative onto its own field; a failed parse already errored that
         // field (its value is `None`), so the check below skips it.
+        // SPEC-13.5.11: explicit negative rejection on all three rate fields.
         if let Some(h) = hourly_val {
             if h.is_sign_negative() {
                 hourly_err.set("Rates cannot be negative.".to_string());
@@ -3651,6 +3729,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 .await
                 {
                     Ok(_) => onsaved.call(()),
+                    // SPEC-13.5.10: verb-specific failure, inside the modal.
                     Err(err) => error.set(format!("Could not save rate: {err}")),
                 }
             }
@@ -3677,6 +3756,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                     .await
                 {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-13.5.10: verb-specific failure, inside the modal.
                     Err(err) => error.set(format!("Could not delete rate: {err}")),
                 }
             }
@@ -3693,6 +3773,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
             error: error.read().clone(),
             create_label: "Add Rate".to_string(),
             delete_title: "Delete rate".to_string(),
+            // SPEC-13.9.2: rate delete confirmation states it cannot be undone.
             delete_message: "Delete this rate? This cannot be undone.".to_string(),
             onclose: move |_| onclose.call(()),
             onsave: handle_save,

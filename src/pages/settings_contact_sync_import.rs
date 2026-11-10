@@ -42,11 +42,14 @@ use crate::pages::settings::{AdminOnlyNotice, SettingsBreadcrumb};
 use crate::Route;
 
 /// Google's system group holding every contact in the account.
+// SPEC-8.2.5: identifies Google's built-in label among the account's own.
 pub const EVERYTHING: &str = "contactGroups/myContacts";
 /// Google's starred contacts.
+// SPEC-8.2.5: identifies Google's built-in label among the account's own.
 pub const STARRED: &str = "contactGroups/starred";
 
 /// `POST /integrations/contact-sync/preview` (PMS-1242).
+// SPEC-8.2.5: every field below defaults on absence.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Preview {
     #[serde(default)]
@@ -127,6 +130,8 @@ pub struct LabelRow {
 
 /// The labels in the order they are offered: the account's own labels by
 /// name, then Starred, then everything last.
+// SPEC-8.1.23: own labels sorted case-insensitively by name, `EVERYTHING`'s
+// row name forced regardless of the server's own name for it.
 pub fn label_rows(preview: &Preview) -> Vec<LabelRow> {
     let mut rows: Vec<LabelRow> = preview
         .groups
@@ -170,6 +175,8 @@ fn plural(n: u32, one: &str, many: &str) -> String {
 /// outcome; and the review queue is named without explaining itself, because
 /// the bullet under this sentence already says what it is for.
 pub fn summary(totals: &Totals) -> String {
+    // SPEC-8.5.7: zero counted contacts and no excluded ones gets this exact
+    // sentence rather than the parts-join below.
     if totals.contacts == 0 {
         return "No contacts carry the chosen labels, so this import would change nothing."
             .to_string();
@@ -235,6 +242,8 @@ enum Step {
 #[component]
 pub fn GoogleContactsImportPage() -> Element {
     use_page_title("Import Google Contacts");
+    // SPEC-8.4.1: AdminOnlyNotice instead of the page body for a non-admin;
+    // the server's own admin check is the real gate (SPEC-6.4.14).
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Import Google Contacts" } };
     }
@@ -253,6 +262,8 @@ fn GoogleContactsImportBody() -> Element {
         .inspect_err(|e| tracing::error!("contact sync status load failed: {e}"))
         .ok()
     });
+    // SPEC-8.7.7: POST /integrations/contact-sync/preview for the Google
+    // account, with no `provider` parameter.
     let preview = use_resource(|| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::post_authed::<Preview, _>(
@@ -276,6 +287,8 @@ fn GoogleContactsImportBody() -> Element {
     // Seed the selection from the connection once it is known, so changing
     // labels later starts from what is saved. In an effect rather than the
     // render body: writing a signal while rendering re-renders forever.
+    // SPEC-8.6.5: seeds at most once (`selected.peek().is_none()` guard);
+    // a later overview refresh never overwrites an in-progress local choice.
     use_effect(move || {
         if let Some(Some(o)) = overview.read().as_ref() {
             if selected.peek().is_none() {
@@ -296,6 +309,8 @@ fn GoogleContactsImportBody() -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-8.7.7: POST /integrations/contact-sync/preview again,
+                // now scoped to the exact selection, still with no `provider`.
                 let body = PreviewBody {
                     group_ids: Some(ids.into_iter().collect()),
                 };
@@ -307,6 +322,7 @@ fn GoogleContactsImportBody() -> Element {
                 .map(|p| p.totals);
                 exact.set(Some(result));
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = ids;
         });
@@ -318,6 +334,8 @@ fn GoogleContactsImportBody() -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-8.6.4 / SPEC-8.7.7: PUT .../selection (no `provider`)
+                // before the run-start call; abort below if this fails.
                 let body = SelectionBody {
                     group_ids: ids.into_iter().collect(),
                 };
@@ -327,10 +345,13 @@ fn GoogleContactsImportBody() -> Element {
                 )
                 .await;
                 if let Err(e) = saved {
+                    // SPEC-8.5.7: selection-save failure message.
                     error.set(format!("Could not save the labels: {e}"));
                     starting.set(false);
                     return;
                 }
+                // SPEC-8.7.7: POST .../runs for the Google account, no
+                // `provider` parameter.
                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                     "/integrations/contact-sync/runs",
                     &NoBody {},
@@ -341,6 +362,7 @@ fn GoogleContactsImportBody() -> Element {
                         navigator.push(Route::SettingsGoogleContacts {});
                     }
                     Err(e) => {
+                        // SPEC-8.5.7: run-start failure after a saved selection.
                         error.set(format!(
                             "The labels are saved, but the import did not start: {e}"
                         ));
@@ -348,6 +370,7 @@ fn GoogleContactsImportBody() -> Element {
                     }
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             {
                 let _ = (ids, navigator);
@@ -386,6 +409,7 @@ fn GoogleContactsImportBody() -> Element {
                 DetailSkeleton {}
                 p { class: "sr-only", role: "status", "Reading the account's labels" }
             },
+            // SPEC-8.5.7: load-failure message.
             (Some(Err(e)), _) => rsx! {
                 Card { ErrorBanner { "Could not read the Google account: {e}" } }
             },
@@ -497,6 +521,8 @@ fn GoogleContactsImportBody() -> Element {
                                     Badge { variant: BadgeVariant::Blue, "{name}" }
                                 }
                             }
+                            // SPEC-8.1.23: exact totals from the server preview,
+                            // not the running per-label estimate from step 1.
                             div { "aria-live": "polite",
                                 match exact_snap {
                                     None => rsx! {
@@ -521,6 +547,10 @@ fn GoogleContactsImportBody() -> Element {
                                 li { "Company names are kept as text; a match is suggested, never linked for you." }
                                 li { "The import runs on the server, so you can leave this page. Progress shows on the Google Contacts card." }
                             }
+                            // SPEC-8.6.1: Start disables itself (and the other
+                            // mutating control, Back) for the duration of the
+                            // start action; SPEC-8.1.23: Start also stays
+                            // disabled until the exact preview has resolved.
                             div { class: "flex flex-wrap gap-3 pt-2",
                                 Button {
                                     disabled: starting()

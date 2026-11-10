@@ -73,6 +73,9 @@ pub struct AssetDrawerProps {
 pub fn AssetDrawer(props: AssetDrawerProps) -> Element {
     let asset_id = props.asset_id;
     let onclose = props.onclose;
+    // SPEC-13.7.3: GET /assets/{id} loads the drawer's snapshot; each field
+    // save goes through InlineFieldEditor's own PATCH /assets/{id}, not
+    // reimplemented in this file.
     let resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let path = format!("/assets/{asset_id}");
@@ -91,6 +94,7 @@ pub fn AssetDrawer(props: AssetDrawerProps) -> Element {
     rsx! {
         // Backdrop. Click-outside closes the drawer; a semi-transparent
         // scrim so the list stays visible under it (ServiceNow shape).
+        // SPEC-13.1.5: backdrop click closes the drawer.
         div {
             class: "fixed inset-0 z-40 bg-content/20",
             onclick: move |_| onclose.call(()),
@@ -99,6 +103,7 @@ pub fn AssetDrawer(props: AssetDrawerProps) -> Element {
             class: "fixed inset-y-0 right-0 z-50 w-full sm:w-[32rem] bg-surface border-l \
                     border-line shadow-xl overflow-y-auto",
             onkeydown: move |e: KeyboardEvent| {
+                // SPEC-13.1.5: Escape closes the drawer.
                 if matches!(e.key(), Key::Named(NamedKey::Escape)) {
                     onclose.call(());
                 }
@@ -113,6 +118,7 @@ pub fn AssetDrawer(props: AssetDrawerProps) -> Element {
                         "Asset"
                     }
                 }
+                // SPEC-13.1.5: Close button.
                 button {
                     r#type: "button",
                     "aria-label": "Close drawer",
@@ -135,6 +141,8 @@ pub fn AssetDrawer(props: AssetDrawerProps) -> Element {
                         "Destructive actions (delete, retire) are on the full detail page."
                     }
                     div { class: "mt-3",
+                        // SPEC-13.1.5: link out to the full detail page for the
+                        // destructive actions (delete, retire) this drawer doesn't expose.
                         Link {
                             to: crate::Route::AssetDetail { id: a.id.to_string() },
                             class: "text-sm text-accent hover:opacity-90 underline underline-offset-2",
@@ -194,10 +202,10 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
     let asset_sig = use_signal(|| props.asset);
     let a = asset_sig.read().clone();
     let path = props.path;
-    // One registry per drawer, threaded into every `InlineFieldEditor`
-    // so clicking one field closes the previously open one. See the
-    // comment on `InlineFieldEditorProps::open_field` for why this
-    // belongs at the host rather than inside the primitive.
+    // SPEC-13.6.10: one registry per drawer, threaded into every
+    // `InlineFieldEditor` so clicking one field closes the previously open
+    // one. See the comment on `InlineFieldEditorProps::open_field` for why
+    // this belongs at the host rather than inside the primitive.
     let open_field: Signal<Option<String>> = use_signal(|| None);
 
     let status_opts = vec![
@@ -415,6 +423,7 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
     }
 }
 
+// SPEC-13.6.10: enforces the open_field-registry invariant above.
 #[cfg(test)]
 mod drawer_single_editor_tests {
     #[test]

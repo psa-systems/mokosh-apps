@@ -89,9 +89,8 @@ manifests (`build.rs`, `Cargo.toml`, `Dioxus.toml`, `package.json`,
 `index.html`, `input.css`, `renovate.json`, `.env.example`, `.gitmodules`,
 `.dockerignore`, `.gitignore`, `justfile`), the container and compose
 definitions (`Dockerfile`, `compose.yml`, `compose.dev-sso.yml`,
-`config/variables.toml`, and every file under `oci-build/`), the CI
-workflows under `.forgejo/workflows/`, and the dev container definition under
-`.devcontainer/`.
+`config/variables.toml`, and every file under `oci-build/`), and the CI
+workflows under `.forgejo/workflows/`.
 
 ### 1.1 Interfaces
 
@@ -196,8 +195,6 @@ format owned by this scope is the operator-facing configuration catalog:
 - **SPEC-1.3.12**: `renovate.json` must declare which dependency managers are
   enabled and how their updates are grouped, and must pin `getrandom` below
   `0.5` until the ecosystem's rand-core transition lands.
-- **SPEC-1.3.13**: `.devcontainer/devcontainer.json` must pin an exact base
-  image and declare the ports the in-container dev server needs forwarded.
 - **SPEC-1.3.14**: `src/branding.rs` must be the only reader of the
   `brand_name`, `brand_logo_url` and `brand_hero_url` runtime configuration
   fields, trimming a configured value and falling back to the built-in
@@ -437,9 +434,9 @@ those files' own behavior belongs to the sections that own them.
   exit 0 only if every case behaved as expected, exit nonzero otherwise; the
   script must not scan the real tree in this mode.
   `check-company-id-copy.sh`, `check-auth-error-prose.sh`,
-  `check-runner-labels.sh`, `check-cancel-routes.sh`, and
-  `check-csp-host-derived-origin.sh` carry no `--self-test` mode (the first
-  three have no synthetic fixture to construct; `check-cancel-routes.sh`'s
+  `check-cancel-routes.sh`, and `check-csp-host-derived-origin.sh` carry
+  no `--self-test` mode (the first two have no synthetic fixture to
+  construct; `check-cancel-routes.sh`'s
   pinned-list diff and `check-csp-host-derived-origin.sh`'s three live HTTP
   scenarios run against real source on every invocation, which is their own
   test of the guard).
@@ -608,9 +605,12 @@ those files' own behavior belongs to the sections that own them.
   occur rather than stopping at the first.
 - **SPEC-2.5.4**: `check-runner-labels.sh` must independently check, and
   report every failing one of, three conditions on `.forgejo/workflows/*.yml`:
-  the Rust-build job in `check.yml` requesting the heavy runner label, no
-  workflow referencing a retired `*_LATEST` runner label, and `check.yml`
-  not installing OS packages at run time.
+  the Rust-build job in `check.yml` (the job named `cargo`) requesting the
+  heavy runner label in its own `runs-on`, not merely the label appearing
+  somewhere in the file; no workflow referencing a retired `*_LATEST`
+  runner label; and `check.yml` not installing OS packages at run time. A
+  missing `check.yml`, or no `cargo` job with a `runs-on`, must exit 2
+  (SPEC-2.5.1).
 - **SPEC-2.5.5**: `check-cancel-routes.sh` must fail if the sorted set of
   `Link`-rendered Cancel destinations across `src/pages/*.rs` differs at all
   from its pinned expected set, printing a diff of expected versus actual so
@@ -2287,6 +2287,485 @@ part of this section's subject matter.
   corresponding mutation is sent, so a stale open form cannot be
   resubmitted against an id the mutation has already made stale.
 
+## 8. Contact sync and import
+
+Scope: `src/pages/contact_sync_review.rs`, `src/pages/settings_contact_roles.rs`,
+`src/pages/settings_contact_sync.rs`,
+`src/pages/settings_contact_sync_group_import.rs`,
+`src/pages/settings_contact_sync_icloud.rs`,
+`src/pages/settings_contact_sync_import.rs`,
+`src/pages/settings_contact_sync_microsoft.rs`,
+`src/pages/settings_contact_sync_vcard.rs`.
+
+`settings_contact_sync.rs` is the Google Contacts settings page, but it also
+defines the `Overview`/`Connection`/`Run`/`RunFailure` wire types,
+`card_state_of`, `copy_for`'s shared shape, `SyncCadence`, `RunProgress`,
+`FailureList`, `ConnectionFacts` and `disconnect_message_from`, which
+`settings_contact_sync_icloud.rs` and `settings_contact_sync_microsoft.rs`
+reuse for their own provider; a requirement stated once in this section
+against `settings_contact_sync.rs` applies to the iCloud and Microsoft pages
+wherever they call the same function, and is not restated per provider.
+`settings_contact_sync_group_import.rs` is likewise shared between the
+`ICloudContactsImportPage` and `MicrosoftContactsImportPage` routes through
+one `Vendor`-parameterized `GroupImportBody` component.
+
+### 8.1 Interfaces
+
+- **SPEC-8.1.1**: `ContactImportReviewPage` (`src/pages/contact_sync_review.rs`)
+  must render a loading skeleton while the review queue loads, an error
+  banner "Could not load the review queue: {e}" on failure, an empty state
+  titled "Nothing to review" when the queue is empty, and otherwise a count
+  line and one `ReviewCard` per queued record.
+- **SPEC-8.1.2**: `ReviewCard` must render a card heading
+  "{kind} {index+1} of {total}: {name}", a native radio-button fieldset of
+  candidates with an `aria-keyshortcuts`-labelled Link/Create new/Skip
+  action set, and, whenever more than one candidate is present, a hint
+  "{n} Mokosh contacts could be this person. Choose one to link, or create a
+  new contact."; the Link action must be disabled unless a candidate is
+  chosen from a non-empty candidate list.
+- **SPEC-8.1.3**: `ReviewCard`'s keyboard shortcut handler must map a plain
+  (no Ctrl/Alt/Meta) `l`/`L` to Link, `c`/`C` to Create, and `s`/`S` to Skip,
+  case-insensitively, and must ignore the key entirely whenever any
+  modifier is held.
+- **SPEC-8.1.4**: `ReviewCard` must require confirmation ("Skip this
+  contact?", confirm label "Skip it") before sending a Skip answer, and must
+  send a Link or Create answer immediately with no confirmation.
+- **SPEC-8.1.5**: After an answer resolves, `ReviewCard` must remove that
+  record from the local queue without reloading it from the server, move
+  focus to the next remaining record's heading (or to the page title if the
+  queue is now empty), and announce the outcome through a polite live
+  region using one of the fixed templates "Linked {source} to {target}.",
+  "Linked {source}.", "Created a new contact for {source}.", or "Skipped
+  {source}; it will not be imported.", followed by "Nothing left to
+  review.", "1 left to review.", or "{n} left to review."
+- **SPEC-8.1.6**: `ImportReviewLink` must render nothing when the contact
+  sync overview reports zero open reviews, and otherwise a link to
+  `Route::ContactImportReview` reading "Review imports ({waiting})".
+- **SPEC-8.1.7**: `ContactRolesListPage` (`src/pages/settings_contact_roles.rs`)
+  must render a 3-row loading table while the role list loads, an inline
+  error banner "Could not load portal roles. Refresh the page to retry." on
+  a reachable-server failure (or a full unavailable notice when the server
+  is unreachable), an empty-table message "No portal roles yet. Click New
+  role to add one." when the list is empty, and otherwise one row per role
+  with Name, Capabilities, Contacts and a per-row Delete action.
+- **SPEC-8.1.8**: `ContactRoleRow`'s Delete action must be disabled, in this
+  priority order, for a built-in role ("Built-in roles cannot be deleted."),
+  then for a role with at least one assigned contact ("{n} contact(s) hold
+  this role; remove those assignments first.", singular wording for
+  exactly one), then whenever the server is unreachable ("Can't delete
+  while the server is unreachable."), and must otherwise require
+  confirmation (`Delete portal role "{name}"`, "This cannot be undone.")
+  before deleting.
+- **SPEC-8.1.9**: `ContactRoleRow` must truncate a role's capability list to
+  60 characters with a trailing "..." in the table cell, while exposing the
+  untruncated list through the cell's tooltip text, and must render "-" for
+  an empty capability list and for a contact count the server did not
+  return.
+- **SPEC-8.1.10**: `ContactRoleEditPage` must skip the role fetch and start
+  from a blank form when its route id is the literal string `"new"`,
+  otherwise fetching `GET /portal-roles/{id}` and rendering a loading state
+  until both that fetch and the capability-descriptor fetch resolve, an
+  unavailable notice when the server is unreachable, or "Could not load
+  this role. Refresh the page to retry." on any other role-fetch failure.
+- **SPEC-8.1.11**: `ContactRoleEditForm` must render a required name field
+  (max 64 characters) and a capability checkbox per descriptor grouped by
+  the descriptor's `group` in first-appearance order, must render every
+  checkbox disabled for a built-in role while keeping the name field
+  editable, and must show "Built-in role. You can rename it, but its
+  capability set is fixed." in place of "Name the role and pick the
+  capabilities it grants." when the role is built-in.
+- **SPEC-8.1.12**: `GoogleContactsSettingsPage` (`src/pages/settings_contact_sync.rs`)
+  must render `AdminOnlyNotice` for a non-admin and otherwise
+  `GoogleContactsSettingsBody`, which must show a loading skeleton while the
+  overview loads and "Could not load the Google Contacts connection." if
+  the fetch fails or no card state can be derived from it.
+- **SPEC-8.1.13**: `card_state_of` must classify the overview into exactly
+  one `CardState`, checked in this order: the organization switch is off;
+  no deployment client is configured and never connected; never connected
+  but configured; an import run is queued or running; the connection needs
+  reconnecting; the connection is throttled; three or more consecutive
+  failures; the latest finished run failed with at least one failed record;
+  the connection's own `sync_status` is `"failed"`; no groups/labels/folders
+  are selected; otherwise healthy.
+- **SPEC-8.1.14**: `copy_for` must map every `CardState` from SPEC-8.1.13 to
+  a fixed badge text and tone, headline and next-step sentence, and
+  `actions_for` must map the same state to the exact subset of
+  {connect, reconnect, sync_now, disconnect, choose_labels} enabled for it;
+  both functions are defined once in `settings_contact_sync.rs` and reused
+  verbatim by the iCloud and Microsoft pages for their own copy and action
+  sets.
+- **SPEC-8.1.15**: `SyncCadence` must offer the fixed interval list 10, 15,
+  30, 60, 120, 240, 480 and 1440 minutes, injecting the connection's current
+  interval into the list when it is not already one of them, and must make
+  no network call when the chosen value equals the current one.
+- **SPEC-8.1.16**: `RunProgress` must render "{processed} of {total}
+  contacts read ({p}%)" once a run reports a total, or "Reading contacts
+  from {source}..." before one is known; `FailureList` must list failure
+  reasons most-frequent first (ties broken alphabetically) and append
+  "{unlisted} more not listed" whenever the run's failed-record count
+  exceeds the number of failure reasons returned; `ConnectionFacts` must
+  show the account identifier, the last sync time or "Never", a label/group
+  count ("None chosen"/"1 label"/"{n} labels"), and, only when non-zero, a
+  "Deleted in {source}" count suffixed ", kept in Mokosh".
+- **SPEC-8.1.17**: Connecting (on any of the Google, iCloud or Microsoft
+  pages) must show the provider's fixed consent-point list before the
+  connect call fires; turning the organization switch off must show a
+  confirmation naming what is kept before writing it, while turning it on
+  must write the setting immediately with no confirmation. Only
+  `settings_contact_sync.rs` (Google) additionally re-syncs the checkbox
+  from the server when the turn-off confirmation is cancelled, rather
+  than leaving it in its optimistic unticked state; the iCloud and
+  Microsoft pages' cancel path does not do this, tracked as a separate
+  parity defect, not a requirement of this section.
+- **SPEC-8.1.18**: `settings_contact_sync.rs`'s `return_banner` must map a
+  `contact_sync` query parameter of `"connected"`, `"reconnected"`, or
+  `"failed"` to one fixed success or error banner each, and any other value
+  or its absence to no banner.
+- **SPEC-8.1.19**: `GroupImportBody` (`src/pages/settings_contact_sync_group_import.rs`)
+  is one component parameterized by a `Vendor` constant (`ICLOUD` or
+  `MICROSOFT`) that `ICloudContactsImportPage` and
+  `MicrosoftContactsImportPage` each render behind their own admin-only
+  gate, with every vendor-specific string (display name, group noun, hint
+  text) coming from that constant.
+- **SPEC-8.1.20**: `GroupImportBody`'s group list must rename the server's
+  ungrouped bucket to "Contacts in no group" regardless of the name the
+  server sent, and must sort it after every named group, which are
+  themselves sorted case-insensitively by name.
+- **SPEC-8.1.21**: `GroupImportBody` must present a two-step stepper
+  ("1. Choose {groups}", "2. Review and import"); the Review step must show
+  "Working out exactly what this selection would do..." until the
+  exact-selection preview resolves, and its Start action must stay disabled
+  until that preview has resolved successfully.
+- **SPEC-8.1.22**: `ICloudContactsSettingsPage` (`src/pages/settings_contact_sync_icloud.rs`)
+  must render, behind its admin-only gate, an Apple ID field (type email)
+  and an app-specific-password field (type password, with the help text
+  "Not your Apple ID password. Mokosh stores it encrypted and never shows
+  it again.") whenever the card state allows connecting or reconnecting,
+  labelling the submit action "Connect iCloud account" or "Save password"
+  depending on which.
+- **SPEC-8.1.23**: `GoogleContactsImportPage`/`GoogleContactsImportBody`
+  (`src/pages/settings_contact_sync_import.rs`) must list the account's own
+  labels alphabetically (case-insensitively), then the fixed `STARRED` label,
+  then the fixed `EVERYTHING` label last, with `EVERYTHING`'s row name
+  forced to "Every contact in the account" regardless of the server's name
+  for it; its Review step must show exact totals from a server preview and
+  keep Start disabled until that preview succeeds.
+- **SPEC-8.1.24**: `MicrosoftContactsSettingsPage`/`Body` (`src/pages/settings_contact_sync_microsoft.rs`)
+  must reuse `card_state_of`/`actions_for`/`StateIcon` from
+  `settings_contact_sync.rs` (SPEC-8.1.13/8.1.14) and supply its own
+  Microsoft-specific badge/headline/next-step text and its own four-item
+  `CONSENT_POINTS` list, shown only while the state allows connecting or
+  reconnecting.
+- **SPEC-8.1.25**: `VcardImportPage`/`VcardImportBody` (`src/pages/settings_contact_sync_vcard.rs`)
+  must drive a four-step flow (Upload, Choose, Review, Importing) behind an
+  admin-only gate; the Upload step must accept only `.vcf`/`.vcard`
+  (`text/vcard`/`text/x-vcard`) files and must list the account's recent
+  uploads with their own loading, empty and unavailable states; its
+  `upload_status` must report, in order, a finished/queued/running run's
+  own status text, then "Expired" once the upload record is discarded with
+  no run, then "Not imported yet".
+
+### 8.2 Data model
+
+- **SPEC-8.2.1**: `contact_sync_review.rs`'s `ReviewItem`, `SourceSnapshot`,
+  `SnapshotPhone` and `Candidate` must default every field but
+  `ReviewItem.external_id` and `Candidate.contact_id`/`match_reason` on
+  absence, so an older or newer server payload still decodes; its
+  `ResolveBody` must tag the action as `link`, `create` or `skip`
+  (snake_case) and must omit `connection_id` from the request body when it
+  is `None` rather than serializing it as `null`.
+- **SPEC-8.2.2**: `settings_contact_roles.rs`'s `PortalRoleWire` must
+  default `capabilities` and `is_builtin` on absence and must leave
+  `contacts_count` as `None` (rendered "-") rather than `0` when the server
+  omits it, since the server does not currently return it; its
+  `CreateRoleBody` must always send both `name` and `capabilities`, while
+  `UpdateRoleBody` must send each of `name`/`capabilities` only when it
+  changed, and must never send a changed `capabilities` for a built-in
+  role.
+- **SPEC-8.2.3**: `settings_contact_sync.rs`'s `Overview` must default
+  `enabled`/`icloud_enabled`/`microsoft_enabled` to `true` and
+  `configured`/`microsoft_configured` to `false` on absence, and must
+  resolve a named provider's connection through `connection_for(provider)`
+  (`"icloud"`/`"microsoft"` to their own field, anything else including
+  `"google"` to the Google field); its `Connection` must default
+  `sync_interval_minutes` to 60 and every count field
+  (`consecutive_failures`, `open_reviews`, `deleted_in_source`) to 0 on
+  absence; its `Run` must default every count field to 0, `failures` to
+  empty (capped at 50 by the server), and must treat `status` in
+  {`"queued"`, `"running"`} as active.
+- **SPEC-8.2.4**: `settings_contact_sync_group_import.rs`'s `PreviewBody`
+  must omit `group_ids` from the request body for the initial, unfiltered
+  preview rather than sending it as `null`, while its `SelectionBody`
+  always sends a `group_ids` list; its `UNGROUPED` sentinel
+  (`"mokosh:ungrouped"`) identifies the server's placeholder group for
+  records in no group, shared with the vCard wizard's identical sentinel.
+- **SPEC-8.2.5**: `settings_contact_sync_import.rs`'s `Preview`,
+  `PreviewGroup`, `PreviewRecord` and `Totals` must default every field on
+  absence; its fixed label constants `EVERYTHING`
+  (`"contactGroups/myContacts"`) and `STARRED`
+  (`"contactGroups/starred"`) identify Google's built-in labels among the
+  account's own.
+- **SPEC-8.2.6**: `settings_contact_sync_vcard.rs`'s `CardProblem`,
+  `UploadedFile`, `Uploaded` and `RecentUpload` must default their optional
+  fields on absence; unlike the group-import and Google wizards, its
+  `PreviewBody`/`ImportBody` always send a non-optional `group_ids` list.
+- **SPEC-8.2.7**: `settings_contact_sync_microsoft.rs`'s `AuthorizeResponse`
+  must default `authorize_url` to an empty string on absence; its
+  `SettingWrite` (shared shape with the Google and iCloud pages' own
+  setting-write body) carries `category`, `key` and the boolean `value`
+  sent to `PUT /settings`.
+
+### 8.3 Configuration
+
+- **SPEC-8.3.1**: The organization-level enable switch for each provider is
+  a tenant setting under category `"integrations"`, keys
+  `google_contacts_enabled`, `icloud_contacts_enabled` and
+  `microsoft_contacts_enabled`, written through `PUT /settings` and read
+  back from the shared `Overview`.
+- **SPEC-8.3.2**: The Google, iCloud, Microsoft and vCard pages must each
+  poll `GET /integrations/contact-sync` (or, for vCard, the run endpoint)
+  every 3000 milliseconds while their own connection shows an active
+  import, and must stop polling as soon as it is no longer active.
+- **SPEC-8.3.3**: `settings_contact_sync.rs`'s `cadence_minutes` offers the
+  fixed list 10, 15, 30, 60, 120, 240, 480, 1440 minutes (`cadence_label`
+  rendering 1440 as "Once a day", 60 as "Every hour", another multiple of
+  60 as "Every {n} hours", and anything else as "Every {m} minutes"); the
+  server accepts any value from 5 to 1440 inclusive.
+- **SPEC-8.3.4**: `settings_contact_sync.rs`'s `FAILING_AFTER` constant (3)
+  is the consecutive-failure count at which `card_state_of` reports
+  `FailingRepeatedly` (SPEC-8.1.13); per the comment at
+  `settings_contact_sync.rs:61`, the server sends its own
+  failing-repeatedly notification at the same count, a claim this client
+  file states but does not itself enforce.
+- **SPEC-8.3.5**: `settings_contact_sync_vcard.rs`'s `MAX_BYTES` constant
+  (10 MiB) is a client-side mirror of the server's own upload size limit,
+  checked only to skip a doomed upload before sending it; the server's
+  limit, not this constant, is authoritative.
+- **SPEC-8.3.6**: Every network call on every page in this scope must
+  compile to a no-op under a build with neither the `app` nor the `web`
+  feature enabled, consistent with the pattern cited at SPEC-6.3.6.
+
+### 8.4 Security
+
+- **SPEC-8.4.1**: Every settings and import page in this scope except
+  `ContactRolesListPage` and `ContactRoleEditPage` (`GoogleContactsSettingsPage`,
+  `ICloudContactsSettingsPage`, `MicrosoftContactsSettingsPage`,
+  `GoogleContactsImportPage`, `ICloudContactsImportPage`,
+  `MicrosoftContactsImportPage`, `VcardImportPage`) must render
+  `AdminOnlyNotice` instead of its body for a non-admin; this client-side
+  gate is not itself sufficient authorization, and every mutating call
+  these pages make must rely on the server's own admin check, consistent
+  with SPEC-6.4.14. `ContactRolesListPage` and `ContactRoleEditPage` render
+  no such in-page gate even though their Settings-surface registration is
+  staff-admin-only (`SurfaceVisibility::StaffAdmin` in `settings.rs`), unlike
+  every other page in this list; this gap is tracked as a separate defect,
+  not a requirement of this section.
+- **SPEC-8.4.2**: `ContactRoleEditForm`'s capability checkboxes must be
+  rendered disabled for a built-in role and its submit must never send a
+  changed `capabilities` value for one (SPEC-8.2.2), as a client-side
+  mirror of the server's own read-only enforcement of a built-in role's
+  capability set.
+- **SPEC-8.4.3**: `ContactRoleRow`'s delete action must only fire from the
+  confirm dialog's own confirm action, never from the row's bare click
+  handler, and the dialog itself must be reachable only once the three
+  disable conditions in SPEC-8.1.8 all pass.
+- **SPEC-8.4.4**: Connecting a Google, iCloud or Microsoft account must
+  show that provider's fixed consent-point list (naming what is read, that
+  nothing is written back, where it is stored, and how to revoke it)
+  before the authorize or connect call fires; the user cannot bypass this
+  dialog to connect directly.
+- **SPEC-8.4.5**: `settings_contact_sync_icloud.rs` must clear its
+  `app_password` form field to empty immediately after a successful
+  connect call, so the submitted password is never redisplayed.
+- **SPEC-8.4.6**: `settings_contact_sync_group_import.rs` must append
+  `?provider={vendor.provider}` to every call it makes on the shared
+  preview/selection/runs endpoints, so a Microsoft group import can never
+  be mistaken by the server for a Google one through an unqualified path.
+- **SPEC-8.4.7**: `settings_contact_sync_vcard.rs`'s client-side `precheck`
+  (empty file, oversized file) is a UX shortcut only, not the security or
+  validity boundary; it must refuse a file only when the server certainly
+  would, and the server's own message is what is shown when the server
+  itself refuses an upload `precheck` did not catch.
+
+### 8.5 Error handling and observability
+
+- **SPEC-8.5.1**: `contact_sync_review.rs` must log an error and show
+  "Could not load the review queue: {e}" when the queue fails to load, and
+  must show "Could not answer {name}: {e}" scoped to that record when an
+  answer fails.
+- **SPEC-8.5.2**: `settings_contact_roles.rs` must log an error and show
+  "Could not load portal roles. Refresh the page to retry." on a list-load
+  failure, and must log a separate error and render the edit form with an
+  empty capability list ("No capabilities available. The server did not
+  return any capability descriptors.", rather than blocking the form)
+  when the capability-descriptor fetch fails.
+- **SPEC-8.5.3**: `ContactRoleEditForm` must reject an empty (after
+  trimming) name with "Name is required.", a name over 64 characters with
+  "Name must be 64 characters or fewer.", and, only when creating a new
+  role, zero selected capabilities with "Pick at least one capability.";
+  a save failure must show the server's own message when the server
+  returned a non-empty one, otherwise a generic fallback.
+- **SPEC-8.5.4**: `settings_contact_sync.rs` must log an error and show
+  "Could not load the Google Contacts connection." on an overview-load
+  failure; a failed connect attempt must show "Could not start the
+  connection: {e}" (or, on a non-wasm build whose authorize call
+  succeeded, an informational "Open this address in a browser to connect:
+  {url}" reusing the same banner); a failed sync-now or disconnect must
+  show "{action}: {e}" ("Could not start an import"/"Could not
+  disconnect"); a failed cadence change must show "Could not change how
+  often this syncs: {e}"; a failed enable/disable write must show "Could
+  not change the setting: {e}".
+- **SPEC-8.5.5**: `settings_contact_sync_icloud.rs` and
+  `settings_contact_sync_microsoft.rs` must apply the same error-message
+  shapes as SPEC-8.5.4 for their own sync-now, disconnect and
+  enable/disable actions, each naming its own provider. For a failed
+  connect attempt, `settings_contact_sync_microsoft.rs` must additionally
+  match SPEC-8.5.4's connect shape ("Could not start the connection: {e}",
+  or on a non-wasm build "Open this to continue: {url}" once the
+  authorize call itself succeeded, or "Could not open Microsoft's
+  sign-in page: {e}" when the authorize call itself fails), while
+  `settings_contact_sync_icloud.rs` must instead show the connect
+  endpoint's own error text verbatim with no added wrapper, since its
+  connect flow is a direct credential submission rather than an
+  authorize-URL redirect.
+- **SPEC-8.5.6**: `settings_contact_sync_group_import.rs` must show "Could
+  not read the {vendor.display} account: {e}" when the initial group
+  preview fails, "Could not save the groups: {e}" when the selection save
+  fails (stopping before starting the run), and "The groups are saved, but
+  the import did not start: {e}" when the run-start call fails after the
+  selection was saved.
+- **SPEC-8.5.7**: `settings_contact_sync_import.rs` must show "Could not
+  read the Google account: {e}" on a load failure, "Could not save the
+  labels: {e}" on a selection-save failure, and "The labels are saved, but
+  the import did not start: {e}" on a run-start failure after a saved
+  selection; its `summary` must render "No contacts carry the chosen
+  labels, so this import would change nothing." when the selection
+  resolves to zero counted contacts and no excluded ones.
+- **SPEC-8.5.8**: `settings_contact_sync_vcard.rs`'s `precheck` must reject
+  an empty file with "{file_name} is empty." and a file over 10 MiB with
+  "{file_name} is larger than 10 MB, the most one import accepts. Export
+  the contacts in smaller groups and import each file."; an upload the
+  server rejects must show "The file was not accepted: {e}"; a failed
+  import start must show "The import did not start: {e}"; its
+  `run_progress` must render, by run status, "Waiting to start. The import
+  runs on the server; you can leave this page." (queued), "Importing:
+  {processed} of {total} contacts read." or "Importing: reading the
+  file." (running), a fixed created/linked/updated/queued-for-review
+  summary (completed), "The import was cancelled. What it had already
+  written is kept." (cancelled), or the run's own error text (any other
+  failure).
+- **SPEC-8.5.9**: `settings_contact_sync_group_import.rs`'s preview-load
+  failure must be logged with a message naming the vendor whose preview
+  failed, not a vendor fixed at compile time; a code-versus-intent
+  contradiction at `settings_contact_sync_group_import.rs:191`, where the
+  log message is hardcoded to say "icloud" even while importing for
+  Microsoft, is tracked as a separate defect (see the PR body) and is not
+  itself a requirement of this section.
+
+### 8.6 Concurrency and ordering
+
+- **SPEC-8.6.1**: Every mutating action on every page in this scope must
+  disable its own control (and, where one page exposes several concurrent
+  actions, every other mutating control on the page) for the duration of
+  that action, so a second submit cannot be issued while the first is still
+  in flight.
+- **SPEC-8.6.2**: `ContactRoleRow`'s delete handler must additionally check
+  its own in-flight flag and return immediately if a delete for that row
+  is already running, rather than relying on the disabled button alone.
+- **SPEC-8.6.3**: The Google, iCloud, Microsoft and vCard pages' poll loops
+  (SPEC-8.3.2) must each guard against stacking more than one in-flight
+  poll: a loop must not schedule its next tick until the previous one has
+  both slept and refreshed its resource.
+- **SPEC-8.6.4**: `settings_contact_sync_group_import.rs` and
+  `settings_contact_sync_import.rs` must each perform the selection write
+  before the run-start call, and must abort before starting the run
+  whenever the selection write fails.
+- **SPEC-8.6.5**: `settings_contact_sync_group_import.rs` and
+  `settings_contact_sync_import.rs` must each seed their local selection
+  state from the saved overview connection at most once, on first load,
+  never overwriting an in-progress local choice on a later overview
+  refresh.
+- **SPEC-8.6.6**: `settings_contact_sync.rs`'s `confirm_off` cancel path
+  must restart the overview resource to resync the enable checkbox's
+  visual state, since the checkbox optimistically unticks before the
+  confirmation is answered.
+
+### 8.7 Integrations
+
+- **SPEC-8.7.1**: `contact_sync_review.rs` must call
+  `GET /integrations/contact-sync/review-queue` and
+  `POST /integrations/contact-sync/review-queue/resolve`.
+- **SPEC-8.7.2**: `settings_contact_roles.rs` must call `GET /portal-roles`,
+  `GET /portal-roles/{id}`, `POST /portal-roles`, `PUT /portal-roles/{id}`,
+  `DELETE /portal-roles/{id}` and `GET /portal-roles/capabilities`.
+- **SPEC-8.7.3**: `settings_contact_sync.rs` must call
+  `GET /integrations/contact-sync`,
+  `POST /integrations/contact-sync/google/authorize`,
+  `POST /integrations/contact-sync/google/disconnect`,
+  `POST /integrations/contact-sync/runs`,
+  `PUT /integrations/contact-sync/schedule?provider={provider}` and
+  `PUT /settings`.
+- **SPEC-8.7.4**: `settings_contact_sync_icloud.rs` must call
+  `GET /integrations/contact-sync`,
+  `POST /integrations/contact-sync/icloud/connect`,
+  `POST /integrations/contact-sync/runs?provider=icloud`,
+  `POST /integrations/contact-sync/icloud/disconnect` and `PUT /settings`.
+- **SPEC-8.7.5**: `settings_contact_sync_microsoft.rs` must call
+  `GET /integrations/contact-sync`,
+  `POST /integrations/contact-sync/microsoft/authorize`,
+  `POST /integrations/contact-sync/runs?provider=microsoft`,
+  `POST /integrations/contact-sync/microsoft/disconnect` and
+  `PUT /settings`.
+- **SPEC-8.7.6**: `settings_contact_sync_group_import.rs` must call
+  `POST /integrations/contact-sync/preview?provider={provider}`,
+  `PUT /integrations/contact-sync/selection?provider={provider}`,
+  `POST /integrations/contact-sync/runs?provider={provider}` and
+  `GET /integrations/contact-sync`.
+- **SPEC-8.7.7**: `settings_contact_sync_import.rs` must call
+  `POST /integrations/contact-sync/preview`,
+  `PUT /integrations/contact-sync/selection` and
+  `POST /integrations/contact-sync/runs` for the Google account, with no
+  `provider` parameter (the server's default provider for this family of
+  calls is Google).
+- **SPEC-8.7.8**: `settings_contact_sync_vcard.rs` must call
+  `POST /integrations/contact-sync/vcard/uploads`,
+  `GET /integrations/contact-sync/vcard/uploads`,
+  `POST /integrations/contact-sync/vcard/uploads/{file_id}/preview`,
+  `POST /integrations/contact-sync/vcard/uploads/{file_id}/import` and
+  `GET /integrations/contact-sync/runs/{run_id}`.
+
+### 8.8 Build and deployment
+
+None of the files in this section's scope add a build or packaging step of
+their own; they compile under the same `app`/`web` feature gating
+`src/main.rs` and `Cargo.toml` define (see SPEC-1.3.1), consistent with the
+pattern cited at SPEC-6.3.6 and restated as SPEC-8.3.6 for this scope.
+
+### 8.9 Retention and cleanup
+
+- **SPEC-8.9.1**: A Skip answer in `contact_sync_review.rs` is permanent:
+  the record is never imported by any later sync or file import and is
+  never offered to a reviewer again; Link and Create likewise never undo.
+- **SPEC-8.9.2**: `settings_contact_roles.rs`'s role delete is a hard,
+  non-reversible delete with no soft-delete path, and is reachable only
+  once none of SPEC-8.1.8's three disable conditions apply.
+- **SPEC-8.9.3**: Disconnecting a Google, iCloud or Microsoft account must
+  remove only the stored provider credential; every contact already
+  imported stays as a local record, and an in-progress import run stops.
+- **SPEC-8.9.4**: Turning a provider's organization switch off must keep
+  its connection, every already-imported contact and its review queue
+  intact, resuming from where it stopped when the switch is turned back
+  on.
+- **SPEC-8.9.5**: A contact deleted at the source (Google, iCloud or
+  Microsoft) must be kept as a local record in Mokosh; `ConnectionFacts`
+  (SPEC-8.1.16) must report that count rather than deleting the record.
+- **SPEC-8.9.6**: This scope implements no retention or expiry of an
+  uploaded vCard file; `settings_contact_sync_vcard.rs` only reads and
+  displays a file's server-reported expiry (`discarded_at`) as its
+  "Expired" status (SPEC-8.1.25). The file's retention period itself is a
+  server contract this page cites in its own help text, not a requirement
+  this client enforces.
+
 ## 12. Knowledge base
 
 Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
@@ -2345,7 +2824,9 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
   `/kb/articles/{id}/helpful` or `/kb/articles/{id}/not_helpful` and
   update its counts and `my_vote` from the response; both buttons must
   be disabled while a vote is in flight or `can_mutate` is false
-  (`knowledge_base.rs:5054-5150`).
+  (`knowledge_base.rs:5054-5150`). A failed vote POST must leave the
+  counts and `my_vote` unchanged, log at error with the article id, and
+  toast "Your vote was not recorded: {message}" (`vote_failed`).
 - **SPEC-12.1.9**: `ArticleToc` must render nothing for an article
   with no headings, and otherwise a nested "On this page" list whose
   links intercept the click (no router hash navigation), scroll the
@@ -2414,13 +2895,19 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
   paired with its predecessor; this scope persists no server schema
   of its own, only wire DTOs already owned by `crate::modules::kb`.
 - **SPEC-12.2.4**: `place` (`kb_inline.rs:28-50`) must consider only
-  root, non-deleted comments as anchor owners, must silently skip a
-  root comment with no anchor or an unparsable anchor, and must
+  root, non-deleted comments as anchor owners, must skip a root
+  comment with no anchor or an unparsable anchor (neither marked nor
+  an orphan), and must
   classify an anchor that fails to resolve against the current
   rendered text as an orphan (its comment id collected) distinct from
   one that resolves; resolved ranges must be sorted by start offset
   before overlaps are split, and the resulting fragments converted
-  1:1 to `MarkSpec { start, end, ids }` in document order.
+  1:1 to `MarkSpec { start, end, ids }` in document order. An
+  unparsable anchor must not be silent: `InlineComments` logs each
+  live root `unreadable_anchors` names at warn with its comment id,
+  once per change of body or anchors, and `CommentThread` logs a
+  thread whose anchor `anchor_unreadable` rejects once per mount, since
+  it shows no quote.
 - **SPEC-12.2.5**: `orphaned_by_edit` (`kb_inline.rs:56-68`) must
   report exactly the quoted text of a root, non-deleted, anchored
   comment whose anchor resolved against the rendered text before an
@@ -2518,7 +3005,11 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 - **SPEC-12.5.2**: The task-list toggle PUT must, on failure, toast
   "Could not save that change: {message}" and re-fetch the article to
   put the checkbox back, because the DOM has already flipped the box
-  before the request resolves (`knowledge_base.rs:2196-2209`).
+  before the request resolves (`knowledge_base.rs:2196-2209`). A toggle
+  whose index `toggle_task` cannot find must not PUT; it must log at
+  warn with the index and article id, toast "Could not apply that
+  change: the checklist has changed. Try again.", and re-fetch the
+  article the same way.
 - **SPEC-12.5.3**: A 422 on article save whose field name matches
   `template_variables[N]`/`template_variables.N` (`parse_tplvar_index`,
   `knowledge_base.rs:507-519`) must route to that row's inline error
@@ -2540,7 +3031,13 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 - **SPEC-12.5.6**: A failed comments fetch must render "Could not load
   the comments." alongside, not instead of, the version-history half
   of the stream, which continues to render from whatever versions did
-  load (`kb_activity.rs:176,263-265`). Resolve/unresolve failure must
+  load (`kb_activity.rs:176,263-265`). Likewise a failed versions
+  fetch must render "Could not load the history." on the History and
+  All tabs while the comments keep rendering. An empty stream must not
+  show its empty-state text ("No history to show." and the others)
+  when a slice that tab shows failed to load (`empty_state`). A version
+  with no `created_at` sorts first and shows "-"; its id must be
+  logged at warn once per load (`undated_versions`). Resolve/unresolve failure must
   render "Could not {verb} the thread: {message}"; comment edit
   failure must render "Could not save the comment: {e}"; comment
   delete failure must render inside the confirm dialog itself, not the
@@ -2550,18 +3047,49 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 - **SPEC-12.5.7**: If the inline-comment dialog's `open_at` ids no
   longer match any loaded comment, it must render "These comments are
   no longer in the list ({n})." instead of an empty list
-  (`kb_inline.rs:214-216`). If `anchor_dom::text_of` resolves to
-  `None` (the body element is not yet in the DOM), both the placement
-  effect and the selection-capture handler must return without
-  marking, logging, or showing an error
+  (`kb_inline.rs:214-216`). With no selection the "Comment on
+  selection" handler shows "Select some of the article text first,
+  then press this."; with a selection `Anchor::capture` cannot anchor
+  (only whitespace, or past the end of the text) it must log the range
+  and the text length at warn and show "That selection cannot be
+  attached to the article. Select a few words of the text instead."
+  (`capture_selection`). If `anchor_dom::text_of` resolves to `None`
+  (the body element is not yet in the DOM), the placement effect must
+  return without marking, logging, or showing an error, while the
+  handler, which answers a click, must log at warn and show "The
+  article text is not ready yet. Try again in a moment."
   (`kb_inline.rs:117-119,184-186`).
+- **SPEC-12.5.8**: When the article list feeding `KbTreeNav` fails to
+  load, on `KBArticleListPage` or `KBArticleDetailPage`, the rail must
+  render "Could not load the article list." (`role="alert"`) instead of
+  the category tree, never an empty rail that reads as a knowledge base
+  with no articles (`KbTreeNav`'s `load_failed`).
+- **SPEC-12.5.9**: A failed `GET /kb/articles/{id}/vote` seed must keep
+  the counts from the article payload, leave `my_vote` unset, and log
+  at warn with the article id.
+- **SPEC-12.5.10**: `KBArticleDetailPage` must render a templated
+  article with no picks when the template picks it serialized itself
+  fail to parse, and must log that parse failure at error
+  (`parse_template_picks`).
+- **SPEC-12.5.11**: Before an edit save, `ArticleForm` must warn about
+  inline comments the edit orphans (`orphan_check`). When the comments
+  could not be read (the fetch failed or has not finished), it must not
+  save as if none were anchored: it must open a "Could not check for
+  inline comments" confirmation naming the reason, whose "Save anyway"
+  saves and whose "Go back" returns to the form. A create has nothing
+  anchored and is never asked.
+- **SPEC-12.5.12**: The category form's sort order accepts any `i32`,
+  negatives included, and blank as `0`; any other value must be refused
+  on the field with "Enter a whole number between -2147483648 and
+  2147483647." (`parse_sort_order`).
 
 ### 12.6 Concurrency and ordering
 
 - **SPEC-12.6.1**: Every list/detail page's resources must read
   `active_tenant_generation()` inside the `use_resource` closure so an
   org switch or token swap re-fetches (`knowledge_base.rs:564,580,
-  1038,1068,1371,1385,1601,1612,1635,1658,1732,2354,2519,3063`).
+  1038,1068,1371,1385,1601,1612,1635,1658,1732,2354,2519,3063`),
+  including `KBArticleDetailPage`'s vote seed and scoped company names.
   `use_reactive!` must bind the route `id` prop into
   `KBArticleDetailPage`'s article, versions, and comments resources,
   so an in-app article-to-article navigation restarts the fetch rather
@@ -2655,6 +3183,522 @@ network call individually gated behind `#[cfg(feature = "app")]`
 - **SPEC-12.9.5**: "Comment on selection" cancel leaves no server-side
   trace of an uncommitted comment; only the local pending-composer
   signal is cleared (`kb_inline.rs:266`).
+
+## 13. Assets, contracts, quotes and projects
+
+Scope: `src/pages/assets.rs`, `src/pages/asset_catalog_ui.rs`,
+`src/pages/asset_drawer.rs`, `src/pages/contracts.rs`,
+`src/pages/quotes.rs`, `src/pages/projects.rs`.
+
+All six files implement behavior and carry at least one `SPEC-13.`
+citation.
+
+### 13.1 Interfaces
+
+- **SPEC-13.1.1**: `AssetListPage` (`src/pages/assets.rs`) must list
+  assets via a structured `POST /assets/search` query (free text plus
+  parsed filter tokens), falling back automatically to the legacy
+  `GET /assets` query-string form on a 404 from the structured
+  endpoint, and must render a facet sidebar from `POST /assets/search/facets`
+  that fails silently (no banner) on any error.
+- **SPEC-13.1.2**: `AssetListPage` must render a free-text search box
+  that accepts the DSL described in SPEC-13.2.2, a company/status/type
+  filter bar, a column-visibility control persisted per SPEC-13.3.3,
+  row selection with bulk edit and bulk delete, and, when the
+  `assets:catalog` capability is on, a "Bulk create" action opening
+  `AssetBulkCreateModal` and a dismissible `SignatureBanner` above the
+  list.
+- **SPEC-13.1.3**: `AssetListPage` must open `AssetDrawer`
+  (`src/pages/asset_drawer.rs`) for a row click when the
+  `assets:inline_edit` capability is on, and must navigate to
+  `Route::AssetDetail` for that same click otherwise.
+- **SPEC-13.1.4**: `AssetDetailPage` (`src/pages/assets.rs`) must render
+  an editable field panel, a Relationships panel (list, add, remove), a
+  Credentials panel (list, add, audited reveal, delete), a Configuration
+  Items panel (list, audited reveal, delete), a Change History panel, a
+  Related Tickets panel from `GET /tickets?asset_id={id}`, and, when the
+  `assets:report_issue` capability is on, a "Report an issue" action
+  that creates a linked ticket via `POST /assets/{id}/report-issue` and
+  navigates to it.
+- **SPEC-13.1.5**: `AssetDrawer` must render a right-side panel with one
+  `InlineFieldEditor` per field in the Identity, Hardware, Dates,
+  Lifecycle and Notes groups, must close on an Escape keypress, on a
+  backdrop click, and on its own Close button, and must link to the
+  full `Route::AssetDetail` page for the destructive actions (delete,
+  retire) it does not itself expose.
+- **SPEC-13.1.6**: `SignatureBanner` (`src/pages/asset_catalog_ui.rs`)
+  must render a "Save as template" prompt above the asset list whenever
+  `GET /asset-models/signature-detector` returns a candidate with a
+  recent-count of at least 1, and must render nothing while dismissed,
+  while loading, or when the lookup fails or 404s.
+- **SPEC-13.1.7**: `AssetBulkCreateModal` (`src/pages/asset_catalog_ui.rs`)
+  must render a model typeahead against `GET /asset-models?q=`, a
+  company select, and a serials textarea, and must submit the batch via
+  a single `POST /assets/bulk-create` once a model, a company and at
+  least one serial to create are present.
+- **SPEC-13.1.8**: `ContractListPage` (`src/pages/contracts.rs`) must
+  list contracts from `GET /contracts` with company, status and type
+  filters, and `ContractNewPage`/`ContractEditPage` must render the same
+  create/edit form (name, company, type, status, value, dates, contract
+  number, notes, and, on create only, initial line items).
+- **SPEC-13.1.9**: `ContractDetailPage` (`src/pages/contracts.rs`) must
+  render a Summary card, an editable hour-balance allotment, a Line
+  Items card (list, add, edit, delete) backed by `GET /contracts/{id}/items`,
+  an hour-balance card backed by `GET /contracts/{id}/hour-balance`, and
+  a Change History panel.
+- **SPEC-13.1.10**: `RateCardListPage` and `RateCardDetailPage`
+  (`src/pages/contracts.rs`) must list, create, edit and delete rate
+  cards and, within a card's detail, list, add, edit and delete its
+  per-work-type rates.
+- **SPEC-13.1.11**: `QuoteListPage` (`src/pages/quotes.rs`) must list
+  quotes from `GET /quotes` with company, status and free-text filters,
+  and `QuoteDetailPage` must render either the staff lifecycle view or,
+  for a contact session, `CustomerQuoteView`, chosen per SPEC-13.4.2.
+- **SPEC-13.1.12**: The staff quote lifecycle view (`QuoteDetailPage`,
+  `src/pages/quotes.rs`) must render an Actions card offering only the
+  subset of Submit, Approve, Reject, Send, Convert and Cancel that
+  `crate::modules::quotes::status` currently allows, and must render a
+  send dialog, a convert-to-project dialog, and an embedded
+  `ApprovalsSection` for internal sign-off.
+- **SPEC-13.1.13**: `CustomerQuoteView` (`src/pages/quotes.rs`) must
+  render Accept and Decline actions only while the quote's status is
+  one `crate::modules::quotes::status::awaiting_client` accepts and the
+  `quotes:accept` capability is on, and must render a PDF preview or
+  download action gated on the `quotes:download_pdf` capability.
+- **SPEC-13.1.14**: The quote create/edit form (`src/pages/quotes.rs`)
+  must render company (locked once created), title, summary,
+  description, valid-until date, tax amount, and a repeating line-item
+  editor (type, description, quantity, unit price), and must disable
+  content editing entirely once the quote's status leaves the set
+  `crate::modules::quotes::status::allows_content_edit` accepts.
+- **SPEC-13.1.15**: `ProjectListPage` (`src/pages/projects.rs`) must
+  list projects from `GET /projects` with company, status and free-text
+  filters and must render status-count and total-budget stat cards from
+  `GET /projects/summary`.
+- **SPEC-13.1.16**: `ProjectDetailPage` (`src/pages/projects.rs`) must
+  render an Overview card (description, budget, hours, progress), a
+  checklist-item toggle inside a rendered Markdown description that
+  calls back to the server, Edit and Delete actions, and a Change
+  History panel.
+- **SPEC-13.1.17**: `ProjectTasksPage` (`src/pages/projects.rs`) must
+  render a task table with create, edit and delete affordances, each
+  task's own change-history modal, and must disable "Add Task" whenever
+  the owning project's status is `"cancelled"`.
+
+### 13.2 Data model
+
+This scope owns no persisted application schema; it defines the wire
+DTOs these pages exchange with the API server and the client-side
+status/type vocabularies below.
+
+- **SPEC-13.2.1**: `assets.rs`'s `RemoteAsset` must decode every
+  optional CMDB field (company, asset type, assigned user, contact,
+  network identity, lifecycle dates) with `#[serde(default)]`, so a
+  server response omitting any of them still decodes, and must render
+  the asset-status options `active`, `in_stock`, `in_repair`, `retired`
+  and `inactive` on both the list and the edit form.
+- **SPEC-13.2.2**: `AssetListPage`'s search box must parse the tokens
+  `status:`, `tag:`, `warranty:<days>`, `eol:expired`, `dept:`/`department:`,
+  `manuf:`/`make:`/`manufacturer:`, `model:` and `company:"<name>"`
+  (case-insensitive, double-quoted for a multi-word company name), and
+  must treat an unrecognized key or an unparseable value as free text
+  rather than rejecting the query.
+- **SPEC-13.2.3**: `contracts.rs` must render the contract-type options
+  `managed_services`, `block_hours`, `time_and_materials`, `fixed_price`
+  and `warranty`, the contract-status options `draft`, `active`,
+  `expired` and `cancelled` with no client-side transition restriction
+  among them, the billing-cycle options `monthly`, `quarterly`,
+  `annually`, `one_time`, `weekly` and `bi_weekly`, and the line-item-type
+  options `recurring_service`, `block_hours`, `retainer`, `product` and
+  `one_time`, each matching the server's corresponding CHECK constraint.
+- **SPEC-13.2.4**: `contracts.rs`'s `ContractItemFormState` must retain
+  the original `ContractItemResponse` alongside the edited fields and
+  must send it back merged into the `PUT /contract-items/{id}` body, so
+  a field this form does not expose (description, billing frequency,
+  work type, included hours, overage rate, rollover settings, sort
+  order, product id) is never wiped by an edit.
+- **SPEC-13.2.5**: `quotes.rs` must render the quote-status vocabulary
+  `draft`, `submitted`, `approved`, `rejected`, `sent`, `accepted`,
+  `declined`, `expired`, `converted` and `cancelled`, and the line-type
+  options `service`, `product`, `labour`, `expense`, `adjustment` and
+  `discount`, and must derive every status-gated affordance from
+  `crate::modules::quotes::status`, never from a locally re-derived
+  rule.
+- **SPEC-13.2.6**: `projects.rs`'s `RemoteProject` and `RemoteTask` must
+  decode every money and hours field with a number-or-string tolerant
+  reader (`de_flex_f64`), and must render the project-status options
+  `planning` (default), `active`, `on_hold`, `completed` and
+  `cancelled`, and the task-priority options `low`, `medium` (default),
+  `high` and `critical`.
+- **SPEC-13.2.7**: `projects.rs`'s `RemoteTask` must distinguish
+  `actual_hours` (approved logged time only) from `logged_hours` (all
+  non-rejected logged time) as two separate fields, and must not use
+  either in place of the other.
+
+### 13.3 Configuration
+
+- **SPEC-13.3.1**: `AssetListPage`, `QuoteListPage`'s and
+  `ProjectListPage`'s list fetch must each request 25 rows per page.
+- **SPEC-13.3.2**: `AssetBulkCreateModal` must cap a single batch at
+  500 serials, applied after both exact-match deduplication and the
+  already-exists trim, rejecting a submit over that count with
+  "Up to 500 serials per batch; split into two." rather than truncating
+  the batch silently.
+- **SPEC-13.3.3**: `AssetListPage`'s optional-column visibility must
+  persist under the preference key `mokosh:assets:columns:v1`,
+  independent of the active tenant, defaulting to every optional column
+  visible.
+- **SPEC-13.3.4**: `AssetBulkCreateModal`'s model typeahead and
+  `SignatureBanner`'s detector call must both treat a 404 from their
+  respective endpoint as the `assets_catalog` server toggle being off,
+  and `AssetBulkCreateModal` must render
+  "Asset catalog is not enabled on this deployment. Ask an admin to flip the `assets_catalog` toggle."
+  in that case rather than an error.
+- **SPEC-13.3.5**: `SignatureBanner`'s dismiss action must persist under
+  the preference key `mokosh:assets:signature_dismissed:v1` for 30
+  days from the click, independent of the active tenant.
+- **SPEC-13.3.6**: Every network-call site in this scope that depends
+  on the `app` feature (every create/edit/delete/send/convert/accept/decline
+  mutation, and `projects.rs`'s task creation) must compile to a no-op,
+  not a compile error, on a build that does not enable that feature,
+  consistent with the gating pattern cited at SPEC-1.3.1.
+
+### 13.4 Security
+
+- **SPEC-13.4.1**: `ContractListPage` and `QuoteListPage` must render
+  the lifecycle view only for a session with `use_can_manage_billing()`
+  true or, for a contact session, the `contracts:read`/`quotes:read`
+  capability; a contact session lacking that capability must see
+  `PortalAccessRequired`, and a non-contact session lacking it must see
+  `PermissionRequired` with the text
+  "Contracts are restricted to administrator and finance roles. Ask an administrator to grant you access."
+  (quotes: the same sentence with "Quotes").
+- **SPEC-13.4.2**: `QuoteDetailPage` must render `CustomerQuoteView` for
+  a contact session carrying the `quotes:read` capability,
+  `PortalAccessRequired` for a contact session lacking it, the staff
+  lifecycle view for a non-contact session with `use_can_manage_billing()`
+  true or the `quotes:read` capability, and `PermissionRequired`
+  otherwise.
+- **SPEC-13.4.3**: `RateCardListPage` must render its list only for a
+  session with `use_can_manage_billing()` true, denying every other
+  session with `PermissionRequired` and the text
+  "Rate cards are restricted to administrator and finance roles. Ask an administrator to grant you access."
+- **SPEC-13.4.4**: `RateCardDetailPage`'s Edit Card, Add Rate and
+  per-rate edit affordances must each be gated on `use_can_manage_billing()`,
+  independent of the page's own (unrestricted) read access.
+- **SPEC-13.4.5**: `AssetListPage`'s "Bulk create" action and
+  `AssetDrawer`'s inline-edit opening must each be gated on their own
+  capability (`assets:catalog`, `assets:inline_edit`); neither capability
+  gates read access to the asset list or detail page itself.
+- **SPEC-13.4.6**: `AssetDetailPage`'s "Report an issue" action must be
+  gated on the `assets:report_issue` capability, bypassed unconditionally
+  for a staff or platform session.
+- **SPEC-13.4.7**: `AssetDetailPage`'s credential and configuration-item
+  reveal actions must each fetch the decrypted value only on an explicit
+  reveal click, through a dedicated, audited endpoint
+  (`GET /credentials/{id}`, `GET /configuration-items/{id}`), never
+  alongside the secret-free summary list fetch.
+- **SPEC-13.4.8**: `quotes.rs`'s customer-decision actions (Accept,
+  Decline) must be gated on the `quotes:accept` capability in addition
+  to the status check in SPEC-13.1.13; a quote's PDF preview/download
+  must be gated on the `quotes:download_pdf` capability, bypassed
+  unconditionally for a staff or platform session.
+- **SPEC-13.4.9**: Every mutating control in this scope (create, edit,
+  delete, bulk edit, bulk delete, send, convert, accept, decline,
+  checklist toggle) must be disabled whenever `crate::hooks::use_can_mutate()`
+  reports the server unreachable, so a write is never silently queued
+  or lost; `CustomerQuoteView`'s Accept/Decline controls and the staff
+  lifecycle action buttons must additionally show the tooltip
+  "Can't {verb} while the server is unreachable" while disabled for
+  that reason.
+- **SPEC-13.4.10**: `projects.rs`'s project and task list/detail fetches
+  must select a contact bearer ahead of a staff bearer when both are
+  present, so a signed-in contact's request is scoped server-side to
+  their own company's projects.
+
+### 13.5 Error handling and observability
+
+- **SPEC-13.5.1**: `AssetListPage`'s list, facets and company-filter
+  fetches must each log their own failure
+  (`tracing::error!("asset list load failed: {e}")`,
+  `tracing::warn!("asset facets load failed: {e}")`), and the list
+  fetch failure must render an inline `ErrorBanner` while the server is
+  reachable and a full-page unavailable state otherwise; the facets and
+  company-filter failures must render no banner at all.
+- **SPEC-13.5.2**: `AssetDetailPage` must log
+  `tracing::error!("asset detail load failed for {id}: {e}")` on load
+  failure and must distinguish "still loading" from "failed to load" in
+  its rendered state; its audit-log panel must independently track
+  Loading, Ready and Failed states rather than collapsing a failure
+  into an empty history.
+- **SPEC-13.5.3**: The asset new/edit form must require a name (capped
+  at 255 characters, message "Please enter an asset name." when blank
+  and "Name must be {max} characters or fewer." when over), must cap
+  manufacturer, model and serial number at 255 characters and a
+  credential name at 100 characters with the same over-length message
+  pattern, and must require a type ("Please pick an asset type.") and a
+  company ("Please pick a company.") on create.
+- **SPEC-13.5.4**: `AssetListPage`'s bulk edit and bulk delete must each
+  report a full-success count ("Updated {n} asset(s)." /
+  "Deleted {n} asset(s).") or a partial-failure count
+  ("Updated {done} of {total}; {failures} failed." /
+  "Deleted {done} of {total}; {failures} failed.") rather than failing
+  the whole batch on one row's error.
+- **SPEC-13.5.5**: `AssetDetailPage`'s delete, credential-delete and
+  relationship-delete confirmations must surface the server's own
+  refusal reason when the delete is rejected, rather than closing the
+  dialog silently.
+- **SPEC-13.5.6**: `AssetBulkCreateModal` must report, distinctly, the
+  count of duplicate serials dropped (with a five-item preview and an
+  "and N more" suffix), the count already belonging to an asset at the
+  selected company, and the final count to be created, updating all
+  three as the operator types.
+- **SPEC-13.5.7**: `ContractListPage`'s list fetch must log
+  `tracing::error!("contract list load failed: {e}")` and render
+  "Could not load contracts. Refresh the page to retry." while
+  reachable, or a full-page unavailable state otherwise; its company
+  filter must log its own failure separately and degrade to an empty
+  dropdown with no banner.
+- **SPEC-13.5.8**: The contract create/edit form must collect every
+  field error before blocking submit (not fail on the first): name
+  required and capped at 200 characters, value optional but non-negative,
+  at most two decimal places and at most 10,000,000,000, start date
+  required and valid, end date optional but, when set, not before the
+  start date ("End date must be on or after the start date."), contract
+  number optional and capped at 100 characters, notes optional and
+  capped at 2000 characters; on a failed submit it must focus the first
+  invalid field in the fixed order name, company, value, start date,
+  end date, contract number, notes.
+- **SPEC-13.5.9**: If a contract's creation succeeds but an initial line
+  item's creation fails, `ContractNewPage` must not roll back the
+  contract; it must show
+  "Contract saved, but an item failed: {err}" and still navigate to the
+  new contract's detail page.
+- **SPEC-13.5.10**: `contracts.rs`'s line item, allotment, rate card and
+  rate add/edit/delete actions must each report their own failure with
+  a verb-specific message ("Could not save line item: {err}", "Could
+  not delete line item: {err}", "Could not save allotment: {err}",
+  "Could not save rate card: {err}", "Could not delete rate card: {err}",
+  "Could not save rate: {err}", "Could not delete rate: {err}") inside
+  the acting modal, without navigating away.
+- **SPEC-13.5.11**: The rate-card item form must require a work type,
+  require the hourly rate as a number, accept the after-hours and
+  emergency rates as optional numbers, and must reject a negative value
+  on any of the three explicitly, because the input's `min="0"` is
+  advisory only and does not block a pasted or programmatic negative
+  value.
+- **SPEC-13.5.12**: `contracts.rs`'s per-line-item parse step at submit
+  time (quantity, unit price, included hours) must log a warning and
+  report a row-numbered error ("Item {n} quantity is not a number", and
+  the equivalent for unit price and included hours) if it disagrees
+  with the form's own prior validation of that row, since the two are
+  expected to always agree.
+- **SPEC-13.5.13**: `QuoteListPage`'s list fetch must log
+  `tracing::error!("quote list load failed: {e}")` and render
+  "Could not load quotes. Refresh the page to retry." while reachable,
+  or a full-page unavailable state otherwise.
+- **SPEC-13.5.14**: `CustomerQuoteView` must log
+  `tracing::warn!("customer quote load failed for {qid}: {e}")` on load
+  failure and must render
+  "This quote could not be loaded. It may not be available to your account."
+  for every failure cause (not found, not yours, network error) alike,
+  and must report a failed decision as
+  "Your decision was not sent: {err}" without changing the quote's
+  rendered status.
+- **SPEC-13.5.15**: The staff quote lifecycle actions must each report
+  their own failure ("Could not update the quote: {e}",
+  "Could not send the quote: {e}", "Could not cancel the quote: {e}",
+  "Could not convert the quote: {e}") and their own success toast
+  ("Quote updated", a send-method-specific sent message, "Quote
+  cancelled", "Quote converted to a project").
+- **SPEC-13.5.16**: The quote create/edit form must require a company
+  and a title ("Company is required.", "Title is required."), must
+  require a description on any line that has a quantity or unit price
+  filled in ("Line {n} description is required."), must silently drop
+  any line left entirely blank from the submitted payload, and must
+  reject a convert-to-project end date before its start date with
+  "Target end date cannot be before the start date."
+- **SPEC-13.5.17**: `ProjectListPage`'s list and summary fetches must
+  each log their own failure
+  (`tracing::error!("project list load failed: {e}")`,
+  `tracing::error!("project summary load failed: {e}")`), and the list
+  fetch failure must drive a full-page unavailable state when the
+  server is unreachable.
+- **SPEC-13.5.18**: The project create/edit form must collect every
+  field error before blocking submit: name required and capped at 80
+  characters, budget amount optional but non-negative, at most two
+  decimal places and at most 999,999,999,999.99, budget hours either
+  blank or a positive number/`H:MM` duration (a negative value reported
+  distinctly as "must be greater than 0" rather than "must be a
+  number").
+- **SPEC-13.5.19**: `ProjectDetailPage`'s delete action must surface the
+  server's own refusal reason on failure rather than a generic message,
+  and its checklist-item toggle must show
+  "Could not update checklist: {e}" on failure while still restarting
+  the project resource to reconcile with the server's actual state.
+- **SPEC-13.5.20**: The Add Task and task-edit forms (`ProjectTasksPage`)
+  must each require a title, must validate an optional due date against
+  the range 2000-01-01 to 2100-12-31 with
+  "{label} must be a valid date." / "{label} must be between 2000 and 2100.",
+  and must validate an optional estimated-hours value as a number or an
+  `H:MM` duration with "Estimated hours must be a number (2.5) or H:MM (1:30)."
+- **SPEC-13.5.21**: `projects.rs`'s project-manager fallback at
+  `ProjectDetailPage` (`src/pages/projects.rs:1538-1548`) must resolve
+  an id-only project manager against the loaded user roster, the same
+  way the task-assignee fallback at `src/pages/projects.rs:2242-2247`
+  does; the code instead passes an empty roster to that lookup, so a
+  project manager who has no server-sent name but whose id the roster
+  can resolve is shown "Unknown" instead of their name. The code is
+  wrong here; this requirement states the intended behavior, and the
+  gap is tracked as a separate defect (see the PR body), not fixed in
+  this change.
+
+### 13.6 Concurrency and ordering
+
+- **SPEC-13.6.1**: Every list page in this scope (`AssetListPage`,
+  `ContractListPage`, `RateCardListPage`, `QuoteListPage`,
+  `ProjectListPage`) must debounce its free-text search 300 milliseconds
+  after the last keystroke before refetching, and must reset the
+  current page to 1 on any change to a filter (company, status, type)
+  or to the search text.
+- **SPEC-13.6.2**: `AssetBulkCreateModal`'s pasted-serials collision
+  lookup (`POST /assets/exists`) must debounce 400 milliseconds after
+  the last keystroke or company change before firing.
+- **SPEC-13.6.3**: Every data-fetching resource in this scope must read
+  `active_tenant_generation()` inside its own async closure (not
+  outside it), so a tenant switch invalidates and reruns every
+  in-flight fetch rather than returning stale-tenant data.
+- **SPEC-13.6.4**: `AssetListPage`'s, `ContractListPage`'s,
+  `QuoteListPage`'s and `ProjectListPage`'s primary list/detail
+  resources must also track `use_server_reachable()`, so each refetches
+  automatically on reconnect rather than requiring a manual refresh.
+- **SPEC-13.6.5**: Every submit handler in this scope (asset, contract,
+  rate card, rate, quote, project, task forms) must ignore a second
+  submit while its own prior submit is still in flight, guarded by a
+  dedicated `is_submitting`/`saving`/`deleting`-style signal checked
+  before the request is sent.
+- **SPEC-13.6.6**: After a successful contract line-item or allotment
+  save, both the items resource and the hour-balance resource (and, on
+  the detail page, the contract resource) must be restarted so the
+  dependent totals are not left stale.
+- **SPEC-13.6.7**: After a successful project edit or checklist toggle,
+  both the project resource and the project-history resource must be
+  restarted; after a successful task create, edit or delete, the tasks
+  resource must be restarted.
+- **SPEC-13.6.8**: `AssetBulkCreateModal`'s serial deduplication must be
+  exact-match (case- and whitespace-sensitive), must preserve first
+  occurrence order, and must report each duplicated value exactly once
+  regardless of how many times it repeats.
+- **SPEC-13.6.9**: The quote editor's `lines` and `line_errors` arrays
+  must be kept the same length on every add, remove and submit-time
+  resize, and the editor must seed its fields from the server exactly
+  once per mount (guarded by a `loaded` flag) so a background refetch
+  of the quote being edited never overwrites in-progress edits.
+- **SPEC-13.6.10**: `AssetDrawer`'s field editors must share one
+  `open_field` registry so opening one field's editor closes any other
+  field's editor already open in the same drawer.
+
+### 13.7 Integrations
+
+- **SPEC-13.7.1**: `AssetListPage` must call
+  `POST /assets/search`/`GET /assets` (with legacy fallback),
+  `POST /assets/search/facets` and `GET /contacts/companies`;
+  `AssetDetailPage` must call `GET /assets/{id}`, `PUT /assets/{id}`,
+  `DELETE /assets/{id}`, `GET /assets/{id}/relationships`,
+  `POST /assets/{id}/relationships`, `DELETE /asset-relationships/{id}`,
+  `GET /assets/{id}/credentials`, `POST /assets/{id}/credentials`,
+  `DELETE /credentials/{id}`, `GET /credentials/{id}`,
+  `GET /assets/{id}/configuration-items`, `GET /configuration-items/{id}`,
+  `GET /assets/{id}/audit-log`, `GET /tickets?asset_id={id}`,
+  `POST /assets/{id}/report-issue`, `GET /auth/users` and
+  `GET /asset-types`.
+- **SPEC-13.7.2**: `AssetBulkCreateModal` must call
+  `GET /asset-models?q=`, `POST /assets/exists` and
+  `POST /assets/bulk-create`; `SignatureBanner` must call
+  `GET /asset-models/signature-detector`.
+- **SPEC-13.7.3**: `AssetDrawer` must call `GET /assets/{id}` to load
+  its snapshot, and each field save goes through `InlineFieldEditor`'s
+  own `PATCH /assets/{id}` keyed by the field's `patch_field` name.
+- **SPEC-13.7.4**: `contracts.rs` must call `GET /contracts`,
+  `POST /contracts`, `GET /contracts/{id}`, `PUT /contracts/{id}`,
+  `DELETE /contracts/{id}`, `GET /contracts/{id}/items`,
+  `POST /contracts/{id}/items`, `PUT /contract-items/{id}`,
+  `DELETE /contract-items/{id}`, `GET /contracts/{id}/hour-balance`,
+  `GET /contacts/companies` and `GET /rate-cards` (used both paginated
+  for the list and unpaginated as the only way to look up one rate card
+  by id, since no `GET /rate-cards/{id}` exists).
+- **SPEC-13.7.5**: `contracts.rs` must call `GET /rate-cards/{id}/items`,
+  `POST /rate-cards`, `PUT /rate-cards/{id}`, `DELETE /rate-cards/{id}`,
+  `POST /rate-cards/{id}/items` (upsert, keyed on `work_type_id`) and
+  `DELETE /rate-card-items/{id}`.
+- **SPEC-13.7.6**: `quotes.rs` must call `GET /quotes`, `GET /quotes/{id}`,
+  `POST /quotes`, `PUT /quotes/{id}`, `DELETE /quotes/{id}`,
+  `POST /quotes/{id}/accept`, `POST /quotes/{id}/decline`,
+  `POST /quotes/{id}/send`, `POST /quotes/{id}/convert`,
+  `GET /quotes/{id}/delivery-options`, `GET /quotes/{id}/pdf` and
+  `GET /contacts/companies`.
+- **SPEC-13.7.7**: `quotes.rs` must reuse `crate::pages::billing`'s sent-row
+  rendering, delivery-option lookup and sent-date formatting rather than
+  reimplementing them, and must embed `crate::pages::tickets::ApprovalsSection`
+  (scoped to the `"quotes"` entity segment) for internal sign-off.
+  A successful quote conversion must link to `Route::ProjectDetail` for
+  the resulting project.
+- **SPEC-13.7.8**: `projects.rs` must call `GET /projects`,
+  `GET /projects/summary`, `POST /projects`, `GET /projects/{id}`,
+  `PUT /projects/{id}`, `DELETE /projects/{id}`,
+  `GET /projects/{id}/tasks`, `POST /projects/{id}/tasks`,
+  `PUT /tasks/{id}`, `DELETE /tasks/{id}`,
+  `GET /audit-log/entity/projects/{id}` and
+  `GET /audit-log/entity/tasks/{id}`.
+- **SPEC-13.7.9**: `projects.rs` must resolve its company, project
+  manager, task assignee and task status options through the shared
+  `CompanyPicker`, `use_user_roster` and `use_task_statuses` hooks, and
+  must prefer each row's server-sent display name over a client-side
+  roster join wherever the server sends one (see SPEC-13.5.21 for the
+  one site that does not).
+
+### 13.8 Build and deployment
+
+- **SPEC-13.8.1**: None of the files in this section's scope add a
+  build or packaging step of their own; they compile under the same
+  `app`/`web`/`desktop` feature gating `src/main.rs` and `Cargo.toml`
+  define (see SPEC-1.3.1).
+- **SPEC-13.8.2**: `assets.rs`'s, `quotes.rs`'s and `projects.rs`'s
+  create-mutation bodies are wrapped in `#[cfg(feature = "app")]`;
+  `projects.rs`'s task-creation body is too, but its project-edit,
+  project-delete, checklist-toggle, task-edit and task-delete bodies are
+  not. Both facts are as the code stands: this section states the
+  asymmetry as observed behavior, not as a defect to fix.
+
+### 13.9 Retention and cleanup
+
+- **SPEC-13.9.1**: `AssetDetailPage`'s bulk-delete and single-delete
+  confirmations must state that the asset's credentials, configuration
+  items and relationships are also removed and that the action "cannot
+  be undone"; credential and relationship removal confirmations must
+  carry the same "cannot be undone" wording. None of the three has an
+  undo path; a retired or deleted asset is recreated, not restored.
+- **SPEC-13.9.2**: `ContractDetailPage`'s delete, line-item delete,
+  `RateCardDetailPage`'s delete, and rate delete confirmations must each
+  state "This cannot be undone." before the request is sent; none has
+  an undo path.
+- **SPEC-13.9.3**: `CustomerQuoteView`'s cancel confirmation must state
+  that the customer can no longer accept the quote and that the action
+  "cannot be undone"; a cancelled quote is terminal (no undo, no
+  reopen).
+- **SPEC-13.9.4**: The quote editor must never allow removing a line
+  down to zero: the Remove-line control must stay disabled once exactly
+  one line remains.
+- **SPEC-13.9.5**: `ProjectDetailPage`'s delete and `ProjectTasksPage`'s
+  task-delete confirmations must each state "This cannot be undone.";
+  neither has an undo path.
+- **SPEC-13.9.6**: `AssetBulkCreateModal` must reset its model, company
+  and serials fields after a successful bulk-create, so the next open
+  starts from a clean state.
+- **SPEC-13.9.7**: `AssetListPage` must restart its list resource after
+  a drawer close, a bulk edit, a bulk delete, or a catalog bulk-create,
+  so the list reflects the just-completed change without a manual
+  refresh.
 
 ## 14. Time, calendar, forms, dashboards, reports and audit
 

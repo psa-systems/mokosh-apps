@@ -44,9 +44,12 @@ use crate::components::{
 use crate::pages::settings::{AdminOnlyNotice, SettingsBreadcrumb};
 use crate::Route;
 
+/// SPEC-8.7.3: this file's full endpoint set (this GET, the google
+/// authorize/disconnect/runs POSTs, the schedule PUT and the settings PUT).
 /// The status read.
 const STATUS_PATH: &str = "/integrations/contact-sync";
 
+/// SPEC-8.3.1: category "integrations", key "google_contacts_enabled".
 /// The tenant setting the organization switch writes (PMS-1241).
 const SETTING_CATEGORY: &str = "integrations";
 const SETTING_KEY: &str = "google_contacts_enabled";
@@ -59,8 +62,11 @@ const SETTING_KEY: &str = "google_contacts_enabled";
 /// their entry affected everyone when it affects only their own organisation.
 /// Failed runs in a row before the card calls it failing repeatedly. The
 /// server mails an admin at the same count (`runs::NOTIFY_AFTER`).
+///
+/// SPEC-8.3.4: this is the threshold `card_state_of` compares against below.
 const FAILING_AFTER: i32 = 3;
 
+/// SPEC-8.3.2: the 3000ms poll interval for every page in this scope.
 /// How often the card re-reads while an import is queued or running.
 const POLL_MS: u32 = 3_000;
 
@@ -68,6 +74,8 @@ fn enabled_by_default() -> bool {
     true
 }
 
+/// SPEC-8.2.3: enabled/icloud_enabled/microsoft_enabled default true;
+/// configured/microsoft_configured default false, on absence.
 /// `GET /integrations/contact-sync` (PMS-1241).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Overview {
@@ -110,6 +118,9 @@ impl Overview {
     /// One match rather than three call sites reaching for three fields: the
     /// group picker serves two providers now, and a page that reached for the
     /// wrong field would seed one provider's selection from another's.
+    ///
+    /// SPEC-8.2.3: "icloud"/"microsoft" resolve to their own field, anything
+    /// else (including "google") to the Google field.
     pub fn connection_for(&self, provider: &str) -> Option<&Connection> {
         match provider {
             "icloud" => self.icloud_connection.as_ref(),
@@ -119,6 +130,8 @@ impl Overview {
     }
 }
 
+/// SPEC-8.2.3: sync_interval_minutes defaults to 60; consecutive_failures,
+/// open_reviews and deleted_in_source default to 0, on absence.
 /// The connection half of the status read (PMS-1212, PMS-1215).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Connection {
@@ -157,10 +170,14 @@ fn default_interval_minutes() -> i32 {
 /// refuses the rest, and a list cannot produce a refusal. These are the
 /// intervals an MSP would actually pick, from a service desk that lives in
 /// the address book to a directory that barely moves.
+///
+/// SPEC-8.3.3: the fixed cadence list; the server itself accepts 5 to 1440.
 pub fn cadence_minutes() -> &'static [i32] {
     &[10, 15, 30, 60, 120, 240, 480, 1440]
 }
 
+/// SPEC-8.3.3: 1440 reads "Once a day", 60 "Every hour", a multiple of 60
+/// "Every {n} hours", anything else "Every {m} minutes".
 /// How one cadence reads to an admin (MAPPS-1174).
 pub fn cadence_label(minutes: i32) -> String {
     match minutes {
@@ -189,6 +206,8 @@ pub fn SyncCadence(
     let mut error = use_signal(String::new);
     let mut saving = use_signal(|| false);
 
+    // SPEC-8.1.15: injects the connection's current interval when it is not
+    // already one of the fixed options.
     let mut options: Vec<SelectOption> = cadence_minutes()
         .iter()
         .map(|m| SelectOption::new(m.to_string(), cadence_label(*m)))
@@ -205,6 +224,7 @@ pub fn SyncCadence(
             return;
         };
         if chosen == minutes {
+            // SPEC-8.1.15: no network call when the chosen value is unchanged.
             return;
         }
         let provider = provider.clone();
@@ -221,9 +241,11 @@ pub fn SyncCadence(
                     .await
                 {
                     Ok(_) => on_saved.call(()),
+                    // SPEC-8.5.4: failed cadence change.
                     Err(e) => error.set(format!("Could not change how often this syncs: {e}")),
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = (chosen, provider);
             saving.set(false);
@@ -253,6 +275,8 @@ struct ScheduleWrite {
     sync_interval_minutes: i32,
 }
 
+/// SPEC-8.2.3: every count field defaults to 0 and `failures` to empty
+/// (capped at 50 by the server) on absence.
 /// One import run (`contact_sync_runs`, PMS-1215).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Run {
@@ -304,6 +328,7 @@ pub fn failure_reasons(run: &Run) -> Vec<(String, usize)> {
             None => counted.push((failure.reason.clone(), 1)),
         }
     }
+    // SPEC-8.1.16: most-frequent reason first, ties broken alphabetically.
     counted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     counted
 }
@@ -320,6 +345,7 @@ pub const CONSENT_POINTS: &[&str] = &[
 ];
 
 impl Run {
+    /// SPEC-8.2.3: "queued" and "running" are the two active statuses.
     fn active(&self) -> bool {
         matches!(self.status.as_str(), "queued" | "running")
     }
@@ -397,6 +423,11 @@ pub fn card_state(overview: &Overview) -> CardState {
 /// which since PMS-1340 is its own registration, else the deployment-wide
 /// fallback, else the environment; a provider that needs no client at all passes
 /// `true`.
+///
+/// SPEC-8.1.13: classifies into exactly one `CardState`, checked in the fixed
+/// order implemented below (off; not configured/never connected; an active
+/// run; reconnect/throttled; failure streak; partial import; failed; no
+/// labels chosen; otherwise healthy).
 pub fn card_state_of(
     enabled: bool,
     configured: bool,
@@ -472,6 +503,8 @@ pub struct StateCopy {
     pub next_step: String,
 }
 
+/// SPEC-8.1.14: maps every `CardState` to a fixed badge/tone/headline/next
+/// step; reused verbatim by the iCloud and Microsoft pages.
 pub fn copy_for(state: &CardState) -> StateCopy {
     match state {
         CardState::TurnedOff { connected_account } => StateCopy {
@@ -582,6 +615,8 @@ pub fn copy_for(state: &CardState) -> StateCopy {
     }
 }
 
+/// SPEC-8.1.18: "connected"/"reconnected"/"failed" map to one fixed banner
+/// each; any other value or absence maps to no banner.
 /// What the browser was sent back with after Google's consent screen.
 fn return_banner(flag: Option<&str>) -> Option<(BannerTone, &'static str)> {
     match flag? {
@@ -614,6 +649,7 @@ pub struct Actions {
     pub choose_labels: bool,
 }
 
+/// SPEC-8.1.14: maps every `CardState` to its exact enabled-action subset.
 pub fn actions_for(state: &CardState) -> Actions {
     match state {
         CardState::TurnedOff { .. } | CardState::NotConfigured => Actions::default(),
@@ -664,6 +700,7 @@ struct AuthorizeResponse {
     authorize_url: String,
 }
 
+// SPEC-8.1.12/SPEC-8.4.1: AdminOnlyNotice for a non-admin, else the body.
 #[component]
 pub fn GoogleContactsSettingsPage() -> Element {
     use_page_title("Google Contacts");
@@ -711,6 +748,9 @@ fn GoogleContactsSettingsBody() -> Element {
     let state = snap.as_ref().and_then(|o| o.as_ref()).map(card_state);
     let syncing = matches!(state, Some(CardState::Syncing { .. }));
 
+    // SPEC-8.3.2/SPEC-8.6.3: polls every POLL_MS while syncing and stops once
+    // it is not; `polling` guards against stacking a second in-flight poll
+    // before the previous one has both slept and refreshed the overview.
     // Re-read while an import is in flight, and stop when it is not.
     let mut polling = use_signal(|| false);
     use_effect(move || {
@@ -737,9 +777,11 @@ fn GoogleContactsSettingsBody() -> Element {
                 .await;
                 match result {
                     Ok(_) => overview.restart(),
+                    // SPEC-8.5.4: failed sync-now or disconnect.
                     Err(e) => error.set(format!("{after}: {e}")),
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = (path, after);
             busy.set(false);
@@ -767,6 +809,8 @@ fn GoogleContactsSettingsBody() -> Element {
                             error.set(format!("Could not open Google's sign-in page: {e}"));
                             busy.set(false);
                         }
+                        // SPEC-8.5.4: a non-wasm build whose authorize call
+                        // succeeded shows this informational banner instead.
                         #[cfg(not(target_arch = "wasm32"))]
                         {
                             // A desktop host has no document to navigate; say
@@ -779,6 +823,7 @@ fn GoogleContactsSettingsBody() -> Element {
                         }
                         return;
                     }
+                    // SPEC-8.5.4: failed connect attempt.
                     Err(e) => error.set(format!("Could not start the connection: {e}")),
                 }
             }
@@ -804,6 +849,7 @@ fn GoogleContactsSettingsBody() -> Element {
                 .await
                 {
                     Ok(_) => overview.restart(),
+                    // SPEC-8.5.4: failed enable/disable write.
                     Err(e) => {
                         error.set(format!("Could not change the setting: {e}"));
                         // The save did not happen, so the box goes back to
@@ -813,6 +859,7 @@ fn GoogleContactsSettingsBody() -> Element {
                     }
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `app` feature.
             #[cfg(not(feature = "app"))]
             let _ = value;
             busy.set(false);
@@ -833,16 +880,21 @@ fn GoogleContactsSettingsBody() -> Element {
         if !error().is_empty() {
             ErrorBanner { class: "mb-4", "{error}" }
         }
+        // SPEC-8.1.12: loading skeleton while the overview loads; the error
+        // banner on a fetch failure or when no card state can be derived.
         match (snap, state) {
             (None, _) => rsx! {
                 crate::components::DetailSkeleton {}
             },
+            // SPEC-8.5.4: overview-load failure.
             (Some(None), _) | (Some(Some(_)), None) => rsx! {
                 Card { ErrorBanner { "Could not load the Google Contacts connection." } }
             },
             (Some(Some(data)), Some(state)) => {
                 let copy = copy_for(&state);
                 let actions = actions_for(&state);
+                // SPEC-8.6.1: disables every mutating control on the page
+                // for the duration of any one of them.
                 let disabled = busy() || !can_mutate;
                 let connection = data.connection.clone();
                 let connected_account = connection.as_ref().map(|c| c.account_email.clone());
@@ -911,6 +963,9 @@ fn GoogleContactsSettingsBody() -> Element {
                                         "Choose labels to import"
                                     }
                                 }
+                                // SPEC-8.1.17/SPEC-8.4.4: Connect and Reconnect
+                                // open the consent dialog; neither calls
+                                // `connect` directly.
                                 if actions.connect {
                                     Button {
                                         disabled,
@@ -967,6 +1022,9 @@ fn GoogleContactsSettingsBody() -> Element {
                     }
                     Card { class: "mt-6",
                         div { class: "space-y-2",
+                            // SPEC-8.1.17: turning on writes immediately with
+                            // no confirmation; turning off only opens the
+                            // confirm_off dialog below, which writes on confirm.
                             Checkbox {
                                 name: "google_contacts_enabled",
                                 label: "Allow Google Contacts for this organization",
@@ -984,6 +1042,8 @@ fn GoogleContactsSettingsBody() -> Element {
                             }
                         }
                     }
+                    // SPEC-8.1.17/SPEC-8.4.4: shows CONSENT_POINTS before the
+                    // authorize call fires; only `onconfirm` reaches `connect`.
                     ConfirmDialog {
                         open: confirm_connect(),
                         title: "Connect Google Contacts?",
@@ -1017,6 +1077,10 @@ fn GoogleContactsSettingsBody() -> Element {
                         },
                         oncancel: move |_| confirm_disconnect.set(false),
                     }
+                    // SPEC-8.1.17: turning off requires confirmation naming
+                    // what is kept, before the write fires.
+                    // SPEC-8.9.4: the connection, every imported contact and
+                    // the review queue stay intact; turning back on resumes.
                     ConfirmDialog {
                         open: confirm_off(),
                         title: "Turn off Google Contacts?",
@@ -1029,12 +1093,14 @@ fn GoogleContactsSettingsBody() -> Element {
                         },
                         oncancel: move |_| {
                             confirm_off.set(false);
-                            // Dropping the intent renders the server's value
-                            // again, which differs from the unticked value the
-                            // last render carried, so the box is written back
-                            // on. The re-read this used to do instead computed
-                            // the same value it had just rendered and so wrote
-                            // nothing at all.
+                            // SPEC-8.1.17/SPEC-8.6.6: restore the checkbox to
+                            // the server's value rather than leaving it in the
+                            // optimistic unticked state. Dropping the intent
+                            // renders the server's value again, which differs
+                            // from the unticked value the last render carried,
+                            // so the box is written back on. A re-read here
+                            // would have computed the same value it just
+                            // rendered and written nothing.
                             wanted.set(None);
                         },
                     }
@@ -1053,6 +1119,9 @@ pub fn disconnect_message(account: Option<&str>) -> String {
 /// and both matter: what is REMOVED is the credential this MSP gave us, and what
 /// is NOT touched is the address book itself, which is the reassurance somebody
 /// hovering over a Disconnect button is looking for.
+///
+/// SPEC-8.9.3: states that disconnect removes only the stored credential,
+/// that every imported contact stays, and that an in-progress run stops.
 pub fn disconnect_message_from(vendor: &str, account: Option<&str>) -> String {
     let from = account.map(|a| format!(" from {a}")).unwrap_or_default();
     format!(
@@ -1112,6 +1181,8 @@ pub fn RunProgress(
     #[props(default = "Google".to_string())]
     source: String,
 ) -> Element {
+    // SPEC-8.1.16: "{processed} of {total} contacts read ({p}%)" once a total
+    // is known, else "Reading contacts from {source}...".
     let label = match (percent(&run), run.total) {
         (Some(p), Some(total)) => format!("{} of {total} contacts read ({p}%)", run.processed),
         _ => format!("Reading contacts from {source}…"),
@@ -1143,6 +1214,8 @@ pub fn RunProgress(
 #[component]
 fn FailureList(run: Run) -> Element {
     let reasons = failure_reasons(&run);
+    // SPEC-8.1.16: "{unlisted} more not listed" whenever failed_records
+    // exceeds the number of failure reasons the server returned.
     let unlisted = usize::try_from(run.failed_records)
         .unwrap_or(0)
         .saturating_sub(run.failures.len());
@@ -1163,6 +1236,8 @@ fn FailureList(run: Run) -> Element {
     }
 }
 
+/// SPEC-8.1.16: account identifier, last sync time or "Never", and a
+/// label/group count ("None chosen"/"1 label"/"{n} labels").
 #[component]
 fn ConnectionFacts(connection: Connection) -> Element {
     let last_sync = connection.last_sync_at.map(|dt| {
@@ -1226,6 +1301,8 @@ fn ConnectionFacts(connection: Connection) -> Element {
                     dd { class: "text-content", "{connection.open_reviews}" }
                 }
             }
+            // SPEC-8.1.16/SPEC-8.9.5: shown only when non-zero; the source
+            // deletion is reported, not applied, so the record stays here.
             if connection.deleted_in_source > 0 {
                 div {
                     dt { class: "text-muted", "Deleted in Google" }
