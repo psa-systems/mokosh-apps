@@ -61,6 +61,8 @@ const CAPABILITY_LIST_TRUNCATE: usize = 60;
 /// safe. Settings > Contact Roles renders only tenant-wide rows in
 /// practice, but the field is carried so the same struct can back the
 /// Company detail page's scoped-roles table.
+// SPEC-8.2.2: `capabilities`/`is_builtin` default on absence; `contacts_count`
+// stays `None` (not `0`) when the server omits it.
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct PortalRoleWire {
     pub(crate) id: uuid::Uuid,
@@ -113,6 +115,9 @@ struct CreateRoleBody {
     capabilities: Vec<String>,
 }
 
+// SPEC-8.2.2: unlike `CreateRoleBody`, a `None` here still serializes as
+// `null` (no `skip_serializing_if`); the submit path below only sets a field
+// to `Some` when it actually changed.
 #[derive(Serialize)]
 struct UpdateRoleBody {
     name: Option<String>,
@@ -123,6 +128,7 @@ struct UpdateRoleBody {
 /// characters, appending an ellipsis marker when it had to be cut. Kept
 /// as a free function (not a method) so it round-trips through
 /// `#[cfg(test)]` on native without pulling in Dioxus state.
+// SPEC-8.1.9: 60-character truncation with a trailing "...".
 fn truncate_capability_list(caps: &[String]) -> String {
     let joined = caps.join(", ");
     if joined.chars().count() <= CAPABILITY_LIST_TRUNCATE {
@@ -175,17 +181,22 @@ fn ContactRolesListBody() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "web")]
         {
+            // SPEC-8.5.2 / SPEC-8.7.2: GET /portal-roles; failure is logged and
+            // surfaced as the list-load error banner.
             crate::hooks::fetch::api::get_authed_typed::<Vec<PortalRoleWire>>("/portal-roles")
                 .await
                 .inspect_err(|e| tracing::error!("contact role list load failed: {e}"))
                 .ok()
         }
+        // SPEC-8.3.6: no-op on a build without the `web` feature.
         #[cfg(not(feature = "web"))]
         {
             None::<Vec<PortalRoleWire>>
         }
     });
 
+    // SPEC-8.1.7: loading table / error banner / empty-table / rows states
+    // for the list, derived from one resource snapshot.
     let snap = resource.read_unchecked();
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
@@ -302,6 +313,8 @@ fn ContactRoleRow(props: ContactRoleRowProps) -> Element {
     // Delete gate: built-in OR still-in-use. The tooltip explains the
     // exact reason so the operator knows what to do next (remove
     // assignments, or leave the built-in row alone).
+    // SPEC-8.1.8: priority order is built-in, then in-use, then
+    // server-unreachable, each with its own disabled-reason tooltip text.
     let is_builtin = row.is_builtin;
     let contacts_count = row.contacts_count.unwrap_or(0);
     let in_use = contacts_count > 0;
@@ -320,6 +333,7 @@ fn ContactRoleRow(props: ContactRoleRowProps) -> Element {
     let can_delete = disabled_reason.is_none();
 
     let caps_display = truncate_capability_list(&row.capabilities);
+    // SPEC-8.1.9: "-" for a contact count the server did not return (not "0").
     let contacts_display = match row.contacts_count {
         Some(n) => n.to_string(),
         None => "-".to_string(),
@@ -327,6 +341,7 @@ fn ContactRoleRow(props: ContactRoleRowProps) -> Element {
 
     let delete_id = id_str.clone();
     let role_display_name = row.name.clone();
+    // SPEC-8.6.2: checks its own in-flight flag, not just the disabled button.
     let on_confirm_delete = move |_: ()| {
         if *deleting.read() {
             return;
@@ -337,6 +352,9 @@ fn ContactRoleRow(props: ContactRoleRowProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
+                // SPEC-8.7.2 / SPEC-8.9.2: DELETE /portal-roles/{id}; a hard,
+                // non-reversible delete, reachable only once SPEC-8.1.8's
+                // three disable conditions all clear.
                 let path = format!("/portal-roles/{}", id);
                 match crate::hooks::fetch::api::delete_authed_typed(&path).await {
                     Ok(()) => {
@@ -355,6 +373,7 @@ fn ContactRoleRow(props: ContactRoleRowProps) -> Element {
                     }
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `web` feature.
             #[cfg(not(feature = "web"))]
             {
                 let _ = id;
@@ -372,6 +391,8 @@ fn ContactRoleRow(props: ContactRoleRowProps) -> Element {
                 }
             }
             TableCell {
+                // SPEC-8.1.9: tooltip carries the untruncated list; "-" when
+                // there are no capabilities at all.
                 span {
                     class: "text-sm text-muted",
                     title: row.capabilities.join(", "),
@@ -392,12 +413,16 @@ fn ContactRoleRow(props: ContactRoleRowProps) -> Element {
                             "Edit"
                         }
                     }
+                    // SPEC-8.6.1: disabled (and showing its own loading state)
+                    // for the duration of an in-flight delete.
                     Button {
                         variant: ButtonVariant::Danger,
                         size: crate::components::ButtonSize::Small,
                         disabled: !can_delete,
                         loading: *deleting.read(),
                         title: disabled_reason.clone(),
+                        // SPEC-8.4.3: this click only opens the confirm dialog;
+                        // the delete itself fires from the dialog's own confirm.
                         onclick: move |_| {
                             if can_delete {
                                 delete_error.set(String::new());
@@ -487,11 +512,13 @@ fn ContactRoleEditBody(id: String) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
+            // SPEC-8.1.10: skip the fetch and start from a blank form for "new".
             if id == "new" {
                 return RoleLoad::New;
             }
             #[cfg(feature = "web")]
             {
+                // SPEC-8.7.2: GET /portal-roles/{id}.
                 let path = format!("/portal-roles/{}", id);
                 match crate::hooks::fetch::api::get_authed_typed::<PortalRoleDetailWire>(&path)
                     .await
@@ -500,6 +527,7 @@ fn ContactRoleEditBody(id: String) -> Element {
                     Err(_) => RoleLoad::Failed,
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `web` feature.
             #[cfg(not(feature = "web"))]
             {
                 let _ = id;
@@ -513,6 +541,8 @@ fn ContactRoleEditBody(id: String) -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "web")]
         {
+            // SPEC-8.5.2 / SPEC-8.7.2: GET /portal-roles/capabilities; a
+            // separate error log from the list-load failure above.
             crate::hooks::fetch::api::get_authed_typed::<ListCapabilitiesResponseWire>(
                 "/portal-roles/capabilities",
             )
@@ -520,6 +550,7 @@ fn ContactRoleEditBody(id: String) -> Element {
             .inspect_err(|e| tracing::error!("portal capability list load failed: {e}"))
             .ok()
         }
+        // SPEC-8.3.6: no-op on a build without the `web` feature.
         #[cfg(not(feature = "web"))]
         {
             None::<ListCapabilitiesResponseWire>
@@ -532,6 +563,8 @@ fn ContactRoleEditBody(id: String) -> Element {
     let reachable = crate::hooks::use_server_reachable();
 
     // Loading state: either fetch has not resolved yet.
+    // SPEC-8.1.10: rendering stays in the loading state until both the role
+    // fetch and the capability-descriptor fetch resolve.
     if role_snap.is_none() || caps_snap.is_none() {
         return rsx! {
             EditPageChrome { title: title.to_string(), name: String::new(),
@@ -541,9 +574,11 @@ fn ContactRoleEditBody(id: String) -> Element {
     }
 
     // Failure state on the role fetch (existing edit only). A missing
-    // capability descriptor list is a soft failure (form still renders,
-    // capabilities just show as raw keys); a failed role fetch has no
+    // capability descriptor list is a soft failure (form still renders
+    // with an empty capability list); a failed role fetch has no
     // recoverable form to render.
+    // SPEC-8.1.10: unavailable notice when the server itself is unreachable,
+    // otherwise the generic role-fetch-failed message.
     if matches!(&*role_snap, Some(RoleLoad::Failed)) {
         if !reachable {
             return rsx! {
@@ -666,6 +701,7 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
     // the server's declared order (first appearance wins). Keeping this
     // as a pass over the vector rather than a HashMap so the display
     // order is deterministic across renders.
+    // SPEC-8.1.11: groups render in first-appearance order.
     let grouped: Vec<(String, Vec<CapabilityDescriptorWire>)> = {
         let mut order: Vec<String> = Vec::new();
         let mut by_group: std::collections::HashMap<String, Vec<CapabilityDescriptorWire>> =
@@ -692,6 +728,8 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
         if *saving.read() || !can_mutate {
             return;
         }
+        // SPEC-8.5.3: validation order is name-required, then name-length,
+        // then (create only) at-least-one-capability.
         let new_name = name.read().trim().to_string();
         if new_name.is_empty() {
             error.set("Name is required.".to_string());
@@ -720,7 +758,10 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
             {
                 use crate::hooks::fetch::api;
 
+                // SPEC-8.7.2: POST /portal-roles (create) or PUT
+                // /portal-roles/{id} (update).
                 let outcome: Result<PortalRoleDetailWire, api::ApiError> = if id == "new" {
+                    // SPEC-8.2.2: CreateRoleBody always sends both fields.
                     let body = CreateRoleBody {
                         name: new_name.clone(),
                         capabilities: picked.clone(),
@@ -731,11 +772,14 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
                     // role can only rename, so its `capabilities` stays
                     // `None` regardless of what the (disabled) checkboxes
                     // look like locally.
+                    // SPEC-8.2.2: name sent only when it changed.
                     let name_change = if new_name != initial_name_snapshot {
                         Some(new_name.clone())
                     } else {
                         None
                     };
+                    // SPEC-8.2.2 / SPEC-8.4.2: never report a changed
+                    // `capabilities` for a built-in role.
                     let caps_change = if is_builtin {
                         None
                     } else if picked != initial_caps_snapshot {
@@ -763,12 +807,15 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
                         );
                         nav.push(Route::ContactRolesList {});
                     }
+                    // SPEC-8.5.3: the server's own message when it returned
+                    // a non-empty one, otherwise a generic fallback.
                     Err(api::ApiError::Status { message, .. }) if !message.is_empty() => {
                         error.set(message);
                     }
                     Err(err) => error.set(err.user_message()),
                 }
             }
+            // SPEC-8.3.6: no-op on a build without the `web` feature.
             #[cfg(not(feature = "web"))]
             {
                 let _ = (
@@ -786,6 +833,7 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
     rsx! {
         PageHeader {
             title: title.to_string(),
+            // SPEC-8.1.11: built-in copy swap for the subtitle.
             subtitle: if is_builtin {
                 "Built-in role. You can rename it, but its capability set is fixed.".to_string()
             } else {
@@ -813,6 +861,7 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
                     ErrorBanner { "{error.read()}" }
                 }
 
+                // SPEC-8.1.11: required name field, capped at 64 characters.
                 Input {
                     name: "role_name",
                     label: "Name",
@@ -843,6 +892,8 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
                                                 let key = cap.key.clone();
                                                 let key_click = cap.key.clone();
                                                 let checked = selected.read().iter().any(|k| k == &key);
+                                                // SPEC-8.1.11 / SPEC-8.4.2: every checkbox disabled for a
+                                                // built-in role (the name field above stays editable).
                                                 let disabled_here = is_builtin;
                                                 rsx! {
                                                     label {
@@ -897,6 +948,7 @@ fn ContactRoleEditForm(props: ContactRoleEditFormProps) -> Element {
                         to: Route::ContactRolesList {},
                         Button { variant: ButtonVariant::Secondary, "Cancel" }
                     }
+                    // SPEC-8.6.1: disabled for the duration of an in-flight save.
                     Button {
                         variant: ButtonVariant::Primary,
                         disabled: !can_mutate || *saving.read(),

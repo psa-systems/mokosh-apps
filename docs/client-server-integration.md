@@ -374,17 +374,20 @@ Gated, with the destructuring function above:
 | `contacts.rs` | `Create`/`UpdateCompanyRequest`, `Create`/`UpdateContactRequest`, `Create`/`UpdateSiteRequest`, `ContactPhoneInput`, `ContactCompanyLinkInput`, `Address`, and the `CompanyResponse`/`ContactResponse`/`ContactPhone`/`ContactCompanyLink`/`SiteResponse` reads behind them | MAPPS-687 |
 
 `tickets.rs` is the one worth reading for what a page pays to be typed
-rather than only for the destructuring functions. Six of its nine write
-paths PUT one field each (the inline Status, Priority, Assignee and
-Asset editors, the description card, the task-list checkboxes), so they
-share a single `UpdateTicketBody` whose every field is
+rather than only for the destructuring functions. Twelve of its
+thirteen write paths PUT one field each (the inline Status, Priority,
+Assignee, Asset, Type, Category, Contact, Site, Team, Contract and SLA
+editors, and the task-list checkboxes), so they share a single
+`UpdateTicketBody` whose every field is
 `skip_serializing_if = "Option::is_none"`, and `assigned_to_id` is a
 double `Option` there even though the shared DTO's is not: absent has to
-stay distinguishable from the `null` that unassigns. Two form values
-also stopped being strings at the boundary, which is where the type
-buys something a `json!` literal never did: the Due Date is parsed into
-the `DateTime<Utc>` the request declares, and the composer's note type
-into `NoteType`. Each reports a parse failure in its own inline slot,
+stay distinguishable from the `null` that unassigns. The thirteenth
+write path, the description card, PUTs title and description together.
+Two form values also stopped being strings at the boundary, which is
+where the type buys something a `json!` literal never did: the Due
+Date is parsed into the `DateTime<Utc>` the request declares, and the
+composer's note type into `NoteType`. Each reports a parse failure in
+its own inline slot,
 because a value the client cannot read must not become a 422 the user
 has to interpret.
 
