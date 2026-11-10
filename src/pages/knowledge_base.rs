@@ -152,7 +152,55 @@ fn parse_sort_order(raw: &str) -> Result<i32, String> {
     }
     trimmed.parse::<i32>().map_err(|e| {
         tracing::warn!("category sort order {trimmed:?} is not a 32-bit integer: {e}");
-        "Enter a whole number between 0 and 2147483647.".to_string()
+        // SPEC-12.5.12: negatives are accepted (the server stores any i32), so
+        // the message names the whole range rather than implying 0 is the floor.
+        "Enter a whole number between -2147483648 and 2147483647.".to_string()
+    })
+}
+
+/// What the pre-save orphan check found (MAPPS-745, SPEC-12.5.11).
+#[derive(Debug, PartialEq)]
+enum OrphanCheck {
+    /// Nothing anchored would be lost.
+    Clear,
+    /// The quotes of the comments this edit detaches.
+    Orphans(Vec<String>),
+    /// The comments could not be read, so nobody knows; carries why.
+    Unavailable(String),
+}
+
+/// Decide the orphan check from the editor's comments resource. A comments
+/// fetch that failed, or has not finished, is `Unavailable`: treating it as an
+/// empty list skipped the warning and saved as if nothing were anchored.
+fn orphan_check(
+    comments: Option<&Result<Vec<crate::modules::kb::KbComment>, String>>,
+    saved: &str,
+    current: &str,
+) -> OrphanCheck {
+    match comments {
+        None => OrphanCheck::Unavailable("the comments are still loading.".to_string()),
+        Some(Err(why)) => OrphanCheck::Unavailable(why.clone()),
+        Some(Ok(roots)) => {
+            let quotes = crate::pages::kb_inline::orphaned_by_edit(saved, current, roots);
+            if quotes.is_empty() {
+                OrphanCheck::Clear
+            } else {
+                OrphanCheck::Orphans(quotes)
+            }
+        }
+    }
+}
+
+/// Read back the template picks this page serialized itself.
+///
+/// A parse failure should be unreachable, since the string is this page's own
+/// `serde_json::to_string`. It still renders with no picks rather than
+/// failing the render, but it is logged, because otherwise the reader's
+/// choices vanish without a trace (SPEC-12.5.10, MAPPS-1225).
+fn parse_template_picks(raw: &str) -> std::collections::BTreeMap<String, String> {
+    serde_json::from_str(raw).unwrap_or_else(|e| {
+        tracing::error!("kb template picks {raw:?} did not parse, rendering with none: {e}");
+        std::collections::BTreeMap::new()
     })
 }
 
@@ -504,6 +552,41 @@ fn attribution_parts(
 /// are accepted, and anything that does not start with
 /// `template_variables` returns `None` so the message routes to the
 /// shared banner instead.
+/// Route a 422's field errors between the template-variable rows and the
+/// template-variables banner (SPEC-12.5.3). Returns the updated row slots and
+/// the messages for the banner. A `template_variables` error that names an
+/// existing row lands in that row's slot; one that names no row (or an index
+/// past the end) goes to the banner. Any other field error, `title` or `slug`
+/// say, belongs to neither: the form's top banner already shows it through
+/// `ApiError::user_message`, and repeating it under Template variables put a
+/// title error in the wrong section (MAPPS-1225).
+fn route_template_var_errors(
+    fields: &[crate::utils::error::FieldError],
+    mut row_errors: Vec<String>,
+    row_count: usize,
+) -> (Vec<String>, Vec<String>) {
+    if row_errors.len() < row_count {
+        row_errors.resize(row_count, String::new());
+    }
+    let mut banner: Vec<String> = Vec::new();
+    for fe in fields {
+        if !fe.field.starts_with("template_variables") {
+            continue;
+        }
+        if let Some(slot) = parse_tplvar_index(&fe.field).and_then(|i| row_errors.get_mut(i)) {
+            if slot.is_empty() {
+                *slot = fe.message.clone();
+            } else {
+                slot.push_str("; ");
+                slot.push_str(&fe.message);
+            }
+            continue;
+        }
+        banner.push(fe.message.clone());
+    }
+    (row_errors, banner)
+}
+
 fn parse_tplvar_index(field: &str) -> Option<usize> {
     let rest = field.strip_prefix("template_variables")?;
     // `[N]…` -> brackets form.
@@ -584,8 +667,8 @@ pub fn KBHomePage() -> Element {
             &token,
         )
         .await
-        // Best-effort: the card is omitted, the same as a window with no
-        // ticket-driving article in it.
+        // Secondary widget: a failure renders its own "Could not load" line
+        // in the card, never the empty-state text (SPEC-12.5.1).
         .inspect_err(|e| tracing::warn!("kb top ticket-driving article load failed: {e}"))
         .ok()
     });
@@ -604,6 +687,7 @@ pub fn KBHomePage() -> Element {
 
     let top_driving_snapshot = top_driving_resource.read_unchecked();
     let top_driving_loading = top_driving_snapshot.is_none();
+    let top_driving_failed = matches!(*top_driving_snapshot, Some(None));
     let top_driving: Vec<TopTicketDrivingArticle> = match &*top_driving_snapshot {
         Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
@@ -724,7 +808,11 @@ pub fn KBHomePage() -> Element {
         // by count over the trailing 90 days. `mb-6` gaps it from Recent
         // Articles below, like the search Card above (MAPPS-966).
         Card { title: "Top ticket-driving articles", class: "mb-6",
-            if top_driving_loading {
+            if top_driving_failed {
+                div { class: "py-6 text-center text-sm text-red-600 dark:text-red-400",
+                    "Could not load ticket-driving articles."
+                }
+            } else if top_driving_loading {
                 div { class: "space-y-2",
                     for _ in 0..3 {
                         div { class: "h-8 bg-surface-2 rounded animate-pulse" }
@@ -1042,6 +1130,7 @@ pub fn KBArticleListPage(
             .inspect_err(|e| tracing::error!("kb list tree article load failed: {e}"))
             .ok()
     });
+    let tree_failed = matches!(*tree_articles_resource.read_unchecked(), Some(None));
     let tree_articles: Vec<KbArticle> = match &*tree_articles_resource.read_unchecked() {
         Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
@@ -1188,6 +1277,7 @@ pub fn KBArticleListPage(
                     categories: categories.clone(),
                     articles: tree_articles.clone(),
                     current_id: String::new(),
+                    load_failed: tree_failed,
                 }
             }
             div { class: "flex-1 min-w-0",
@@ -1667,6 +1757,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         .read_unchecked()
         .clone()
         .unwrap_or_default();
+    let tree_failed = matches!(*tree_articles_resource.read_unchecked(), Some(None));
     let tree_articles: Vec<KbArticle> = match &*tree_articles_resource.read_unchecked() {
         Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
@@ -1776,6 +1867,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         let ids = scope_ids();
         let sent = scope_sent_names();
         async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
             if !ids.is_empty() && sent.len() == ids.len() {
                 ids.iter()
                     .zip(sent.iter())
@@ -1834,8 +1926,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             if declared.is_empty() {
                 return;
             }
-            let picks: std::collections::BTreeMap<String, String> =
-                serde_json::from_str(&picks_debounced.read()).unwrap_or_default();
+            let picks = parse_template_picks(&picks_debounced.read());
             let body = RenderKbArticleRequest {
                 values: crate::components::render_values(&declared, &picks),
             };
@@ -1874,12 +1965,18 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // the article id is available. Declared unconditionally for rules-of-hooks.
     let id_for_vote = props.id.clone();
     use_resource(use_reactive!(|id_for_vote| async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "app")]
         {
             let path = format!("/kb/articles/{id_for_vote}/vote");
-            if let Ok(fb) = crate::hooks::fetch::api::get_authed::<KbArticleFeedback>(&path).await {
-                rating.set((fb.helpful_count, fb.not_helpful_count));
-                my_vote.set(fb.my_vote);
+            match crate::hooks::fetch::api::get_authed::<KbArticleFeedback>(&path).await {
+                Ok(fb) => {
+                    rating.set((fb.helpful_count, fb.not_helpful_count));
+                    my_vote.set(fb.my_vote);
+                }
+                // SPEC-12.5.9: the counts from the article payload stay, and
+                // the reader's own vote is unknown; say so in the log.
+                Err(e) => tracing::warn!("kb vote seed failed for {id_for_vote}: {e}"),
             }
         }
         #[cfg(not(feature = "app"))]
@@ -2054,6 +2151,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                 categories: categories.clone(),
                                 articles: tree_articles.clone(),
                                 current_id: props.id.clone(),
+                                load_failed: tree_failed,
                             }
                         }
                         div { class: "flex-1 min-w-0",
@@ -2176,11 +2274,20 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                                 // matching the ticket page).
                                                 interactive: can_mutate,
                                                 on_toggle: move |i: usize| {
+                                                    let mut ar = article_resource;
                                                     let Some(next) = crate::utils::markdown::toggle_task(&src, i) else {
+                                                        // SPEC-12.5.2: the box has already flipped
+                                                        // in the DOM; say nothing was saved and
+                                                        // re-fetch to put it back.
+                                                        tracing::warn!("kb task toggle {i} not found in article {aid}");
+                                                        crate::hooks::toast::push_toast(
+                                                            crate::components::AlertType::Error,
+                                                            "Could not apply that change: the checklist has changed. Try again.".to_string(),
+                                                        );
+                                                        ar.restart();
                                                         return;
                                                     };
                                                     let aid = aid.clone();
-                                                    let mut ar = article_resource;
                                                     spawn(async move {
                                                         #[cfg(feature = "app")]
                                                         {
@@ -3307,18 +3414,24 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         ArticleFormMode::Edit { id } => Some(id.clone()),
         ArticleFormMode::Create => None,
     };
+    // `Ok(vec![])` on a create (nothing is anchored yet), `Err` when the fetch
+    // failed, so the save can tell "no comments" from "could not check".
     let inline_comments = use_resource(use_reactive!(|edit_id_for_comments| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let id = edit_id_for_comments?;
-        crate::hooks::fetch::api::get_authed::<Vec<crate::modules::kb::KbComment>>(&format!(
+        let Some(id) = edit_id_for_comments else {
+            return Ok(Vec::new());
+        };
+        crate::hooks::fetch::api::get_authed_typed::<Vec<crate::modules::kb::KbComment>>(&format!(
             "/kb/articles/{id}/comments"
         ))
         .await
         .inspect_err(|e| tracing::warn!("kb comments for the editor failed for {id}: {e}"))
-        .ok()
+        .map_err(|e| e.user_message())
     }));
     // The quotes the pending save would orphan; non-empty opens the dialog.
     let mut orphan_warning = use_signal(Vec::<String>::new);
+    // Why the orphan check could not run; non-empty opens its own dialog.
+    let mut orphan_check_error = use_signal(String::new);
     let saved_content = initial.content.clone();
 
     // MAPPS-745: the preview shows the inline highlights. The editor owns
@@ -3338,7 +3451,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     let roots: Vec<crate::modules::kb::KbComment> = inline_comments
                         .read_unchecked()
                         .clone()
-                        .flatten()
+                        .and_then(Result::ok)
                         .unwrap_or_default();
                     if !roots.iter().any(|c| c.anchor.is_some() && !c.deleted) {
                         continue;
@@ -3663,16 +3776,20 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         // MAPPS-745: say what this save will orphan before it does. Not a
         // block: orphaning is allowed, the point is that it is visible.
         if !ack {
-            let roots = inline_comments
-                .read_unchecked()
-                .clone()
-                .flatten()
-                .unwrap_or_default();
-            let quotes =
-                crate::pages::kb_inline::orphaned_by_edit(&saved_content, &content_val, &roots);
-            if !quotes.is_empty() {
-                orphan_warning.set(quotes);
-                return;
+            match orphan_check(
+                inline_comments.read_unchecked().as_ref(),
+                &saved_content,
+                &content_val,
+            ) {
+                OrphanCheck::Clear => {}
+                OrphanCheck::Orphans(quotes) => {
+                    orphan_warning.set(quotes);
+                    return;
+                }
+                OrphanCheck::Unavailable(why) => {
+                    orphan_check_error.set(why);
+                    return;
+                }
             }
         }
 
@@ -3817,36 +3934,24 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     Err(err) => {
                         // Surface server field errors next to the
                         // offending row when the 422 names a
-                        // `template_variables[N]` field; the rest fall
-                        // back to the shared banner above.
+                        // `template_variables[N]` field; other
+                        // `template_variables` errors go to that
+                        // section's banner, everything else to the top
+                        // banner only.
                         if let crate::hooks::fetch::api::ApiError::Status {
                             code: 422,
                             ref fields,
                             ..
                         } = err
                         {
-                            let mut row_errors = template_var_errors.read().clone();
-                            if row_errors.len() < row_count {
-                                row_errors.resize(row_count, String::new());
-                            }
-                            let mut leftover: Vec<String> = Vec::new();
-                            for fe in fields {
-                                if let Some(index) = parse_tplvar_index(&fe.field) {
-                                    if let Some(slot) = row_errors.get_mut(index) {
-                                        if slot.is_empty() {
-                                            *slot = fe.message.clone();
-                                        } else {
-                                            slot.push_str("; ");
-                                            slot.push_str(&fe.message);
-                                        }
-                                        continue;
-                                    }
-                                }
-                                leftover.push(fe.message.clone());
-                            }
+                            let (row_errors, banner) = route_template_var_errors(
+                                fields,
+                                template_var_errors.read().clone(),
+                                row_count,
+                            );
                             template_var_errors.set(row_errors);
-                            if !leftover.is_empty() {
-                                template_vars_banner.set(leftover.join("; "));
+                            if !banner.is_empty() {
+                                template_vars_banner.set(banner.join("; "));
                             }
                         }
                         error.set(format!("Could not save article: {}", err.user_message()));
@@ -4467,6 +4572,25 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     }
                 }
 
+                // SPEC-12.5.11: the orphan check could not run. Saying so,
+                // rather than saving as if nothing were anchored, keeps the
+                // MAPPS-745 promise that an orphaning edit is never silent.
+                ConfirmDialog {
+                    open: !orphan_check_error.read().is_empty(),
+                    title: "Could not check for inline comments".to_string(),
+                    message: format!(
+                        "This save may detach inline comments from the passages they quote, and that could not be checked: {}",
+                        orphan_check_error.read()
+                    ),
+                    confirm_text: "Save anyway".to_string(),
+                    cancel_text: "Go back".to_string(),
+                    onconfirm: move |_| {
+                        orphan_check_error.set(String::new());
+                        handle_submit.call(true);
+                    },
+                    oncancel: move |_| orphan_check_error.set(String::new()),
+                }
+
                 // MAPPS-739: why. Only on an edit: the creation snapshot has
                 // no "why" beyond existing, and the server keeps a note only
                 // on the version a save creates.
@@ -4862,7 +4986,21 @@ fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
 }
 
 #[component]
-fn KbTreeNav(categories: Vec<KbCategory>, articles: Vec<KbArticle>, current_id: String) -> Element {
+fn KbTreeNav(
+    categories: Vec<KbCategory>,
+    articles: Vec<KbArticle>,
+    current_id: String,
+    // SPEC-12.5.8: the article list failed to load. Without this the rail
+    // prunes every category and reads as a knowledge base with nothing in it.
+    load_failed: bool,
+) -> Element {
+    if load_failed {
+        return rsx! {
+            p { class: "px-2 py-1 text-sm text-red-600 dark:text-red-400", role: "alert",
+                "Could not load the article list."
+            }
+        };
+    }
     let (roots, uncategorized) = build_kb_tree(&categories, &articles);
     // MAPPS-423: the nav lists what you can navigate to. An empty category is
     // an expanded, empty row; hide it here (the KB home grid still shows all).
@@ -5095,15 +5233,18 @@ fn RatingBar(
                         #[cfg(feature = "app")]
                         {
                             let path = format!("/kb/articles/{id}/helpful");
-                            if let Ok(fb) =
-                                crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(
-                                    &path,
-                                    &serde_json::json!({}),
-                                )
-                                .await
+                            match crate::hooks::fetch::api::post_authed_typed::<KbArticleFeedback, _>(
+                                &path,
+                                &serde_json::json!({}),
+                            )
+                            .await
                             {
-                                counts.set((fb.helpful_count, fb.not_helpful_count));
-                                my_vote.set(fb.my_vote);
+                                Ok(fb) => {
+                                    counts.set((fb.helpful_count, fb.not_helpful_count));
+                                    my_vote.set(fb.my_vote);
+                                }
+                                // SPEC-12.1.8: a lost vote is logged and said.
+                                Err(e) => vote_failed(&id, &e),
                             }
                         }
                         #[cfg(not(feature = "app"))]
@@ -5126,15 +5267,18 @@ fn RatingBar(
                         #[cfg(feature = "app")]
                         {
                             let path = format!("/kb/articles/{id}/not_helpful");
-                            if let Ok(fb) =
-                                crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(
-                                    &path,
-                                    &serde_json::json!({}),
-                                )
-                                .await
+                            match crate::hooks::fetch::api::post_authed_typed::<KbArticleFeedback, _>(
+                                &path,
+                                &serde_json::json!({}),
+                            )
+                            .await
                             {
-                                counts.set((fb.helpful_count, fb.not_helpful_count));
-                                my_vote.set(fb.my_vote);
+                                Ok(fb) => {
+                                    counts.set((fb.helpful_count, fb.not_helpful_count));
+                                    my_vote.set(fb.my_vote);
+                                }
+                                // SPEC-12.1.8: a lost vote is logged and said.
+                                Err(e) => vote_failed(&id, &e),
                             }
                         }
                         #[cfg(not(feature = "app"))]
@@ -5147,6 +5291,18 @@ fn RatingBar(
             }
         }
     }
+}
+
+/// A vote POST failed: log it against the article and tell the reader the
+/// vote was not recorded, instead of letting the button return to idle as if
+/// it had counted (SPEC-12.1.8, MAPPS-1225).
+#[cfg(feature = "app")]
+fn vote_failed(article_id: &str, e: &crate::hooks::fetch::api::ApiError) {
+    tracing::error!("kb vote failed for {article_id}: {e}");
+    crate::hooks::toast::push_toast(
+        crate::components::AlertType::Error,
+        format!("Your vote was not recorded: {}", e.user_message()),
+    );
 }
 
 #[component]
@@ -6246,11 +6402,9 @@ mod mapps745_editor_anchor_tests {
             head.contains("handle_submit.call(true);"),
             "Save anyway re-enters acknowledged"
         );
-        let check = head
-            .find(
-                "crate::pages::kb_inline::orphaned_by_edit(&saved_content, &content_val, &roots);",
-            )
-            .expect("the check");
+        // MAPPS-1225: the decision moved into `orphan_check`, which also
+        // reports a check that could not run; the call site is what is pinned.
+        let check = head.find("match orphan_check(").expect("the check");
         let armed = head[check..]
             .find("is_submitting.set(true);")
             .expect("the arming");
@@ -6277,5 +6431,227 @@ mod mapps745_editor_anchor_tests {
             head.contains("crate::platform::timer::sleep_ms(700).await;"),
             "a debounce, not a keystroke"
         );
+    }
+}
+
+/// MAPPS-1225: the nine error-visibility findings from the specification pass.
+///
+/// The decisions that can be pulled out of a hook are tested directly. The rest
+/// live inside a `use_resource` or an event handler that only runs under the
+/// `app` feature with a real DOM, so, as in `editor_ux_tests`, what is pinned is
+/// the decision as it appears in the source.
+#[cfg(test)]
+mod mapps1225_error_visibility_tests {
+    use super::*;
+    use crate::utils::error::FieldError;
+
+    /// The page's code without comment bodies and without this module, so an
+    /// assertion can neither pass on a comment nor match its own pattern.
+    fn code() -> String {
+        let src = include_str!("knowledge_base.rs");
+        let end = src
+            .find("mod mapps1225_error_visibility_tests")
+            .expect("this module is part of this file");
+        src[..end]
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The source between `start` and the first `end` after it.
+    fn between(code: &str, start: &str, end: &str) -> String {
+        let from = code.find(start).unwrap_or_else(|| panic!("{start}"));
+        let rest = &code[from..];
+        rest[..rest
+            .find(end)
+            .unwrap_or_else(|| panic!("{end} after {start}"))]
+            .to_string()
+    }
+
+    fn fe(field: &str, message: &str) -> FieldError {
+        FieldError {
+            field: field.to_string(),
+            message: message.to_string(),
+            code: "invalid".to_string(),
+        }
+    }
+
+    /// Finding 1: a failed vote POST was dropped by an `if let Ok` with no
+    /// else, and the button went back to idle as if it had counted.
+    #[test]
+    fn a_failed_vote_is_logged_and_said() {
+        let code = code();
+        let bar = between(&code, "fn RatingBar(", "fn vote_failed(");
+        assert_eq!(
+            bar.matches("Err(e) => vote_failed(&id, &e)").count(),
+            2,
+            "both the helpful and the not-helpful POST report a failure"
+        );
+        let helper = between(&code, "fn vote_failed(", "fn ReadModeButton(");
+        assert!(helper.contains("tracing::error!") && helper.contains("{article_id}"));
+        assert!(helper.contains("Your vote was not recorded"));
+    }
+
+    /// Finding 2: the vote seed failed silently, and neither it nor the scoped
+    /// companies lookup re-ran on a tenant switch (SPEC-12.6.1).
+    #[test]
+    fn the_vote_seed_logs_a_failure_and_follows_the_tenant() {
+        let code = code();
+        assert!(
+            !code.contains("if let Ok(fb)"),
+            "no vote result is dropped on the floor"
+        );
+        let seed = between(&code, "use_reactive!(|id_for_vote|", "}));");
+        assert!(seed.contains("active_tenant_generation()"));
+        assert!(seed.contains("tracing::warn!(\"kb vote seed failed for {id_for_vote}: {e}\")"));
+        let scoped = between(
+            &code,
+            "let scoped_companies_resource = use_resource(",
+            "});",
+        );
+        assert!(scoped.contains("active_tenant_generation()"));
+    }
+
+    /// Finding 3: a 422 on `title` landed in the Template variables banner.
+    #[test]
+    fn only_template_variable_errors_reach_the_template_banner() {
+        let fields = vec![
+            fe("title", "Title is required"),
+            fe("slug", "Slug is taken"),
+            fe("template_variables[1].name", "Name is required"),
+            fe("template_variables[9].name", "Row nine is gone"),
+            fe("template_variables", "Too many variables"),
+        ];
+        let (rows, banner) = route_template_var_errors(&fields, Vec::new(), 2);
+        assert_eq!(rows, vec![String::new(), "Name is required".to_string()]);
+        assert_eq!(
+            banner,
+            vec![
+                "Row nine is gone".to_string(),
+                "Too many variables".to_string()
+            ],
+            "title and slug errors belong to the top banner alone"
+        );
+    }
+
+    #[test]
+    fn a_second_error_on_a_row_is_appended_not_replaced() {
+        let fields = vec![fe("template_variables.0.name", "Second")];
+        let (rows, banner) = route_template_var_errors(&fields, vec!["First".to_string()], 1);
+        assert_eq!(rows, vec!["First; Second".to_string()]);
+        assert!(banner.is_empty());
+    }
+
+    /// Finding 4: a failed load rendered the "No ticket-driving articles yet"
+    /// empty state.
+    #[test]
+    fn a_failed_ticket_driving_load_is_not_the_empty_state() {
+        let code = code();
+        assert!(
+            code.contains("let top_driving_failed = matches!(*top_driving_snapshot, Some(None));")
+        );
+        let card = between(
+            &code,
+            "Card { title: \"Top ticket-driving articles\"",
+            "No ticket-driving articles yet.",
+        );
+        let failed = card
+            .find("if top_driving_failed")
+            .expect("the failure branch");
+        let loading = card
+            .find("top_driving_loading")
+            .expect("the loading branch");
+        assert!(
+            failed < loading,
+            "the failure is decided before loading and empty"
+        );
+        assert!(card.contains("Could not load ticket-driving articles."));
+    }
+
+    /// Finding 5: a failed tree load pruned the rail to nothing.
+    #[test]
+    fn a_failed_tree_load_says_so_in_the_rail() {
+        let code = code();
+        assert_eq!(
+            code.matches("load_failed: tree_failed,").count(),
+            2,
+            "list and detail pages"
+        );
+        assert_eq!(
+            code.matches(
+                "let tree_failed = matches!(*tree_articles_resource.read_unchecked(), Some(None));"
+            )
+            .count(),
+            2
+        );
+        let nav = between(&code, "fn KbTreeNav(", "build_kb_tree(");
+        assert!(nav.contains("if load_failed") && nav.contains("Could not load the article list."));
+    }
+
+    /// Finding 6: a failed comments fetch became an empty list and the
+    /// orphan warning was skipped.
+    #[test]
+    fn an_orphan_check_that_cannot_run_says_so() {
+        assert_eq!(
+            orphan_check(Some(&Err("Network error.".to_string())), "a", "b"),
+            OrphanCheck::Unavailable("Network error.".to_string())
+        );
+        assert!(matches!(
+            orphan_check(None, "a", "b"),
+            OrphanCheck::Unavailable(_)
+        ));
+        assert_eq!(
+            orphan_check(Some(&Ok(Vec::new())), "a", "b"),
+            OrphanCheck::Clear
+        );
+        let code = code();
+        assert!(code
+            .contains("OrphanCheck::Unavailable(why) => { orphan_check_error.set(why); return; }"));
+        assert!(
+            !code.contains(".flatten() .unwrap_or_default()"),
+            "no Err folds into an empty list"
+        );
+    }
+
+    /// Finding 7: a parse failure of the page's own picks was discarded.
+    #[test]
+    fn template_picks_parse_and_a_bad_string_renders_with_none() {
+        let picks = parse_template_picks(r#"{"host":"vpn"}"#);
+        assert_eq!(picks.get("host").map(String::as_str), Some("vpn"));
+        assert!(parse_template_picks("not json").is_empty());
+        let code = code();
+        assert!(!code.contains("serde_json::from_str(&picks_debounced.read()).unwrap_or_default()"));
+        let helper = between(&code, "fn parse_template_picks(", "fn picked_uuid(");
+        assert!(helper.contains("tracing::error!"));
+    }
+
+    /// Finding 8: a toggle that could not be applied returned silently with
+    /// the DOM checkbox flipped.
+    #[test]
+    fn a_task_toggle_that_cannot_apply_restores_the_box_and_says_so() {
+        let code = code();
+        let miss = between(&code, "toggle_task(&src, i) else {", "return; };");
+        assert!(miss.contains("tracing::warn!"));
+        assert!(miss.contains("push_toast"));
+        assert!(
+            miss.contains("ar.restart()"),
+            "re-fetch to put the box back"
+        );
+    }
+
+    /// Finding 9: "-3" is accepted, so the message cannot say 0 is the floor.
+    #[test]
+    fn the_sort_order_message_names_the_range_it_accepts() {
+        assert_eq!(parse_sort_order("-3"), Ok(-3));
+        let message = parse_sort_order("first").expect_err("not a number");
+        assert!(message.contains("-2147483648"), "{message}");
+        assert!(!message.contains("between 0"), "{message}");
     }
 }
