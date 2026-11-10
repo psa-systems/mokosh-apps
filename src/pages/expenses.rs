@@ -313,11 +313,12 @@ const MEMBERS_MAX_PAGES: usize = 20;
 /// `{rows, total, ...}` where that helper reads `{data, meta}`, so the
 /// paging is here in the same shape, stopping on a short page.
 ///
-/// The `bool` is `true` only when the cap was hit before a short page: a
-/// network failure mid-page returns whatever was accumulated with `false`,
-/// because that is a partial read, not a tenant too big for the cap, and
-/// the caller already has a `fetch_failed` signal for the former.
-pub(crate) async fn member_names() -> (HashMap<Uuid, String>, bool) {
+/// The second value says how the read ended: [`MemberLookupEnd::Capped`]
+/// when the cap was hit before a short page, [`MemberLookupEnd::Failed`]
+/// when a page failed and only part of the map was read. MAPPS-1230: a
+/// failure used to report "complete", so every member past the failed page
+/// read as "A former member" and nobody was told the lookup failed.
+pub(crate) async fn member_names() -> (HashMap<Uuid, String>, MemberLookupEnd) {
     member_names_paged(|page| async move {
         let path = format!("/members?page={page}&per_page={MEMBERS_PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<MembersEnvelope>(&path).await
@@ -325,10 +326,23 @@ pub(crate) async fn member_names() -> (HashMap<Uuid, String>, bool) {
     .await
 }
 
+/// How a [`member_names`] read ended.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum MemberLookupEnd {
+    /// A short page was read: the map is every member.
+    #[default]
+    Complete,
+    /// [`MEMBERS_MAX_PAGES`] full pages and no short one: the map stops at
+    /// the cap.
+    Capped,
+    /// A page failed: the map is whatever was read before it.
+    Failed,
+}
+
 /// The paging loop behind [`member_names`], with the page fetch taken as
 /// a closure so a test can hand it canned pages instead of a live
 /// `/members` endpoint `cargo test` cannot reach.
-async fn member_names_paged<F, Fut>(mut fetch_page: F) -> (HashMap<Uuid, String>, bool)
+async fn member_names_paged<F, Fut>(mut fetch_page: F) -> (HashMap<Uuid, String>, MemberLookupEnd)
 where
     F: FnMut(usize) -> Fut,
     Fut: std::future::Future<Output = Result<MembersEnvelope, String>>,
@@ -339,7 +353,7 @@ where
             .await
             .inspect_err(|e| tracing::error!("member list load failed: {e}"))
         else {
-            return (names, false);
+            return (names, MemberLookupEnd::Failed);
         };
         let full = envelope.rows.len() >= MEMBERS_PER_PAGE;
         for row in envelope.rows {
@@ -356,22 +370,57 @@ where
             }
         }
         if !full {
-            return (names, false);
+            return (names, MemberLookupEnd::Complete);
         }
     }
-    (names, true)
+    (names, MemberLookupEnd::Capped)
 }
 
 /// The label for a claim/approval row's member id: the real name when the
-/// lookup hits, otherwise "A former member" UNLESS the map is known to be
-/// truncated by the page cap, in which case the id simply never made it
-/// into the first `MEMBERS_MAX_PAGES * MEMBERS_PER_PAGE` rows and a current
-/// member must not be told they left (MAPPS-1172).
-fn member_label(names: &HashMap<Uuid, String>, truncated: bool, id: Uuid) -> String {
+/// lookup hits, otherwise "A former member" only when the map is complete.
+/// A map cut short by the page cap (MAPPS-1172) or by a failed page
+/// (MAPPS-1230) cannot say the member left, so the id is shown instead.
+fn member_label(names: &HashMap<Uuid, String>, end: MemberLookupEnd, id: Uuid) -> String {
     match names.get(&id).cloned().filter(|n| !n.is_empty()) {
         Some(name) => name,
-        None if truncated => format!("Member {}", &id.to_string()[..8]),
-        None => "A former member".to_string(),
+        None if end == MemberLookupEnd::Complete => "A former member".to_string(),
+        None => format!("Member {}", &id.to_string()[..8]),
+    }
+}
+
+/// MAPPS-1230: who decided a claim. "Nobody yet" only when there is no
+/// approver; an approver the lookup cannot name is still somebody.
+fn approver_label(
+    names: &HashMap<Uuid, String>,
+    end: MemberLookupEnd,
+    approver: Option<Uuid>,
+) -> String {
+    match approver {
+        None => "Nobody yet".to_string(),
+        Some(id) => member_label(names, end, id),
+    }
+}
+
+/// The notice when member names could not all be read, or `None`.
+const MEMBERS_FAILED_NOTE: &str =
+    "Some member names could not be loaded, so those people are shown by id.";
+
+/// MAPPS-1230: what the detail page says when no action is offered. "This
+/// claim is finished" is for a terminal status only; a draft with nothing
+/// offered because the server is unreachable is not finished.
+fn no_action_note(status: &str, can_mutate: bool) -> &'static str {
+    match status {
+        "reimbursed" | "rejected" => {
+            "This claim is finished: a reimbursed or rejected claim cannot be moved again. A correction is a new claim, the way an invoice amendment is a new invoice."
+        }
+        _ if !can_mutate => "Can't change this claim while the server is unreachable.",
+        // Not finished, waiting on somebody else (MAPPS-1165): saying
+        // "finished" here would be wrong, and offering the buttons would be
+        // a 403.
+        "submitted" | "approved" => {
+            "This claim is with finance now. They approve it and mark it reimbursed once you have been paid back."
+        }
+        _ => "Nothing can be done with this claim from here.",
     }
 }
 
@@ -440,7 +489,7 @@ fn ExpenseListBody() -> Element {
         Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
-    let (names, members_truncated) = members.read_unchecked().clone().unwrap_or_default();
+    let (names, members_end) = members.read_unchecked().clone().unwrap_or_default();
 
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
@@ -518,6 +567,9 @@ fn ExpenseListBody() -> Element {
             }
         }
 
+        if members_end == MemberLookupEnd::Failed {
+            p { class: "mb-3 text-sm text-muted", "{MEMBERS_FAILED_NOTE}" }
+        }
         if fetch_failed {
             ErrorBanner { class: "mb-3", "Could not load expense claims. Refresh the page to retry." }
         }
@@ -570,7 +622,7 @@ fn ExpenseListBody() -> Element {
                             {
                                 let key = row.id.to_string();
                                 let id = row.id;
-                                let who = member_label(&names, members_truncated, row.user_id);
+                                let who = member_label(&names, members_end, row.user_id);
                                 let decided = row
                                     .approver_id
                                     .and_then(|a| names.get(&a).cloned())
@@ -962,8 +1014,11 @@ fn ExpenseDetailBody(id: String) -> Element {
     });
 
     let snap = resource.read_unchecked().clone();
+    // MAPPS-1230: a failed load (a 403 included) is `Some(None)`; folding it
+    // into `None` kept the skeleton up for good.
+    let load_failed = matches!(snap, Some(None));
     let data = snap.as_ref().and_then(|o| o.as_ref()).cloned();
-    let (names, members_truncated) = members.read_unchecked().clone().unwrap_or_default();
+    let (names, members_end) = members.read_unchecked().clone().unwrap_or_default();
     let category_names: HashMap<Uuid, String> = categories
         .read_unchecked()
         .clone()
@@ -988,17 +1043,17 @@ fn ExpenseDetailBody(id: String) -> Element {
         if !error().is_empty() {
             ErrorBanner { class: "mb-4", "{error}" }
         }
+        if members_end == MemberLookupEnd::Failed {
+            p { class: "mb-3 text-sm text-muted", "{MEMBERS_FAILED_NOTE}" }
+        }
         match data {
+            None if load_failed => rsx! { ErrorBanner { "Could not load this claim." } },
             None => rsx! { crate::components::DetailSkeleton {} },
             Some(loaded) => {
                 let claim = loaded.expense.clone();
                 let (label, tone) = status_badge(&claim.status);
-                let who = member_label(&names, members_truncated, claim.user_id);
-                let decided = claim
-                    .approver_id
-                    .and_then(|a| names.get(&a).cloned())
-                    .filter(|n| !n.is_empty())
-                    .unwrap_or_default();
+                let who = member_label(&names, members_end, claim.user_id);
+                let decided = approver_label(&names, members_end, claim.approver_id);
                 let notes = claim.notes.clone().unwrap_or_default();
                 let offered = if can_mutate {
                     transitions_for(&claim.status, can_decide)
@@ -1023,7 +1078,7 @@ fn ExpenseDetailBody(id: String) -> Element {
                                 div {
                                     dt { class: "text-muted", "Decided by" }
                                     dd { class: "font-medium text-content",
-                                        if decided.is_empty() { "Nobody yet" } else { "{decided}" }
+                                        "{decided}"
                                     }
                                 }
                                 div {
@@ -1078,17 +1133,7 @@ fn ExpenseDetailBody(id: String) -> Element {
                                 }
                             }
                             if offered.is_empty() {
-                                p { class: "text-sm text-muted",
-                                    if claim.status == "submitted" || claim.status == "approved" {
-                                        // Not finished, waiting on somebody
-                                        // else (MAPPS-1165): saying "finished"
-                                        // here would be wrong, and offering
-                                        // the buttons would be a 403.
-                                        "This claim is with finance now. They approve it and mark it reimbursed once you have been paid back."
-                                    } else {
-                                        "This claim is finished: a reimbursed or rejected claim cannot be moved again. A correction is a new claim, the way an invoice amendment is a new invoice."
-                                    }
-                                }
+                                p { class: "text-sm text-muted", "{no_action_note(&claim.status, can_mutate)}" }
                             }
                             ConfirmDialog {
                                 open: confirming().is_some(),
@@ -1509,7 +1554,7 @@ mod tests {
     async fn paging_past_the_cap_reports_truncation() {
         let total_rows = MEMBERS_MAX_PAGES * MEMBERS_PER_PAGE + 1;
         let ids: Vec<Uuid> = (0..total_rows).map(|_| Uuid::new_v4()).collect();
-        let (names, truncated) = member_names_paged(|page| {
+        let (names, end) = member_names_paged(|page| {
             let ids = ids.clone();
             async move {
                 let start = (page - 1) * MEMBERS_PER_PAGE;
@@ -1523,8 +1568,9 @@ mod tests {
             }
         })
         .await;
-        assert!(
-            truncated,
+        assert_eq!(
+            end,
+            MemberLookupEnd::Capped,
             "every one of the {MEMBERS_MAX_PAGES} pages fetched was full, so the loop hit the cap"
         );
         assert_eq!(
@@ -1544,7 +1590,7 @@ mod tests {
     #[tokio::test]
     async fn a_short_page_is_not_truncation() {
         let id = Uuid::new_v4();
-        let (names, truncated) = member_names_paged(|page| async move {
+        let (names, end) = member_names_paged(|page| async move {
             let rows = if page == 1 {
                 vec![member_row(id)]
             } else {
@@ -1554,8 +1600,35 @@ mod tests {
                 .expect("the envelope deserialises"))
         })
         .await;
-        assert!(!truncated, "a short first page ends the loop normally");
+        assert_eq!(
+            end,
+            MemberLookupEnd::Complete,
+            "a short first page ends the loop normally"
+        );
         assert!(names.contains_key(&id));
+    }
+
+    /// MAPPS-1230: a failed page is neither complete nor capped. It used to
+    /// report "complete", so every later member read as "A former member".
+    #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn a_failed_page_is_reported_as_failed() {
+        let id = Uuid::new_v4();
+        let (names, end) = member_names_paged(|page| async move {
+            if page == 1 {
+                let rows: Vec<serde_json::Value> = (0..MEMBERS_PER_PAGE)
+                    .map(|i| member_row(if i == 0 { id } else { Uuid::new_v4() }))
+                    .collect();
+                Ok(serde_json::from_value(serde_json::json!({ "rows": rows }))
+                    .expect("the envelope deserialises"))
+            } else {
+                Err("http 500".to_string())
+            }
+        })
+        .await;
+        assert_eq!(end, MemberLookupEnd::Failed);
+        assert!(names.contains_key(&id), "what was read is kept");
+        assert_ne!(member_label(&names, end, Uuid::new_v4()), "A former member");
     }
 
     /// MAPPS-1172: the claims list's fallback label. A lookup miss on a
@@ -1566,8 +1639,11 @@ mod tests {
     fn a_lookup_miss_is_a_former_member_only_when_the_map_is_not_truncated() {
         let names = HashMap::new();
         let id = Uuid::new_v4();
-        assert_eq!(member_label(&names, false, id), "A former member");
-        let neutral = member_label(&names, true, id);
+        assert_eq!(
+            member_label(&names, MemberLookupEnd::Complete, id),
+            "A former member"
+        );
+        let neutral = member_label(&names, MemberLookupEnd::Capped, id);
         assert_ne!(neutral, "A former member");
         assert!(
             neutral.contains(&id.to_string()[..8]),
@@ -1581,7 +1657,58 @@ mod tests {
         let id = Uuid::new_v4();
         let mut names = HashMap::new();
         names.insert(id, "Ada Lovelace".to_string());
-        assert_eq!(member_label(&names, false, id), "Ada Lovelace");
-        assert_eq!(member_label(&names, true, id), "Ada Lovelace");
+        assert_eq!(
+            member_label(&names, MemberLookupEnd::Complete, id),
+            "Ada Lovelace"
+        );
+        assert_eq!(
+            member_label(&names, MemberLookupEnd::Failed, id),
+            "Ada Lovelace"
+        );
+    }
+
+    /// MAPPS-1230: "Nobody yet" means no approver, never an approver the
+    /// lookup could not name.
+    #[test]
+    fn nobody_yet_only_without_an_approver() {
+        let names = HashMap::new();
+        assert_eq!(
+            approver_label(&names, MemberLookupEnd::Complete, None),
+            "Nobody yet"
+        );
+        let unnamed = approver_label(&names, MemberLookupEnd::Complete, Some(Uuid::new_v4()));
+        assert_ne!(unnamed, "Nobody yet");
+        assert_eq!(unnamed, "A former member");
+    }
+
+    /// MAPPS-1230: "finished" is for terminal statuses only.
+    #[test]
+    fn only_a_terminal_claim_is_finished() {
+        for status in ["reimbursed", "rejected"] {
+            for can_mutate in [true, false] {
+                assert!(
+                    no_action_note(status, can_mutate).starts_with("This claim is finished"),
+                    "{status}"
+                );
+            }
+        }
+        assert_eq!(
+            no_action_note("draft", false),
+            "Can't change this claim while the server is unreachable."
+        );
+        assert!(no_action_note("submitted", true).contains("with finance"));
+        assert!(!no_action_note("mystery", true).contains("finished"));
+    }
+
+    /// MAPPS-1230: a failed claim load said nothing and kept the skeleton.
+    #[test]
+    fn a_failed_claim_load_is_said() {
+        let src = include_str!("expenses.rs");
+        let head = &src[..src
+            .find("fn nobody_yet_only_without_an_approver")
+            .expect("this test")];
+        assert!(head.contains(
+            "None if load_failed => rsx! { ErrorBanner { \"Could not load this claim.\" } },"
+        ));
     }
 }
