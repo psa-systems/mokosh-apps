@@ -1912,6 +1912,11 @@ fn OrganizationSettingsBody() -> Element {
     // PMS-1280: only the deployment's operator owns the app name; any other
     // organisation's admin does not see the card at all.
     let app_name_owned = !matches!(*app_name_snap, Some(OperatorLoad::NotOperator));
+    // MAPPS-1232: the form only once the value has loaded. A failed load (or
+    // one still in flight) used to render an editable empty input, and Save
+    // would then send a blank that clears the stored override.
+    let app_name_failed = matches!(*app_name_snap, Some(OperatorLoad::Failed));
+    let app_name_loaded = matches!(*app_name_snap, Some(OperatorLoad::Loaded(_)));
     if !app_name_seeded() {
         if let Some(OperatorLoad::Loaded(view)) = &*app_name_snap {
             app_name_value.set(view.app_name.clone().unwrap_or_default());
@@ -2172,6 +2177,11 @@ fn OrganizationSettingsBody() -> Element {
             if app_name_owned {
             Card {
                 title: "App name".to_string(),
+                if app_name_failed {
+                    ErrorBanner { "Could not load the app name, so it cannot be edited here. Refresh the page to try again." }
+                } else if !app_name_loaded {
+                    crate::components::DetailSkeleton {}
+                } else {
                 div { class: "space-y-4 max-w-xl",
                     if !app_name_error().is_empty() {
                         ErrorBanner { "{app_name_error()}" }
@@ -2201,6 +2211,7 @@ fn OrganizationSettingsBody() -> Element {
                             "Save Changes"
                         }
                     }
+                }
                 }
             }
             }
@@ -2421,7 +2432,11 @@ fn OrganizationSettingsBody() -> Element {
                                                     logo_url.set(None);
                                                     logo_broken.set(false);
                                                 }
-                                                Err(e) => logo_error.set(format!("Could not remove the logo: {e}")),
+                                                Err(e) => {
+                                                    // MAPPS-1232: shown, and now logged.
+                                                    tracing::error!("logo removal failed: {e}");
+                                                    logo_error.set(format!("Could not remove the logo: {e}"));
+                                                }
                                             }
                                         }
                                         logo_busy.set(false);
@@ -2462,10 +2477,17 @@ fn OrganizationSettingsBody() -> Element {
                                                         logo_broken.set(false);
                                                         logo_url.set(t.branding.logo_url);
                                                     }
-                                                    Err(e) => logo_error.set(e.user_message()),
+                                                    Err(e) => {
+                                                        tracing::error!("logo upload failed for {file_name}: {e}");
+                                                        logo_error.set(e.user_message());
+                                                    }
                                                 }
                                             }
-                                            Err(_) => logo_error.set("Could not read the selected file.".to_string()),
+                                            // MAPPS-1232: the cause and the file, logged.
+                                            Err(e) => {
+                                                tracing::error!("logo file {file_name} could not be read: {e}");
+                                                logo_error.set("Could not read the selected file.".to_string());
+                                            }
                                         }
                                     }
                                     logo_busy.set(false);
@@ -2717,11 +2739,17 @@ fn ImportPanel(tenant_name: String) -> Element {
                         let Some(file) = evt.files().into_iter().next() else {
                             return;
                         };
-                        file_name.set(file.name());
+                        let name = file.name();
+                        file_name.set(name.clone());
+                        // MAPPS-1232: the previous file's text must not stay
+                        // behind the new name; import is disabled until this
+                        // file is read.
+                        file_text.set(None);
                         spawn(async move {
                             match file.read_string().await {
                                 Ok(text) => file_text.set(Some(text)),
-                                Err(_) => {
+                                Err(e) => {
+                                    tracing::error!("import file {name} could not be read: {e}");
                                     error.set("Could not read the selected file.".to_string())
                                 }
                             }
@@ -2945,6 +2973,19 @@ fn setting_u64(value: &serde_json::Value, path: &str, default: u64) -> u64 {
     })
 }
 
+/// MAPPS-1232: a stored setting outside the range the form accepts, clamped
+/// into it for the form and logged, because saving the form overwrites the
+/// stored value with the clamped one unseen.
+fn setting_in_range(value: u64, path: &str, min: u64, max: u64) -> u64 {
+    let clamped = value.clamp(min, max);
+    if clamped != value {
+        tracing::warn!(
+            "setting {path} holds {value}, outside {min}..={max}; the form shows {clamped}"
+        );
+    }
+    clamped
+}
+
 const DEFAULT_DUE_SETTING_PATH: &str = "/settings/scheduling/default_due_business_days";
 const MAX_DUE_BUSINESS_DAYS: u32 = 365;
 
@@ -2978,10 +3019,12 @@ fn SchedulingSettingsBody() -> Element {
             match crate::modules::tenant_settings::get("scheduling", "default_due_business_days")
                 .await
             {
-                Ok(Some(value)) => Some(
-                    setting_u64(&value, DEFAULT_DUE_SETTING_PATH, 0)
-                        .min(u64::from(MAX_DUE_BUSINESS_DAYS)) as u32,
-                ),
+                Ok(Some(value)) => Some(setting_in_range(
+                    setting_u64(&value, DEFAULT_DUE_SETTING_PATH, 0),
+                    DEFAULT_DUE_SETTING_PATH,
+                    0,
+                    u64::from(MAX_DUE_BUSINESS_DAYS),
+                ) as u32),
                 Ok(None) => Some(0u32),
                 Err(e) => {
                     tracing::error!("default due-date setting load failed: {e}");
@@ -3167,13 +3210,34 @@ impl ReminderSettings {
         };
         for row in rows {
             match row.key.as_str() {
-                "enabled" => s.enabled = row.value.as_bool().unwrap_or(false),
+                // MAPPS-1232: a malformed row is logged, as `setting_u64`
+                // does for `send_hour`, rather than read as off or dropped.
+                "enabled" => {
+                    s.enabled = row.value.as_bool().unwrap_or_else(|| {
+                        tracing::warn!(
+                            "reminder setting enabled holds {}, not a boolean; reading it as off",
+                            row.value
+                        );
+                        false
+                    })
+                }
                 "schedule" => {
-                    s.schedule = row
-                        .value
-                        .as_array()
-                        .map(|a| a.iter().filter_map(|d| d.as_u64()).collect())
-                        .unwrap_or_default()
+                    let Some(entries) = row.value.as_array() else {
+                        tracing::warn!(
+                            "reminder setting schedule holds {}, not a list; reading it as empty",
+                            row.value
+                        );
+                        continue;
+                    };
+                    s.schedule = entries
+                        .iter()
+                        .filter_map(|d| {
+                            d.as_u64().or_else(|| {
+                                tracing::warn!("reminder schedule entry {d} is not a whole number of days; skipped");
+                                None
+                            })
+                        })
+                        .collect();
                 }
                 "send_hour" => s.send_hour = setting_u64(&row.value, "send_hour", 8),
                 _ => {}
@@ -3255,7 +3319,10 @@ fn PaymentRemindersBody() -> Element {
                 Ok(rows) => Some(ReminderSettings::from_rows(&rows)),
                 // No row yet is the unconfigured state: the server's defaults.
                 Err(e) if e.status_code() == Some(404) => Some(ReminderSettings::from_rows(&[])),
-                Err(_) => None,
+                Err(e) => {
+                    tracing::error!("payment reminder settings load failed: {e}");
+                    None
+                }
             }
         }
         #[cfg(not(feature = "app"))]
@@ -3474,14 +3541,16 @@ fn MaxHoursPerDaySettingsBody() -> Element {
             // it as the full 24-hour default. A failed read is surfaced so the
             // form does not silently seed a wrong cap.
             match crate::modules::tenant_settings::get("time_tracking", "max_hours_per_day").await {
-                Ok(Some(value)) => Some(
+                Ok(Some(value)) => Some(setting_in_range(
                     setting_u64(
                         &value,
                         MAX_HOURS_PER_DAY_SETTING_PATH,
                         u64::from(DEFAULT_MAX_HOURS_PER_DAY),
-                    )
-                    .clamp(1, u64::from(MAX_HOURS_PER_DAY_CEILING)) as u32,
-                ),
+                    ),
+                    MAX_HOURS_PER_DAY_SETTING_PATH,
+                    1,
+                    u64::from(MAX_HOURS_PER_DAY_CEILING),
+                ) as u32),
                 Ok(None) => Some(DEFAULT_MAX_HOURS_PER_DAY),
                 Err(e) => {
                     tracing::error!("max-hours-per-day setting load failed: {e}");
@@ -4397,6 +4466,10 @@ struct AssetTypeRow {
     /// Optional so types created before PMS-456 still deserialise.
     #[serde(default)]
     itil_category: Option<String>,
+    /// MAPPS-1232: read so an edit can send it back. This editor does not
+    /// manage nesting, and the server's update writes the column as sent.
+    #[serde(default)]
+    parent_type_id: Option<Uuid>,
 }
 
 #[component]
@@ -4564,6 +4637,8 @@ struct AssetTypeFormState {
     is_active: bool,
     /// PMS-476: free-text ITIL category. Empty = unset on the wire.
     itil_category: String,
+    /// MAPPS-1232: carried, never edited here, and sent back unchanged.
+    parent_type_id: Option<Uuid>,
 }
 
 impl AssetTypeFormState {
@@ -4574,6 +4649,7 @@ impl AssetTypeFormState {
             icon: String::new(),
             is_active: true,
             itil_category: String::new(),
+            parent_type_id: None,
         }
     }
 
@@ -4584,6 +4660,7 @@ impl AssetTypeFormState {
             icon: r.icon.clone().unwrap_or_default(),
             is_active: r.is_active,
             itil_category: r.itil_category.clone().unwrap_or_default(),
+            parent_type_id: r.parent_type_id,
         }
     }
 }
@@ -4604,6 +4681,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
     let mut icon = use_signal(|| initial.icon.clone());
     let mut is_active = use_signal(|| initial.is_active);
     let mut itil_category = use_signal(|| initial.itil_category.clone());
+    let initial_parent = initial.parent_type_id;
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -4624,15 +4702,16 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         error.set(String::new());
         let icon_val = icon.read().trim().to_string();
         let itil_val = itil_category.read().trim().to_string();
-        // `parent_type_id` is always sent null: this v1 editor manages
-        // flat (top-level) asset types only. Nested types are a follow-up.
+        // MAPPS-1232: `parent_type_id` is sent back as loaded. This editor
+        // does not manage nesting, but the server's update writes the column
+        // as sent, so a hardcoded null cleared the parent of a nested type.
         // PMS-476: `itil_category` is free-text so the tenant can coin
         // a new value; the help text on the input surfaces the
         // standard ITIL classes as suggestions.
         let body = serde_json::json!({
             "name": name.read().trim(),
             "icon": opt_str(&icon_val),
-            "parent_type_id": serde_json::Value::Null,
+            "parent_type_id": initial_parent,
             "is_active": *is_active.read(),
             "itil_category": opt_str(&itil_val),
         });
@@ -10577,5 +10656,129 @@ mod pms1350_personal_vs_administrative_tests {
                 surface.group, surface.title
             );
         }
+    }
+}
+
+/// MAPPS-1232: the hub, organization, import and scheduling findings from
+/// the specification pass.
+#[cfg(test)]
+mod mapps1232_tests {
+    use super::{setting_in_range, AssetTypeFormState, AssetTypeRow, ReminderSettings, SettingRow};
+
+    fn code() -> String {
+        let src = include_str!("settings.rs");
+        src[..src.find("mod mapps1232_tests").expect("this module")]
+            .lines()
+            .map(|l| l.find("//").map_or(l, |i| &l[..i]))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Finding 1: a failed app-name load rendered an editable, empty card.
+    #[test]
+    fn the_app_name_form_needs_a_loaded_value() {
+        let code = code();
+        assert!(code.contains(
+            "let app_name_failed = matches!(*app_name_snap, Some(OperatorLoad::Failed));"
+        ));
+        let card = &code[code
+            .find(r#"title: "App name".to_string(),"#)
+            .expect("the card")..];
+        let failed = card
+            .find("if app_name_failed {")
+            .expect("the failure branch");
+        let loading = card
+            .find("} else if !app_name_loaded {")
+            .expect("the loading branch");
+        let input = card.find(r#"name: "app_name","#).expect("the input");
+        assert!(
+            failed < loading && loading < input,
+            "no input until the value loaded"
+        );
+    }
+
+    /// Findings 2 and 3: logo failures were shown but never logged.
+    #[test]
+    fn logo_failures_are_logged() {
+        let code = code();
+        assert!(code.contains(r#"tracing::error!("logo removal failed: {e}");"#));
+        assert!(code.contains(r#"tracing::error!("logo upload failed for {file_name}: {e}");"#));
+        assert!(
+            code.contains(r#"tracing::error!("logo file {file_name} could not be read: {e}");"#)
+        );
+    }
+
+    /// Finding 4: a failed read kept the previous file's text behind the new name.
+    #[test]
+    fn a_new_import_file_drops_the_previous_text() {
+        let code = code();
+        let pick = &code[code
+            .find("let name = file.name(); file_name.set(name.clone());")
+            .expect("the pick")..];
+        let cleared = pick.find("file_text.set(None);").expect("cleared");
+        let read = pick.find("file.read_string().await").expect("the read");
+        assert!(cleared < read, "cleared before the read can fail");
+        assert!(pick.contains(r#"tracing::error!("import file {name} could not be read: {e}");"#));
+    }
+
+    /// Finding 5: out-of-range stored values were clamped in silence.
+    #[test]
+    fn an_out_of_range_setting_is_clamped_and_reported() {
+        assert_eq!(setting_in_range(30, "/x", 0, 365), 30);
+        assert_eq!(setting_in_range(400, "/x", 0, 365), 365);
+        assert_eq!(setting_in_range(0, "/x", 1, 24), 1);
+        let code = code();
+        assert!(!code.contains(".min(u64::from(MAX_DUE_BUSINESS_DAYS))"));
+        assert!(!code.contains(".clamp(1, u64::from(MAX_HOURS_PER_DAY_CEILING))"));
+    }
+
+    /// Finding 6: malformed reminder rows were read as off, or dropped, silently.
+    #[test]
+    fn malformed_reminder_rows_still_read_and_are_logged() {
+        let row = |key: &str, value: serde_json::Value| SettingRow {
+            key: key.to_string(),
+            value,
+        };
+        let s = ReminderSettings::from_rows(&[
+            row("enabled", serde_json::json!("yes")),
+            row("schedule", serde_json::json!([1, "x", 3])),
+        ]);
+        assert!(!s.enabled);
+        assert_eq!(s.schedule, vec![1, 3]);
+        let s = ReminderSettings::from_rows(&[row("schedule", serde_json::json!("weekly"))]);
+        assert!(s.schedule.is_empty());
+        let code = code();
+        assert!(code.contains("not a boolean; reading it as off"));
+        assert!(code.contains("is not a whole number of days; skipped"));
+    }
+
+    /// Finding 7: the reminders load error was discarded.
+    #[test]
+    fn a_failed_reminders_load_is_logged() {
+        assert!(
+            code().contains(r#"tracing::error!("payment reminder settings load failed: {e}");"#)
+        );
+    }
+
+    /// Finding 8: an edit always sent `parent_type_id: null`, clearing it.
+    #[test]
+    fn an_asset_type_edit_keeps_its_parent() {
+        let parent = uuid::Uuid::new_v4();
+        let row: AssetTypeRow = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(),
+            "name": "Laptops",
+            "parent_type_id": parent,
+        }))
+        .expect("an asset type row");
+        assert_eq!(
+            AssetTypeFormState::from_existing(&row).parent_type_id,
+            Some(parent)
+        );
+        let code = code();
+        assert!(code.contains(r#""parent_type_id": initial_parent,"#));
+        assert!(!code.contains(r#""parent_type_id": serde_json::Value::Null,"#));
     }
 }
