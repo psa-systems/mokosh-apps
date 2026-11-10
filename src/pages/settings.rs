@@ -1760,10 +1760,19 @@ fn parse_sort_order(raw: &str) -> Result<i32, String> {
     if trimmed.is_empty() {
         return Ok(0);
     }
-    trimmed.parse::<i32>().map_err(|e| {
-        tracing::warn!("sort order {trimmed:?} is not a 32-bit integer: {e}");
-        "Enter a whole number between 0 and 2147483647.".to_string()
-    })
+    // MAPPS-1233: the field is `min: 0` and the message says so, so a
+    // negative is refused like any other value outside the range.
+    match trimmed.parse::<i32>() {
+        Ok(n) if n >= 0 => Ok(n),
+        Ok(n) => {
+            tracing::warn!("sort order {n} is below 0");
+            Err("Enter a whole number between 0 and 2147483647.".to_string())
+        }
+        Err(e) => {
+            tracing::warn!("sort order {trimmed:?} is not a 32-bit integer: {e}");
+            Err("Enter a whole number between 0 and 2147483647.".to_string())
+        }
+    }
 }
 
 /// Parse a rate field into the `Decimal` `UpsertWorkTypeRequest` declares.
@@ -5472,13 +5481,9 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct PaymentTermRow {
     id: Uuid,
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     is_default: bool,
-    #[serde(default)]
     is_active: bool,
-    #[serde(default)]
     sort_order: i64,
     /// MAPPS-662: what the term means in days (PMS-990). `None` for a term
     /// that names no count.
@@ -5872,15 +5877,10 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct TicketStatusRow {
     id: Uuid,
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     color: String,
-    #[serde(default)]
     is_closed: bool,
-    #[serde(default)]
     is_default: bool,
-    #[serde(default)]
     sort_order: i64,
 }
 
@@ -6239,17 +6239,12 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct TicketPriorityRow {
     id: Uuid,
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     color: String,
     #[serde(default)]
     icon: Option<String>,
-    #[serde(default)]
     sla_multiplier: f64,
-    #[serde(default)]
     is_default: bool,
-    #[serde(default)]
     sort_order: i64,
 }
 
@@ -6624,15 +6619,12 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct TicketTypeRow {
     id: Uuid,
-    #[serde(default)]
     name: String,
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
     icon: Option<String>,
-    #[serde(default)]
     is_active: bool,
-    #[serde(default)]
     sort_order: i64,
 }
 
@@ -6975,7 +6967,6 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct TicketQueueRow {
     id: Uuid,
-    #[serde(default)]
     name: String,
     #[serde(default)]
     description: Option<String>,
@@ -6983,9 +6974,7 @@ struct TicketQueueRow {
     color: Option<String>,
     #[serde(default)]
     icon: Option<String>,
-    #[serde(default)]
     is_default: bool,
-    #[serde(default)]
     sort_order: i64,
 }
 
@@ -7356,13 +7345,10 @@ struct TicketCategoryRow {
     // (MAPPS-1039).
     #[serde(default)]
     parent_name: Option<String>,
-    #[serde(default)]
     name: String,
     #[serde(default)]
     description: Option<String>,
-    #[serde(default)]
     is_active: bool,
-    #[serde(default)]
     sort_order: i64,
 }
 
@@ -7432,13 +7418,12 @@ fn TicketCategoriesSettingsBody() -> Element {
         // subscribe so it also repopulates on reconnect. It still degrades to
         // an empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
+        // MAPPS-1233: the failure is kept, so the editor can say its parent
+        // list is incomplete instead of offering only "None (top level)".
         crate::hooks::fetch::api::get_all_authed::<TicketCategoryRow>("/tickets/categories")
             .await
-            .unwrap_or_else(|e| {
-                // Best-effort: the primary resource drives the outage view.
-                tracing::warn!("category parent lookup failed: {e}");
-                Vec::new()
-            })
+            .inspect_err(|e| tracing::warn!("category parent lookup failed: {e}"))
+            .ok()
     });
 
     let snap = resource.read_unchecked();
@@ -7464,9 +7449,10 @@ fn TicketCategoriesSettingsBody() -> Element {
     // Resolve parent names for the table, and feed the parent picker,
     // from the full set rather than just the current page.
     let all_snap = all_resource.read_unchecked();
+    let parents_failed = matches!(&*all_snap, Some(None));
     let all_cats: Vec<TicketCategoryRow> = match &*all_snap {
-        Some(list) => list.clone(),
-        None => Vec::new(),
+        Some(Some(list)) => list.clone(),
+        _ => Vec::new(),
     };
     rsx! {
         PageHeader {
@@ -7571,6 +7557,7 @@ fn TicketCategoriesSettingsBody() -> Element {
             TicketCategoryFormModal {
                 state,
                 all: all_cats.clone(),
+                parents_failed,
                 onclose: move |_| editing.set(None),
                 onsaved: move |_| {
                     editing.set(None);
@@ -7620,6 +7607,9 @@ impl TicketCategoryFormState {
 struct TicketCategoryFormModalProps {
     state: TicketCategoryFormState,
     all: Vec<TicketCategoryRow>,
+    /// MAPPS-1233: the full category list did not load.
+    #[props(default)]
+    parents_failed: bool,
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
 }
@@ -7758,6 +7748,9 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
                 value: description.read().clone(),
                 oninput: move |e: FormEvent| description.set(e.value()),
             }
+            if props.parents_failed {
+                ErrorBanner { "Could not load every category, so the parent list below may be incomplete." }
+            }
             Select {
                 name: "ticket_category_parent",
                 label: "Parent category",
@@ -7883,17 +7876,11 @@ fn RmmStatusBadge(status: String) -> Element {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RmmConnectionRow {
     id: Uuid,
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     provider: String,
-    #[serde(default)]
     api_url: String,
-    #[serde(default)]
     is_active: bool,
-    #[serde(default)]
     sync_interval_minutes: i64,
-    #[serde(default)]
     sync_status: String,
     #[serde(default)]
     last_error: Option<String>,
@@ -8110,15 +8097,49 @@ const DEFAULT_RMM_SYNC_INTERVAL_MINUTES: i32 = 60;
 /// seeded with and what an untouched form has always sent. Anything else that
 /// is not an `i32` is reported on the field and logged: it used to become 60
 /// silently, so a typo changed the sync cadence and said nothing (MAPPS-700).
+/// MAPPS-1233: what the delete dialog calls a device mapping: its name, or
+/// its device id when the name is blank.
+fn mapping_delete_label(device_name: Option<&str>, device_id: &str) -> String {
+    match device_name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => name.to_string(),
+        None => format!("device {device_id}"),
+    }
+}
+
+/// MAPPS-1233: the connection test's answer as `(reachable, message)`, or the
+/// name of the field it lacked. A missing field used to read as an ordinary
+/// "Not reachable: not reachable" or "Reachable (HTTP 0).".
+fn describe_test_result(v: &serde_json::Value) -> Result<(bool, String), &'static str> {
+    let reachable = v
+        .get("reachable")
+        .and_then(|b| b.as_bool())
+        .ok_or("`reachable`")?;
+    if reachable {
+        let status = v.get("status").and_then(|s| s.as_u64()).ok_or("`status`")?;
+        Ok((true, format!("Reachable (HTTP {status}).")))
+    } else {
+        let err = v.get("error").and_then(|e| e.as_str()).ok_or("`error`")?;
+        Ok((false, format!("Not reachable: {err}")))
+    }
+}
+
 fn parse_sync_interval(raw: &str) -> Result<i32, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(DEFAULT_RMM_SYNC_INTERVAL_MINUTES);
     }
-    trimmed.parse::<i32>().map_err(|e| {
-        tracing::warn!("sync interval {trimmed:?} is not a 32-bit integer: {e}");
-        "Enter a whole number of minutes, such as 60.".to_string()
-    })
+    // MAPPS-1233: the input is `min: "1"`; 0 and negatives are refused too.
+    match trimmed.parse::<i32>() {
+        Ok(n) if n >= 1 => Ok(n),
+        Ok(n) => {
+            tracing::warn!("sync interval {n} is below 1 minute");
+            Err("Enter a whole number of minutes, 1 or more, such as 60.".to_string())
+        }
+        Err(e) => {
+            tracing::warn!("sync interval {trimmed:?} is not a 32-bit integer: {e}");
+            Err("Enter a whole number of minutes, 1 or more, such as 60.".to_string())
+        }
+    }
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -8290,23 +8311,18 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                 )
                 .await
                 {
-                    Ok(v) => {
-                        let reachable = v
-                            .get("reachable")
-                            .and_then(|b| b.as_bool())
-                            .unwrap_or(false);
-                        let msg = if reachable {
-                            let status = v.get("status").and_then(|s| s.as_u64()).unwrap_or(0);
-                            format!("Reachable (HTTP {status}).")
-                        } else {
-                            let err = v
-                                .get("error")
-                                .and_then(|e| e.as_str())
-                                .unwrap_or("not reachable");
-                            format!("Not reachable: {err}")
-                        };
-                        test_result.set(Some((reachable, msg)));
-                    }
+                    Ok(v) => match describe_test_result(&v) {
+                        Ok(result) => test_result.set(Some(result)),
+                        Err(missing) => {
+                            tracing::error!(
+                                "rmm connection {id} test response has no {missing}: {v}"
+                            );
+                            test_result.set(Some((
+                                false,
+                                format!("Test failed: the server's answer had no {missing}."),
+                            )));
+                        }
+                    },
                     Err(err) => test_result.set(Some((false, format!("Test failed: {err}")))),
                 }
             }
@@ -8447,11 +8463,9 @@ struct RmmDeviceMappingRow {
     // connections list to label itself (MAPPS-1039).
     #[serde(default)]
     rmm_connection_name: Option<String>,
-    #[serde(default)]
     rmm_device_id: String,
     #[serde(default)]
     device_name: Option<String>,
-    #[serde(default)]
     sync_status: String,
 }
 
@@ -8500,6 +8514,9 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
             }
         }
     });
+    // MAPPS-1233: a failed load is not "no connections"; it is said, and the
+    // "add a connection first" prompt is only for a real empty set.
+    let conns_failed = matches!(*conns_resource.read_unchecked(), Some(None));
     let connections: Vec<RmmConnectionRow> = conns_resource
         .read_unchecked()
         .clone()
@@ -8538,7 +8555,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         };
     }
 
-    let no_connections = connections.is_empty();
+    let no_connections = connections.is_empty() && !conns_failed;
     let pending = pending_delete.read().clone();
 
     rsx! {
@@ -8552,7 +8569,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                 Button {
                     variant: ButtonVariant::Primary,
                     // MAPPS-357: also block creates while the server is unreachable.
-                    disabled: no_connections || !can_mutate,
+                    disabled: no_connections || conns_failed || !can_mutate,
                     title: if !can_mutate {
                         Some("Can't do this while the server is unreachable".to_string())
                     } else {
@@ -8571,6 +8588,9 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                 class: "mb-3 text-sm text-content bg-surface-2 border border-line rounded-md px-3 py-2",
                 "Add an RMM connection first, then map its devices here."
             }
+        }
+        if conns_failed {
+            ErrorBanner { class: "mb-3", "Could not load the RMM connections, so new items cannot be created here. Refresh the page to try again." }
         }
         if fetch_failed {
             LoadError { what: "RMM device mappings" }
@@ -8607,7 +8627,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                             Button {
                                 variant: ButtonVariant::Primary,
                                 // MAPPS-357: same guards as the header button.
-                                disabled: no_connections || !can_mutate,
+                                disabled: no_connections || conns_failed || !can_mutate,
                                 title: if !can_mutate {
                                     Some("Can't do this while the server is unreachable".to_string())
                                 } else {
@@ -8633,6 +8653,9 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                                     device
                                 };
                                 let device_id = row.rmm_device_id.clone();
+                                // MAPPS-1233: the dialog names the device id when
+                                // there is no name, not "-".
+                                let delete_label = mapping_delete_label(row.device_name.as_deref(), &device_id);
                                 let (connection, connection_title) = rmm_connection_label(
                                     row.rmm_connection_id,
                                     row.rmm_connection_name.as_deref(),
@@ -8660,7 +8683,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                                                 disabled: !can_mutate,
                                                 title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                                                 onclick: {
-                                                    let label = device_display.clone();
+                                                    let label = delete_label.clone();
                                                     move |_| {
                                                         if deleting_id.read().is_some() {
                                                             return;
@@ -8910,13 +8933,10 @@ struct RmmAlertRuleRow {
     // PMS-1479: server-resolved connection name (MAPPS-1039).
     #[serde(default)]
     rmm_connection_name: Option<String>,
-    #[serde(default)]
     name: String,
     #[serde(default)]
     alert_type: Option<String>,
-    #[serde(default)]
     auto_create_ticket: bool,
-    #[serde(default)]
     is_active: bool,
 }
 
@@ -8965,6 +8985,9 @@ fn RmmAlertRulesSettingsBody() -> Element {
             }
         }
     });
+    // MAPPS-1233: a failed load is not "no connections"; it is said, and the
+    // "add a connection first" prompt is only for a real empty set.
+    let conns_failed = matches!(*conns_resource.read_unchecked(), Some(None));
     let connections: Vec<RmmConnectionRow> = conns_resource
         .read_unchecked()
         .clone()
@@ -9003,7 +9026,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
         };
     }
 
-    let no_connections = connections.is_empty();
+    let no_connections = connections.is_empty() && !conns_failed;
     let pending = pending_delete.read().clone();
 
     rsx! {
@@ -9017,7 +9040,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                 Button {
                     variant: ButtonVariant::Primary,
                     // MAPPS-357: also block creates while the server is unreachable.
-                    disabled: no_connections || !can_mutate,
+                    disabled: no_connections || conns_failed || !can_mutate,
                     title: if !can_mutate {
                         Some("Can't do this while the server is unreachable".to_string())
                     } else {
@@ -9036,6 +9059,9 @@ fn RmmAlertRulesSettingsBody() -> Element {
                 class: "mb-3 text-sm text-content bg-surface-2 border border-line rounded-md px-3 py-2",
                 "Add an RMM connection first, then define alert rules for it."
             }
+        }
+        if conns_failed {
+            ErrorBanner { class: "mb-3", "Could not load the RMM connections, so new items cannot be created here. Refresh the page to try again." }
         }
         if fetch_failed {
             LoadError { what: "RMM alert rules" }
@@ -9072,7 +9098,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                             Button {
                                 variant: ButtonVariant::Primary,
                                 // MAPPS-357: same guards as the header button.
-                                disabled: no_connections || !can_mutate,
+                                disabled: no_connections || conns_failed || !can_mutate,
                                 title: if !can_mutate {
                                     Some("Can't do this while the server is unreachable".to_string())
                                 } else {
@@ -9632,7 +9658,10 @@ mod tests {
         assert_eq!(parse_sort_order(""), Ok(0));
         assert_eq!(parse_sort_order("  "), Ok(0));
         assert_eq!(parse_sort_order(" 12 "), Ok(12));
-        assert_eq!(parse_sort_order("-3"), Ok(-3));
+        assert!(
+            parse_sort_order("-3").is_err(),
+            "the field is min 0 (MAPPS-1233)"
+        );
         assert!(parse_sort_order("2147483648").is_err());
         assert!(parse_sort_order("1.5").is_err());
         assert!(parse_sort_order("first").is_err());
@@ -10366,6 +10395,124 @@ mod mapps979_per_group_advanced_tests {
 
 /// MAPPS-1120: the Integrations group reads as labelled sections, and no tile
 /// carries its own group's name.
+/// MAPPS-1233: the lookup-editor and RMM findings from the specification pass.
+#[cfg(test)]
+mod mapps1233_tests {
+    use super::{
+        describe_test_result, mapping_delete_label, parse_sort_order, parse_sync_interval,
+        PaymentTermRow, RmmConnectionRow,
+    };
+
+    fn code() -> String {
+        let src = include_str!("settings.rs");
+        src[..src.find("mod mapps1233_tests").expect("this module")]
+            .lines()
+            .map(|l| l.find("//").map_or(l, |i| &l[..i]))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Finding 1: "-3" was accepted under a "between 0 and ..." message.
+    #[test]
+    fn a_negative_sort_order_is_refused() {
+        assert_eq!(parse_sort_order(""), Ok(0));
+        assert_eq!(parse_sort_order(" 0 "), Ok(0));
+        assert_eq!(
+            parse_sort_order("-3"),
+            Err("Enter a whole number between 0 and 2147483647.".to_string())
+        );
+    }
+
+    /// Finding 2: 0 and negative minutes were sent.
+    #[test]
+    fn a_sync_interval_below_one_is_refused() {
+        assert_eq!(parse_sync_interval("15"), Ok(15));
+        assert!(parse_sync_interval("0").is_err());
+        assert!(parse_sync_interval("-5").is_err());
+    }
+
+    /// Finding 3: Save and Delete stayed live while the server was unreachable.
+    #[test]
+    fn the_shared_modal_blocks_writes_while_unreachable() {
+        let modal = include_str!("../components/setting_form_modal.rs");
+        assert!(modal.contains("let can_mutate = crate::hooks::use_can_mutate();"));
+        assert_eq!(
+            modal.matches("disabled: !can_mutate,").count(),
+            2,
+            "Save and Delete"
+        );
+    }
+
+    /// Finding 4: a malformed test answer read as an ordinary result.
+    #[test]
+    fn a_malformed_test_answer_names_the_missing_field() {
+        let ok = |v: serde_json::Value| describe_test_result(&v);
+        assert_eq!(
+            ok(serde_json::json!({"reachable": true, "status": 200})),
+            Ok((true, "Reachable (HTTP 200).".to_string()))
+        );
+        assert_eq!(
+            ok(serde_json::json!({"reachable": false, "error": "timeout"})),
+            Ok((false, "Not reachable: timeout".to_string()))
+        );
+        assert_eq!(ok(serde_json::json!({})), Err("`reachable`"));
+        assert_eq!(ok(serde_json::json!({"reachable": true})), Err("`status`"));
+        assert_eq!(ok(serde_json::json!({"reachable": false})), Err("`error`"));
+    }
+
+    /// Finding 5: a failed full-category load silently emptied the parent picker.
+    #[test]
+    fn a_failed_parent_list_is_said_in_the_editor() {
+        let code = code();
+        assert!(code.contains("let parents_failed = matches!(&*all_snap, Some(None));"));
+        assert!(code.contains("if props.parents_failed { ErrorBanner {"));
+    }
+
+    /// Finding 6: a failed connections load read as "add a connection first".
+    #[test]
+    fn a_failed_connections_load_is_not_an_empty_set() {
+        let code = code();
+        assert_eq!(
+            code.matches("let no_connections = connections.is_empty() && !conns_failed;")
+                .count(),
+            2
+        );
+        assert_eq!(
+            code.matches("Could not load the RMM connections").count(),
+            2
+        );
+    }
+
+    /// Finding 7: a missing required field decoded as "" or false.
+    #[test]
+    fn a_missing_required_field_fails_the_decode() {
+        let id = uuid::Uuid::new_v4();
+        assert!(serde_json::from_value::<PaymentTermRow>(serde_json::json!({ "id": id })).is_err());
+        assert!(serde_json::from_value::<RmmConnectionRow>(
+            serde_json::json!({ "id": id, "name": "Tactical" })
+        )
+        .is_err());
+        let full = serde_json::json!({
+            "id": id, "name": "Net 30", "is_default": false, "is_active": true, "sort_order": 1
+        });
+        assert!(
+            serde_json::from_value::<PaymentTermRow>(full).is_ok(),
+            "net_days is optional"
+        );
+    }
+
+    /// Finding 8: a blank device name was confirmed as "-".
+    #[test]
+    fn the_delete_dialog_names_the_device() {
+        assert_eq!(mapping_delete_label(Some("Server 1"), "dev-9"), "Server 1");
+        assert_eq!(mapping_delete_label(Some("  "), "dev-9"), "device dev-9");
+        assert_eq!(mapping_delete_label(None, "dev-9"), "device dev-9");
+    }
+}
+
 #[cfg(test)]
 mod mapps1120_settings_section_tests {
     use super::{
