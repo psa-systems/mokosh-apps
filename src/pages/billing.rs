@@ -3550,9 +3550,16 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
 
                             Card { title: "Credit Notes",
                                 {
-                                    let notes = credit_notes_resource.read_unchecked().clone().unwrap_or_default();
+                                    let notes_snap = credit_notes_resource.read_unchecked().clone();
+                                    // MAPPS-1230: a failed read is not "no credit notes".
+                                    let notes_failed = matches!(notes_snap, Some(None));
+                                    let notes = notes_snap.flatten().unwrap_or_default();
                                     rsx! {
-                                        if notes.is_empty() {
+                                        if notes_failed {
+                                            p { class: "text-sm text-red-600 dark:text-red-400",
+                                                "Could not load the credit notes for this invoice."
+                                            }
+                                        } else if notes.is_empty() {
                                             p { class: "text-sm text-muted",
                                                 if creditable {
                                                     "No credit notes. Use Create Credit Note to correct this invoice."
