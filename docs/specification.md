@@ -1822,7 +1822,10 @@ part of this section's subject matter.
 - **SPEC-9.1.14**: The "Request approval" action on the ticket sidebar
   must be disabled whenever the session cannot mutate the ticket, and its
   dialog must require exactly one of a chosen approver user or a chosen
-  approver role before it can be submitted.
+  approver role before it can be submitted. A chosen approver whose id
+  is not a UUID must be logged and shown, and no request sent; a roster
+  that is still loading or resolved empty must be said beside the
+  Approver picker.
 - **SPEC-9.1.15**: `ApprovalsPage` (`approvals.rs`) must render exactly
   one of: a loading state, a fetch-failed state, a filtered-to-nothing
   state, an empty-queue state, or the row list, never more than one at a
@@ -2221,6 +2224,9 @@ part of this section's subject matter.
   async closure, not via the reactive module-flags hook called from the
   component body, to keep the render framework's hook hook-hook ordering
   stable across renders.
+- **SPEC-9.6.17**: A ticket note edit's Save must raise its in-flight flag
+  before the save request is spawned, so a second click before the first
+  request starts is ignored and only one update is sent.
 
 ### 9.7 Integrations
 
