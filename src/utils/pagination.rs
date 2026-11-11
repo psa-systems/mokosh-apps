@@ -34,9 +34,20 @@ impl PaginationParams {
     /// Maximum allowed items per page
     pub const MAX_PER_PAGE: u32 = 100;
 
-    /// Calculate the offset for database queries
+    /// Calculate the offset for database queries.
+    ///
+    /// Saturating (MAPPS-1242): a huge `page` used to overflow, panicking in a
+    /// debug build and wrapping in release to a small offset that served rows
+    /// from the wrong page. It now pins at `u32::MAX`, past any data, so the
+    /// page comes back empty.
     pub fn offset(&self) -> u32 {
-        (self.page.saturating_sub(1)) * self.per_page()
+        self.page.saturating_sub(1).saturating_mul(self.per_page())
+    }
+
+    /// The page actually served: `0` reads as page 1, which is what
+    /// [`offset`](Self::offset) already does with it.
+    pub fn page(&self) -> u32 {
+        self.page.max(1)
     }
 
     /// Get the per_page value, clamped to MAX_PER_PAGE
@@ -108,9 +119,14 @@ pub struct PaginationMeta {
 }
 
 impl<T> PaginatedResponse<T> {
-    /// Create a new paginated response
+    /// Create a new paginated response.
+    ///
+    /// `per_page` below 1 is clamped to 1 (MAPPS-1242): a 0 divided by zero
+    /// and reported `total_pages` as `u32::MAX` for any non-empty total. The
+    /// page count is integer arithmetic, capped at `u32::MAX`.
     pub fn new(data: Vec<T>, page: u32, per_page: u32, total: u64) -> Self {
-        let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+        let per_page = per_page.max(1);
+        let total_pages = u32::try_from(total.div_ceil(u64::from(per_page))).unwrap_or(u32::MAX);
 
         Self {
             data,
@@ -125,9 +141,11 @@ impl<T> PaginatedResponse<T> {
         }
     }
 
-    /// Create from pagination params
+    /// Create from pagination params. The meta reports the page actually
+    /// served (MAPPS-1242): `?page=0` serves page 1, and used to say page 0
+    /// with `has_prev` false.
     pub fn from_params(data: Vec<T>, params: &PaginationParams, total: u64) -> Self {
-        Self::new(data, params.page, params.per_page(), total)
+        Self::new(data, params.page(), params.per_page(), total)
     }
 
     /// Map the data items to a new type
@@ -145,6 +163,42 @@ impl<T> PaginatedResponse<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MAPPS-1242: a huge page saturates past the data instead of wrapping.
+    #[test]
+    fn a_huge_page_offsets_past_the_data_instead_of_wrapping() {
+        let p = PaginationParams {
+            page: u32::MAX,
+            per_page: 100,
+            ..PaginationParams::default()
+        };
+        assert_eq!(p.offset(), u32::MAX);
+    }
+
+    #[test]
+    fn page_zero_is_reported_as_the_page_served() {
+        let p = PaginationParams {
+            page: 0,
+            per_page: 10,
+            ..PaginationParams::default()
+        };
+        assert_eq!(p.offset(), 0);
+        let r = PaginatedResponse::from_params(vec![1], &p, 30);
+        assert_eq!(r.meta.page, 1);
+        assert!(!r.meta.has_prev);
+        assert!(r.meta.has_next);
+    }
+
+    #[test]
+    fn a_zero_per_page_does_not_divide_by_zero() {
+        let r = PaginatedResponse::new(Vec::<u8>::new(), 1, 0, 5);
+        assert_eq!(r.meta.per_page, 1);
+        assert_eq!(r.meta.total_pages, 5);
+        let r = PaginatedResponse::new(Vec::<u8>::new(), 1, 10, 25);
+        assert_eq!(r.meta.total_pages, 3);
+        let r = PaginatedResponse::new(Vec::<u8>::new(), 1, 10, 0);
+        assert_eq!(r.meta.total_pages, 0);
+    }
 
     #[test]
     fn test_pagination_params_defaults() {
