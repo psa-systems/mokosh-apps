@@ -13,7 +13,7 @@
 //! currency accessor is a proposal that no shipping browser has today
 //! (2026). So this reads `navigator.language`, extracts the region tag
 //! (`en-US` → `US`), and looks it up in a hand-maintained region →
-//! currency map covering the top ~30 paying markets. Regions the map
+//! currency map covering 60 paying markets. Regions the map
 //! does not know return `None`, which the caller treats as "no warning"
 //! per the ticket's AC. A missing region is the safe outcome: the
 //! warning exists to head off a support ticket, and painting the wrong
@@ -76,11 +76,12 @@ fn extract_region(tag: &str) -> Option<String> {
     None
 }
 
-/// ISO 3166-1 region → ISO 4217 currency. Hand-maintained to cover the
-/// top ~30 paying markets. A region the map does not know falls
-/// through to "no warning", which is the safe outcome (see the module
-/// doc). Sorted by continent then alphabetically so a new row lands
-/// somewhere obvious.
+/// ISO 3166-1 region → ISO 4217 currency. Hand-maintained to cover 60
+/// paying markets (a test pins the count, so this line cannot drift
+/// again). A region the map does not know falls through to "no warning",
+/// which is the safe outcome (see the module doc). Grouped by region so a
+/// new row lands somewhere obvious; the order inside a group is not
+/// significant, since lookup is a linear scan.
 const REGION_CURRENCIES: &[(&str, &str)] = &[
     // Americas.
     ("US", "USD"),
@@ -152,6 +153,22 @@ const REGION_CURRENCIES: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MAPPS-1236: the docs said "~30 markets" and "sorted alphabetically"
+    /// over a 60-row table that was neither. The count is pinned here, and a
+    /// region listed twice would make the second row dead.
+    #[test]
+    fn the_table_has_the_documented_size_and_no_duplicate_region() {
+        assert_eq!(REGION_CURRENCIES.len(), 60);
+        let mut regions: Vec<&str> = REGION_CURRENCIES.iter().map(|(r, _)| *r).collect();
+        regions.sort_unstable();
+        regions.dedup();
+        assert_eq!(
+            regions.len(),
+            REGION_CURRENCIES.len(),
+            "a region is listed twice"
+        );
+    }
 
     #[test]
     fn extract_region_handles_common_bcp47_shapes() {
