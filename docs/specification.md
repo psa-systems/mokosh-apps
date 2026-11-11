@@ -2988,7 +2988,10 @@ status/type vocabularies below.
   (`tracing::error!("project list load failed: {e}")`,
   `tracing::error!("project summary load failed: {e}")`), and the list
   fetch failure must drive a full-page unavailable state when the
-  server is unreachable.
+  server is unreachable. A list failure while the server is reachable
+  must render "Could not load projects." instead of either empty state,
+  and a summary failure must show "-" on all four stat cards rather than
+  0 and $0.00.
 - **SPEC-13.5.18**: The project create/edit form must collect every
   field error before blocking submit: name required and capped at 80
   characters, budget amount optional but non-negative, at most two
@@ -3013,6 +3016,25 @@ status/type vocabularies below.
   way the task-assignee fallback at `src/pages/projects.rs:2242-2247`
   does; the fallback resolves through `user_name_with_tooltip_prefer`
   with the loaded roster, matching the task-assignee fallback.
+
+- **SPEC-13.5.22**: An empty `ProjectListPage` must say "No projects
+  yet" with New Project only when no search text and no status filter
+  is set; with either set it must say "No projects match the current
+  filters" with a Clear filters action that also returns to page 1
+  (`filters_active`).
+- **SPEC-13.5.23**: A task status the server names but the task-status
+  cache has no row for must render under that name as a Blue
+  (in-flight) badge, Green only when the cached row is completed, and
+  must not be logged as an unresolved reference; only a status with no
+  server-sent name and no cached row is the Gray "Unknown"
+  (`task_status_badge_prefer`).
+- **SPEC-13.5.24**: The project Time card's Remaining must be "-" when
+  the project has no budget hours, never a negative figure computed
+  from a budget of zero (`remaining_hours`).
+- **SPEC-13.5.25**: A failed load of the project's tasks, the project's
+  change history, or a task's change history must be logged and
+  rendered as "Could not load tasks." / "Could not load the change
+  history.", never as "No tasks yet." or "No edits yet."
 
 ### 13.6 Concurrency and ordering
 
