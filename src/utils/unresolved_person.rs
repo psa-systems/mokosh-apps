@@ -132,7 +132,9 @@ pub fn resolve_person(
         return PersonRef::System;
     };
     if let Some((viewer_id, viewer_name)) = viewer {
-        if *uid == viewer_id && !viewer_name.trim().is_empty() {
+        // MAPPS-1242: trimmed, as the server-name branch above is.
+        let viewer_name = viewer_name.trim();
+        if *uid == viewer_id && !viewer_name.is_empty() {
             return PersonRef::Named(viewer_name.to_string());
         }
     }
@@ -225,6 +227,22 @@ pub fn resolve_company(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MAPPS-1242: the viewer branch trims like the server-name branch.
+    #[test]
+    fn the_viewer_name_is_trimmed() {
+        let me = uuid::Uuid::from_u128(7);
+        assert_eq!(
+            resolve_person(
+                "test.viewer_trim",
+                None,
+                &Some(me),
+                Some((me, "  Alex Ng ")),
+                &[]
+            ),
+            PersonRef::Named("Alex Ng".to_string())
+        );
+    }
 
     #[test]
     fn returns_tooltip_with_full_id() {

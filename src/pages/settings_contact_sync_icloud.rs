@@ -317,7 +317,7 @@ fn ICloudContactsSettingsBody() -> Element {
                         });
                         overview.restart();
                     }
-                    Err(e) => error.set(e.to_string()),
+                    Err(e) => error.set(format!("Could not connect the account: {e}")),
                 }
             }
             busy.set(false);

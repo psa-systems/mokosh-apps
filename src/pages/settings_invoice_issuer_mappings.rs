@@ -217,6 +217,28 @@ fn IssuerMappingsPage(issuer: Issuer) -> Element {
     rsx! { IssuerMappingsBody { issuer } }
 }
 
+/// MAPPS-1231: a table whose rows could not be read. It used to stay a
+/// loading skeleton for good, which reads as "still working" forever.
+#[component]
+fn TableLoadFailed() -> Element {
+    rsx! {
+        ErrorBanner { "Could not load this table. Refresh the page to try again." }
+    }
+}
+
+/// MAPPS-1231: what the People table says when the member list is not the
+/// whole organization, or `None` when it is.
+fn members_note(end: crate::pages::expenses::MemberLookupEnd) -> Option<&'static str> {
+    use crate::pages::expenses::MemberLookupEnd;
+    match end {
+        MemberLookupEnd::Complete => None,
+        MemberLookupEnd::Capped => Some(
+            "This organization has more members than this page lists, so some people are not shown.",
+        ),
+        MemberLookupEnd::Failed => Some("Some members could not be loaded, so they are not shown."),
+    }
+}
+
 #[component]
 fn IssuerMappingsBody(issuer: Issuer) -> Element {
     let mut error = use_signal(String::new);
@@ -346,7 +368,9 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
     // are the people whose claims cannot be paid back through it.
     let people = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let (names, _truncated) = crate::pages::expenses::member_names().await;
+        // MAPPS-1231: kept, not discarded, so a member list cut short by the
+        // page cap or a failed page is said above the table.
+        let (names, members_end) = crate::pages::expenses::member_names().await;
         let mapped =
             crate::hooks::fetch::api::get_authed::<UserMappings>("/invoice-issuer-mappings/people")
                 .await
@@ -369,14 +393,21 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
             })
             .collect();
         named.sort_by_key(|a| a.1.to_lowercase());
-        Some(rows_from(&named, &mapped))
+        Some((rows_from(&named, &mapped), members_end))
     });
 
-    let company_rows = companies.read_unchecked().clone().flatten();
-    let product_rows = products.read_unchecked().clone().flatten();
-    let vendor_rows = vendors.read_unchecked().clone().flatten();
-    let people_rows = people.read_unchecked().clone().flatten();
-    let expense_account_rows = expense_accounts.read_unchecked().clone().flatten();
+    // MAPPS-1231: kept unflattened. `Some(None)` is a failed load, which
+    // `.flatten()` folded into the loading skeleton for good.
+    let company_rows = companies.read_unchecked().clone();
+    let product_rows = products.read_unchecked().clone();
+    let vendor_rows = vendors.read_unchecked().clone();
+    let people_snap = people.read_unchecked().clone();
+    let people_note = people_snap
+        .clone()
+        .flatten()
+        .and_then(|(_, end)| members_note(end));
+    let people_rows = people_snap.map(|o| o.map(|(rows, _)| rows));
+    let expense_account_rows = expense_accounts.read_unchecked().clone();
 
     rsx! {
         PageHeader {
@@ -392,7 +423,8 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
         div { class: "space-y-6",
             match company_rows {
                 None => rsx! { crate::components::DetailSkeleton {} },
-                Some(rows) => rsx! {
+                Some(None) => rsx! { TableLoadFailed {} },
+                Some(Some(rows)) => rsx! {
                     MappingTable {
                         issuer,
                         heading: "Clients".to_string(),
@@ -403,8 +435,12 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
                         body_field: "external_customer_id".to_string(),
                         rows,
                         can_mutate,
-                        on_error: move |e: String| error.set(e),
+                        on_error: move |e: String| {
+                            notice.set(String::new());
+                            error.set(e);
+                        },
                         on_saved: move |name: String| {
+                            error.set(String::new());
                             notice.set(format!("{name} is mapped."));
                         },
                     }
@@ -412,7 +448,8 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
             }
             match vendor_rows {
                 None => rsx! { crate::components::DetailSkeleton {} },
-                Some(rows) => rsx! {
+                Some(None) => rsx! { TableLoadFailed {} },
+                Some(Some(rows)) => rsx! {
                     MappingTable {
                         issuer,
                         heading: "Vendors".to_string(),
@@ -423,16 +460,24 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
                         body_field: "external_vendor_id".to_string(),
                         rows,
                         can_mutate,
-                        on_error: move |e: String| error.set(e),
+                        on_error: move |e: String| {
+                            notice.set(String::new());
+                            error.set(e);
+                        },
                         on_saved: move |name: String| {
+                            error.set(String::new());
                             notice.set(format!("{name} is mapped."));
                         },
                     }
                 },
             }
+            if let Some(note) = people_note {
+                StatusBanner { tone: crate::components::BannerTone::Warning, "{note}" }
+            }
             match people_rows {
                 None => rsx! { crate::components::DetailSkeleton {} },
-                Some(rows) => rsx! {
+                Some(None) => rsx! { TableLoadFailed {} },
+                Some(Some(rows)) => rsx! {
                     MappingTable {
                         issuer,
                         heading: "People".to_string(),
@@ -447,8 +492,12 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
                         body_field: "external_contact_id".to_string(),
                         rows,
                         can_mutate,
-                        on_error: move |e: String| error.set(e),
+                        on_error: move |e: String| {
+                            notice.set(String::new());
+                            error.set(e);
+                        },
                         on_saved: move |name: String| {
+                            error.set(String::new());
                             notice.set(format!("{name} is mapped."));
                         },
                     }
@@ -457,7 +506,8 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
             if issuer.provider == QUICKBOOKS.provider {
                 match expense_account_rows {
                     None => rsx! { crate::components::DetailSkeleton {} },
-                    Some(rows) => rsx! {
+                    Some(None) => rsx! { TableLoadFailed {} },
+                    Some(Some(rows)) => rsx! {
                         MappingTable {
                             issuer,
                             heading: "Expense accounts".to_string(),
@@ -468,8 +518,12 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
                             body_field: "external_account_id".to_string(),
                             rows,
                             can_mutate,
-                            on_error: move |e: String| error.set(e),
+                            on_error: move |e: String| {
+                            notice.set(String::new());
+                            error.set(e);
+                        },
                             on_saved: move |name: String| {
+                                error.set(String::new());
                                 notice.set(format!("{name} is mapped."));
                             },
                         }
@@ -479,7 +533,8 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
             if issuer.provider == QUICKBOOKS.provider {
                 match product_rows {
                     None => rsx! { crate::components::DetailSkeleton {} },
-                    Some(rows) => rsx! {
+                    Some(None) => rsx! { TableLoadFailed {} },
+                    Some(Some(rows)) => rsx! {
                         MappingTable {
                             issuer,
                             heading: "Products".to_string(),
@@ -490,8 +545,12 @@ fn IssuerMappingsBody(issuer: Issuer) -> Element {
                             body_field: "external_item_id".to_string(),
                             rows,
                             can_mutate,
-                            on_error: move |e: String| error.set(e),
+                            on_error: move |e: String| {
+                            notice.set(String::new());
+                            error.set(e);
+                        },
                             on_saved: move |name: String| {
+                                error.set(String::new());
                                 notice.set(format!("{name} is mapped."));
                             },
                         }
@@ -627,6 +686,11 @@ fn MappingRowEditor(
                 variant: ButtonVariant::Secondary,
                 loading: busy(),
                 disabled: !can_mutate || value.read().trim().is_empty(),
+                // MAPPS-1231: the server refuses a blank id and has no delete
+                // (a mapping is replaced, never removed; MAPPS-1146), so say so
+                // rather than leave a blank field with a dead button.
+                title: (value.read().trim().is_empty() && !unmapped)
+                    .then(|| "A mapping can be replaced, not removed. Enter the new id.".to_string()),
                 onclick: save,
                 data_testid: "save-mapping-{row.id}",
                 "Save"
@@ -793,5 +857,69 @@ mod tests {
             guard_at < products_at,
             "the products table renders behind the QuickBooks guard"
         );
+    }
+}
+
+/// MAPPS-1231: the mappings findings from the specification pass.
+#[cfg(test)]
+mod mapps1231_mapping_tests {
+    use super::members_note;
+    use crate::pages::expenses::MemberLookupEnd;
+
+    fn head() -> &'static str {
+        let src = include_str!("settings_invoice_issuer_mappings.rs");
+        &src[..src
+            .find("mod mapps1231_mapping_tests")
+            .expect("this module")]
+    }
+
+    /// A failed table load was a skeleton for good.
+    #[test]
+    fn every_table_says_when_it_failed() {
+        let head = head();
+        assert_eq!(
+            head.matches("Some(None) => rsx! { TableLoadFailed {} },")
+                .count(),
+            5
+        );
+        assert!(
+            !head.contains(".read_unchecked().clone().flatten();"),
+            "no failure folds into loading"
+        );
+    }
+
+    /// The truncation flag was discarded, so missing people were silent.
+    #[test]
+    fn a_short_member_list_is_said() {
+        assert_eq!(members_note(MemberLookupEnd::Complete), None);
+        assert!(members_note(MemberLookupEnd::Capped).is_some());
+        assert!(members_note(MemberLookupEnd::Failed).is_some());
+        assert!(!head().contains("_truncated"));
+    }
+
+    /// A success left an old error up, and a failure an old success.
+    #[test]
+    fn each_save_outcome_replaces_the_other() {
+        let head = head();
+        let compact: String = head.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            compact
+                .matches("on_error: move |e: String| { notice.set(String::new()); error.set(e); },")
+                .count(),
+            5
+        );
+        assert_eq!(
+            compact
+                .matches("on_saved: move |name: String| { error.set(String::new());")
+                .count(),
+            5
+        );
+    }
+
+    /// Finding 5 is not a defect: the server refuses a blank id and has no
+    /// delete (MAPPS-1146). The disabled Save now says why.
+    #[test]
+    fn a_blank_save_says_a_mapping_is_replaced_not_removed() {
+        assert!(head().contains("A mapping can be replaced, not removed. Enter the new id."));
     }
 }

@@ -116,20 +116,7 @@ pub fn set_effective_branding(next: EffectiveBranding) {
     *EFFECTIVE_BRANDING.write() = next;
 }
 
-/// MAPPS-635 A: append a version query param to a brand-asset URL so
-/// the browser cache misses whenever the underlying brand changes.
-/// The server serves brand assets with `Cache-Control: public,
-/// max-age=3600` + no ETag; without a version param an upload would
-/// not repaint until the hour expires. Version is a stable
-/// content-derived hash of the whole `EffectiveBranding` block, so
-/// same block → same URL → cache hit, any field change → new URL →
-/// cache miss.
-///
-/// URL is passed through unchanged when empty or already carrying a
-/// query string with a `v=` param (defensive: never double-tag). A
-/// bare url `/api/v1/public/tenants/{id}/logo` becomes
-/// `/api/v1/public/tenants/{id}/logo?v=<hash>`.
-/// MAPPS-767: the same URL, absolute against the API origin.
+/// MAPPS-767: [`versioned_asset_url`], absolute against the API origin.
 ///
 /// `branding.logo_url` is a PATH by design - the server's write validator
 /// pins it to `/api/v1/public/tenants/` - and the API is on a different host
@@ -164,11 +151,26 @@ pub fn absolute_versioned_asset_url(url: &str, brand: &EffectiveBranding) -> Str
     }
 }
 
+/// MAPPS-635 A: append a version query param to a brand-asset URL so
+/// the browser cache misses whenever the underlying brand changes.
+/// The server serves brand assets with `Cache-Control: public,
+/// max-age=3600` + no ETag; without a version param an upload would
+/// not repaint until the hour expires. Version is a stable
+/// content-derived hash of the whole `EffectiveBranding` block, so
+/// same block → same URL → cache hit, any field change → new URL →
+/// cache miss.
+///
+/// URL is passed through unchanged when empty or already carrying a
+/// query string with a `v` parameter (defensive: never double-tag).
+/// MAPPS-1238: that means a `v` KEY in the query, not the substring
+/// `v=` anywhere, which skipped `?rev=2` and any path containing `v=`. A
+/// bare url `/api/v1/public/tenants/{id}/logo` becomes
+/// `/api/v1/public/tenants/{id}/logo?v=<hash>`.
 pub fn versioned_asset_url(url: &str, brand: &EffectiveBranding) -> String {
     if url.is_empty() {
         return String::new();
     }
-    if url.contains("v=") {
+    if has_version_param(url) {
         return url.to_string();
     }
     use std::collections::hash_map::DefaultHasher;
@@ -178,6 +180,52 @@ pub fn versioned_asset_url(url: &str, brand: &EffectiveBranding) -> String {
     let version = hasher.finish();
     let sep = if url.contains('?') { '&' } else { '?' };
     format!("{url}{sep}v={version:x}")
+}
+
+/// Does the query string of `url` already carry a `v` parameter?
+fn has_version_param(url: &str) -> bool {
+    let Some((_, query)) = url.split_once('?') else {
+        return false;
+    };
+    let query = query.split('#').next().unwrap_or(query);
+    query
+        .split('&')
+        .any(|pair| pair.split('=').next() == Some("v"))
+}
+
+/// What a brand without a primary or background colour has to undo
+/// (MAPPS-1238). `--accent` and `--bg` are only ever hijacked together with
+/// their `--brand-*` alias, so a non-empty alias means the previous brand's
+/// value is still painted and has to go, or a later brand that sets no colour
+/// keeps showing the old one until sign-out.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn stale_brand_overrides(
+    painted_primary: &str,
+    painted_bg: &str,
+    brand: &EffectiveBranding,
+) -> (bool, bool) {
+    let unset = |v: &Option<String>| v.as_deref().is_none_or(str::is_empty);
+    (
+        unset(&brand.primary_color) && !painted_primary.is_empty(),
+        unset(&brand.background_color) && !painted_bg.is_empty(),
+    )
+}
+
+/// Write one inline style property, logging a refusal (MAPPS-1238: every
+/// result here used to be discarded).
+#[cfg(target_arch = "wasm32")]
+fn set_style(style: &web_sys::CssStyleDeclaration, name: &str, value: &str) {
+    if let Err(e) = style.set_property(name, value) {
+        tracing::error!("could not set the brand style {name}: {e:?}");
+    }
+}
+
+/// Remove one inline style property, logging a refusal.
+#[cfg(target_arch = "wasm32")]
+fn remove_style(style: &web_sys::CssStyleDeclaration, name: &str) {
+    if let Err(e) = style.remove_property(name) {
+        tracing::error!("could not remove the brand style {name}: {e:?}");
+    }
 }
 
 /// Reset to the coded fallback. Called on sign-out so the next
@@ -213,38 +261,50 @@ pub fn apply_brand_css_vars(brand: &EffectiveBranding) {
         return;
     };
     let style = html.style();
+    // Read before anything below rewrites them: whether the previous brand
+    // left its colours painted.
+    let (restore_accent, drop_bg) = stale_brand_overrides(
+        &style
+            .get_property_value("--brand-primary")
+            .unwrap_or_default(),
+        &style.get_property_value("--brand-bg").unwrap_or_default(),
+        brand,
+    );
     // PRIMARY: hijack `--accent` so every `text-accent` / `bg-accent`
     // / `border-accent` / `ring-accent` utility across the stylesheet
     // repaints. `--brand-primary` is a stable alias for consumers
     // that want the brand color independent of the theme picker.
     if let Some(primary) = brand.primary_color.as_deref().filter(|s| !s.is_empty()) {
-        let _ = style.set_property("--accent", primary);
-        let _ = style.set_property("--brand-primary", primary);
+        set_style(&style, "--accent", primary);
+        set_style(&style, "--brand-primary", primary);
     } else {
-        let _ = style.remove_property("--brand-primary");
+        remove_style(&style, "--brand-primary");
     }
     // SECONDARY: paint as the `--secondary` design-token consumer
     // pattern. Also expose `--brand-secondary` for future utilities.
     if let Some(secondary) = brand.secondary_color.as_deref().filter(|s| !s.is_empty()) {
-        let _ = style.set_property("--secondary", secondary);
-        let _ = style.set_property("--brand-secondary", secondary);
+        set_style(&style, "--secondary", secondary);
+        set_style(&style, "--brand-secondary", secondary);
     } else {
-        let _ = style.remove_property("--secondary");
-        let _ = style.remove_property("--brand-secondary");
+        remove_style(&style, "--secondary");
+        remove_style(&style, "--brand-secondary");
     }
     // BACKGROUND COLOR: hijack `--bg` so every `bg-app` element
     // (the outer container of AuthLayout + the AppShell body) picks
     // up the brand background. Reverts to the theme value on
     // sign-out via `clear_brand_css_vars` -> `theme::apply_now`.
     if let Some(bg) = brand.background_color.as_deref().filter(|s| !s.is_empty()) {
-        let _ = style.set_property("--bg", bg);
-        let _ = style.set_property("--brand-bg", bg);
+        set_style(&style, "--bg", bg);
+        set_style(&style, "--brand-bg", bg);
     } else {
-        let _ = style.remove_property("--brand-bg");
-        // Do NOT clear `--bg` here: the theme (`hooks::theme::apply_now`)
-        // owns the base value and re-applying it here would race the
-        // theme hook. Falling back to whatever the theme wrote last
-        // is correct.
+        remove_style(&style, "--brand-bg");
+        // MAPPS-1238: the theme never writes `--bg` inline (it comes from
+        // the stylesheet, driven by the `dark` class), so the only inline
+        // `--bg` is a previous brand's. Removing it is what reverts to the
+        // theme; leaving it kept the old brand's background.
+        if drop_bg {
+            remove_style(&style, "--bg");
+        }
     }
     // BACKGROUND IMAGE: paint on <body> via inline style so the
     // uploaded image tiles the whole app. Bare data / http(s) urls
@@ -258,18 +318,38 @@ pub fn apply_brand_css_vars(brand: &EffectiveBranding) {
             // `url()` resolves against the document, not the API.
             let versioned = absolute_versioned_asset_url(url, brand);
             let escaped = versioned.replace('"', "%22");
-            let _ = body_style.set_property("background-image", &format!("url(\"{escaped}\")"));
-            let _ = body_style.set_property("background-size", "cover");
-            let _ = body_style.set_property("background-position", "center");
-            let _ = body_style.set_property("background-attachment", "fixed");
-            let _ = body_style.set_property("background-repeat", "no-repeat");
+            set_style(
+                &body_style,
+                "background-image",
+                &format!("url(\"{escaped}\")"),
+            );
+            set_style(&body_style, "background-size", "cover");
+            set_style(&body_style, "background-position", "center");
+            set_style(&body_style, "background-attachment", "fixed");
+            set_style(&body_style, "background-repeat", "no-repeat");
         } else {
-            let _ = body_style.remove_property("background-image");
-            let _ = body_style.remove_property("background-size");
-            let _ = body_style.remove_property("background-position");
-            let _ = body_style.remove_property("background-attachment");
-            let _ = body_style.remove_property("background-repeat");
+            remove_body_background(&body_style);
         }
+    }
+    // MAPPS-1238: `--accent` is the theme's own inline value, so a previous
+    // brand's primary is undone by re-applying the user's accent, as
+    // `clear_brand_css_vars` does on sign-out.
+    if restore_accent {
+        crate::hooks::theme::apply_now();
+    }
+}
+
+/// The five body properties a brand background image sets.
+#[cfg(target_arch = "wasm32")]
+fn remove_body_background(body_style: &web_sys::CssStyleDeclaration) {
+    for name in [
+        "background-image",
+        "background-size",
+        "background-position",
+        "background-attachment",
+        "background-repeat",
+    ] {
+        remove_style(body_style, name);
     }
 }
 
@@ -292,21 +372,20 @@ pub fn clear_brand_css_vars() {
         return;
     };
     let style = html.style();
-    let _ = style.remove_property("--brand-primary");
-    let _ = style.remove_property("--brand-secondary");
-    let _ = style.remove_property("--secondary");
-    let _ = style.remove_property("--brand-bg");
-    let _ = style.remove_property("--bg");
+    for name in [
+        "--brand-primary",
+        "--brand-secondary",
+        "--secondary",
+        "--brand-bg",
+        "--bg",
+    ] {
+        remove_style(&style, name);
+    }
     // Also drop the body background-image so a returning visitor
     // does not see the brand background flash on the pre-auth
     // page.
     if let Some(body) = doc.body() {
-        let body_style = body.style();
-        let _ = body_style.remove_property("background-image");
-        let _ = body_style.remove_property("background-size");
-        let _ = body_style.remove_property("background-position");
-        let _ = body_style.remove_property("background-attachment");
-        let _ = body_style.remove_property("background-repeat");
+        remove_body_background(&body.style());
     }
     // Re-apply the theme picker so `--accent` returns to the
     // user-chosen accent rather than sticking on the brand color.
@@ -421,6 +500,95 @@ pub fn apply_favicon(brand: &EffectiveBranding) {
 pub fn apply_favicon(_brand: &EffectiveBranding) {}
 
 /// MAPPS-767: a branding asset URL has to name the host that serves it.
+/// MAPPS-1238: the version check, the stale-override decision and the style
+/// writes that used to be discarded.
+#[cfg(test)]
+mod mapps_1238_tests {
+    use super::*;
+
+    fn brand(primary: Option<&str>, bg: Option<&str>) -> EffectiveBranding {
+        EffectiveBranding {
+            primary_color: primary.map(str::to_string),
+            background_color: bg.map(str::to_string),
+            ..EffectiveBranding::default()
+        }
+    }
+
+    #[test]
+    fn only_a_v_key_in_the_query_counts_as_already_versioned() {
+        assert!(has_version_param("/logo?v=1"));
+        assert!(has_version_param("/logo?a=1&v=2"));
+        assert!(has_version_param("/logo?v"));
+        for url in [
+            "/logo?rev=2",
+            "/dev=1/logo",
+            "/logo?av=3",
+            "/logo",
+            "/logo#v=1",
+        ] {
+            assert!(!has_version_param(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn a_url_with_a_lookalike_param_is_still_versioned() {
+        let b = EffectiveBranding::default();
+        let out = versioned_asset_url("/logo?rev=2", &b);
+        assert!(out.starts_with("/logo?rev=2&v="), "{out}");
+        assert_eq!(versioned_asset_url("/logo?v=9", &b), "/logo?v=9");
+    }
+
+    #[test]
+    fn a_brand_without_colours_undoes_the_previous_brands() {
+        assert_eq!(
+            stale_brand_overrides("#111", "#222", &brand(None, None)),
+            (true, true)
+        );
+        assert_eq!(
+            stale_brand_overrides("#111", "#222", &brand(Some(""), Some(""))),
+            (true, true)
+        );
+        assert_eq!(
+            stale_brand_overrides("#111", "#222", &brand(Some("#333"), Some("#444"))),
+            (false, false)
+        );
+        assert_eq!(
+            stale_brand_overrides("", "", &brand(None, None)),
+            (false, false),
+            "nothing painted, nothing to undo"
+        );
+    }
+
+    #[test]
+    fn each_function_carries_its_own_doc() {
+        let src = include_str!("branding.rs");
+        let abs = src
+            .find("pub fn absolute_versioned_asset_url(")
+            .expect("absolute");
+        let doc = &src[src[..abs].rfind("\n\n").expect("blank line before the doc")..abs];
+        assert!(!doc.contains("MAPPS-635 A"), "{doc}");
+        let ver = src.find("pub fn versioned_asset_url(").expect("versioned");
+        assert!(src[..ver]
+            .trim_end()
+            .ends_with("`/api/v1/public/tenants/{id}/logo?v=<hash>`."));
+    }
+
+    #[test]
+    fn brand_css_writes_are_never_discarded() {
+        let src = include_str!("branding.rs");
+        let code = &src[..src.find("mod mapps_1238_tests").expect("this module")];
+        let start = code.find("pub fn apply_brand_css_vars(").expect("apply");
+        let end = code
+            .find("/// Root-mounted hook that repaints")
+            .expect("end of clear");
+        let region = &code[start..end];
+        assert!(!region.contains("let _ = style."), "{region}");
+        assert!(!region.contains("let _ = body_style."), "{region}");
+        assert!(region.contains("if drop_bg {"), "{region}");
+        assert!(region.contains("if restore_accent {"), "{region}");
+    }
+}
+
 #[cfg(test)]
 mod asset_url_tests {
     use super::{absolute_versioned_asset_url, versioned_asset_url, EffectiveBranding};

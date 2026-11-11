@@ -51,6 +51,26 @@ pub struct CollapsibleCardProps {
     default_open: bool,
 }
 
+/// A body-region id no other mounted card has (MAPPS-1243).
+fn body_region_id(title: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let slug: String = title
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!(
+        "lc-collapsible-{}-{slug}",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// Card whose body collapses behind a chevron toggle.
 #[component]
 pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
@@ -63,24 +83,16 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
     // table (padding: false) sits flush while a padded body stays inset.
     let body_class = if props.padding { "px-6 pb-6 pt-4" } else { "" };
 
-    // MAPPS-286: derive a stable id from the title so the toggle button's
-    // `aria-controls` can point at the body region. The id is namespaced
-    // to avoid collisions when the same card appears twice on a page;
-    // assistive tech then ties "this toggle controls that region" without
-    // a separate heading association. Spaces and other non-id-safe chars
-    // are collapsed to dashes.
-    let body_id = format!(
-        "lc-collapsible-{}",
-        props
-            .title
-            .chars()
-            .map(|c| if c.is_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            })
-            .collect::<String>()
-    );
+    // MAPPS-286: an id for the body region, so the toggle button's
+    // `aria-controls` can point at it and assistive tech ties "this toggle
+    // controls that region" without a separate heading association.
+    //
+    // MAPPS-1243: unique per mounted card, from a counter (as `ChangeDetails`
+    // does). It used to come from the title alone, so two cards titled alike
+    // (or "A B" and "A-B", which slug the same) shared one id and the second
+    // toggle controlled the first card's body. The slug stays as a readable
+    // suffix only.
+    let body_id = use_hook(|| body_region_id(&props.title));
 
     rsx! {
         div { class: "{class}",
@@ -133,6 +145,25 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1243: two cards with the same (or same-slugging) title get
+/// distinct body ids.
+#[cfg(test)]
+mod body_id_tests {
+    use super::body_region_id;
+
+    #[test]
+    fn same_titles_get_distinct_ids() {
+        let a = body_region_id("Notes");
+        let b = body_region_id("Notes");
+        assert_ne!(a, b);
+        assert_ne!(body_region_id("A B"), body_region_id("A-B"));
+        assert!(
+            a.starts_with("lc-collapsible-") && a.ends_with("-notes"),
+            "{a}"
+        );
     }
 }
 
