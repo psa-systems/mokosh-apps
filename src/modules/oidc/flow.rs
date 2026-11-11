@@ -580,11 +580,12 @@ pub async fn issuer_post_authed<T: serde::de::DeserializeOwned, B: serde::Serial
         .map_err(|e| FlowError::Network(format!("body: {e}")))
 }
 
-/// RFC 7009 token revocation. Best-effort: the spec requires the OP
-/// to return 200 even for unknown/invalid tokens, so we treat any
-/// non-network failure as success. Used by the logout flow to kill
-/// the refresh-token family server-side before the browser navigates
-/// away.
+/// RFC 7009 token revocation. The spec has the OP answer 200 even for an
+/// unknown or already-invalid token, so a 2xx is success and anything else
+/// is a real failure, returned so `sign_out` logs it (MAPPS-1235: the
+/// response used to be discarded, so a 4xx or 5xx read as success). Used by
+/// the logout flow to kill the refresh-token family server-side before the
+/// browser navigates away.
 pub async fn revoke_refresh_token(cfg: &OidcConfig, refresh_token: &str) -> Result<(), FlowError> {
     let client_id = cfg
         .require_client_id()
@@ -596,13 +597,19 @@ pub async fn revoke_refresh_token(cfg: &OidcConfig, refresh_token: &str) -> Resu
     ]);
     let issuer = cfg.issuer.trim_end_matches('/');
     let url = format!("{issuer}/oauth2/revoke");
-    let _ = Request::post(&url)
+    let resp = Request::post(&url)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(body)
         .map_err(|e| FlowError::Network(e.to_string()))?
         .send()
         .await
         .map_err(|e| FlowError::Network(e.to_string()))?;
+    if !resp.ok() {
+        return Err(FlowError::Network(format!(
+            "revoke returned HTTP {}",
+            resp.status()
+        )));
+    }
     Ok(())
 }
 
@@ -810,5 +817,22 @@ mod tests {
             let e = token_endpoint(code);
             assert_eq!(classify_flow_error(&e), CallbackRecovery::Show, "{code}");
         }
+    }
+}
+
+/// MAPPS-1235: a non-2xx revoke was discarded and read as success.
+#[cfg(test)]
+mod mapps1235_revoke_tests {
+    #[test]
+    fn a_non_2xx_revoke_is_an_error() {
+        let src = include_str!("flow.rs");
+        let head = &src[..src.find("mod mapps1235_revoke_tests").expect("this module")];
+        let revoke = &head[head
+            .find("pub async fn revoke_refresh_token(")
+            .expect("the fn")..];
+        let revoke = &revoke[..revoke.find("\n}\n").expect("its end")];
+        assert!(revoke.contains("let resp = Request::post(&url)"));
+        assert!(revoke.contains("if !resp.ok() {"));
+        assert!(!revoke.contains("let _ = Request::post"));
     }
 }
