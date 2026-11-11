@@ -102,7 +102,10 @@ impl<T: Default> RemoteData<T> {
 /// - `Some(Err(_))` while unreachable -> `Unavailable` (recovery poll
 ///   will clear it).
 /// - `Some(Err(_))` while reachable -> `Ready(default)`, matching the old
-///   `unwrap_or_default()` so non-outage failures do not regress.
+///   `unwrap_or_default()` so non-outage failures do not regress. The
+///   error is not dropped unseen: [`use_remote_resource`] logs it with its
+///   cause when the fetch completes (MAPPS-1239), once per fetch rather
+///   than here, which runs on every render.
 pub fn classify_remote<T: Default>(
     outcome: Option<Result<T, String>>,
     reachable: bool,
@@ -155,7 +158,12 @@ where
             // SERVER_REACHABLE back to `true` re-runs this and refetches.
             let _reachable = *crate::hooks::fetch::SERVER_REACHABLE.read();
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-1239: a failure while the server is reachable renders as
+            // the type's default (see `classify_remote`), so a 403 or a
+            // decode error looked like an empty tenant with nothing in the
+            // console. Log the cause here, once per fetch.
             fut.await
+                .inspect_err(|e| tracing::warn!("remote resource failed to load: {e}"))
         }
     });
 
@@ -174,6 +182,21 @@ where
     Fut: std::future::Future<Output = Result<T, String>> + 'static,
 {
     RemoteData::Ready(T::default())
+}
+
+/// MAPPS-1239: a failed load that renders as the default leaves a trace.
+/// Pinned in source, since `use_remote_resource` needs a runtime.
+#[cfg(test)]
+mod failure_trace_tests {
+    #[test]
+    fn use_remote_resource_logs_a_failed_fetch() {
+        let src = include_str!("remote_data.rs");
+        let code = &src[..src.find("mod failure_trace_tests").expect("this module")];
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains(
+            "fut.await .inspect_err(|e| tracing::warn!(\"remote resource failed to load: {e}\"))"
+        ), "the fetch result is logged before classification");
+    }
 }
 
 #[cfg(test)]

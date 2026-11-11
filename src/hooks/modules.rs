@@ -20,7 +20,7 @@ use serde::Deserialize;
 
 /// The server's `gated_module!` table, copied: name, label, and what
 /// turning it off does, in the words the Modules page shows. Kept in step
-/// by hand; `GATED_MODULES_ARE_THE_SERVERS` pins the names.
+/// by hand; the test `gated_modules_are_the_servers` pins the names.
 pub const GATED_MODULES: &[GatedModule] = &[
     GatedModule { name: "billing", label: "Billing", off_means: "Invoices, payments, credit notes, statements and products answer not found." },
     GatedModule { name: "projects", label: "Projects", off_means: "Projects and tasks answer not found." },
@@ -169,6 +169,19 @@ pub fn use_module_flags() -> Option<ModuleFlags> {
 /// off for a contact session, off for a module with no row.
 pub fn use_module_enabled(name: &str) -> bool {
     use_module_flags().is_some_and(|f| f.enabled.iter().any(|m| m == name))
+}
+
+/// MAPPS-1239: the table's doc names the test that really pins it.
+#[cfg(test)]
+mod doc_tests {
+    #[test]
+    fn the_table_doc_names_a_test_that_exists() {
+        let src = include_str!("modules.rs");
+        let code = &src[..src.find("mod doc_tests").expect("this module")];
+        assert!(code.contains("the test `gated_modules_are_the_servers` pins the names"));
+        assert!(!code.contains(concat!("`GATED_MODULES_ARE", "_THE_SERVERS`")));
+        assert!(src.contains(concat!("fn gated_modules_are", "_the_servers()")));
+    }
 }
 
 #[cfg(test)]
