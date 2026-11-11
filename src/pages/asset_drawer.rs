@@ -224,7 +224,6 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 kind: InlineFieldKind::Text {
                     placeholder: "Name".to_string(),
                     maxlength: Some(255),
-                    required: true,
                 },
                 path: path.clone(),
                 patch_field: "name".to_string(),
@@ -252,7 +251,6 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 kind: InlineFieldKind::Text {
                     placeholder: "Manufacturer".to_string(),
                     maxlength: Some(100),
-                    required: false,
                 },
                 path: path.clone(),
                 patch_field: "manufacturer".to_string(),
@@ -266,7 +264,6 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 kind: InlineFieldKind::Text {
                     placeholder: "Model".to_string(),
                     maxlength: Some(100),
-                    required: false,
                 },
                 path: path.clone(),
                 patch_field: "model".to_string(),
@@ -280,7 +277,6 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 kind: InlineFieldKind::Text {
                     placeholder: "Serial".to_string(),
                     maxlength: Some(100),
-                    required: false,
                 },
                 path: path.clone(),
                 patch_field: "serial_number".to_string(),
@@ -294,7 +290,6 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 kind: InlineFieldKind::Text {
                     placeholder: "host.example.com".to_string(),
                     maxlength: Some(255),
-                    required: false,
                 },
                 path: path.clone(),
                 patch_field: "hostname".to_string(),
@@ -308,7 +303,6 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 kind: InlineFieldKind::Text {
                     placeholder: "10.0.0.1".to_string(),
                     maxlength: Some(45),
-                    required: false,
                 },
                 path: path.clone(),
                 patch_field: "ip_address".to_string(),
@@ -322,7 +316,6 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 kind: InlineFieldKind::Text {
                     placeholder: "aa:bb:cc:dd:ee:ff".to_string(),
                     maxlength: Some(50),
-                    required: false,
                 },
                 path: path.clone(),
                 patch_field: "mac_address".to_string(),
@@ -336,7 +329,6 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 kind: InlineFieldKind::Text {
                     placeholder: "Department".to_string(),
                     maxlength: Some(100),
-                    required: false,
                 },
                 path: path.clone(),
                 patch_field: "department".to_string(),
@@ -398,7 +390,6 @@ fn DrawerBody(props: DrawerBodyProps) -> Element {
                 kind: InlineFieldKind::Text {
                     placeholder: "e.g. in_service".to_string(),
                     maxlength: Some(50),
-                    required: false,
                 },
                 path: path.clone(),
                 patch_field: "itil_lifecycle_stage".to_string(),

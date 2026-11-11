@@ -230,10 +230,15 @@ pub fn TruckIcon(#[props(default)] size: IconSize, #[props(default)] class: Stri
     }
 }
 
-/// Path of [`DocumentIcon`] (Heroicons `document-text`). Exported so the
-/// sidebar's MAPPS-359 `distinct_icons` guard can prove the rows that used
-/// to all share this glyph now render distinct icons.
-pub const DOCUMENT_PATH: &str = "M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z";
+/// Path of [`DocumentIcon`] (Heroicons `document`: the plain page, no text
+/// lines). Exported so the sidebar's MAPPS-359 `distinct_icons` guard can
+/// prove the rows that used to all share this glyph now render distinct
+/// icons.
+///
+/// MAPPS-1244: this was byte-identical to [`DOCUMENT_TEXT_PATH`], so Quotes
+/// and Statements drew the same glyph while the sidebar test, which compares
+/// component names, passed. `document-text` stays with [`DocumentTextIcon`].
+pub const DOCUMENT_PATH: &str = "M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z";
 
 #[component]
 pub fn DocumentIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
@@ -540,7 +545,6 @@ pub fn ReceiptRefundIcon(
     }
 }
 
-/// Primary path of [`WalletIcon`] (Heroicons `wallet`).
 /// Primary path of [`ReceiptPercentIcon`] (Heroicons `receipt-percent`).
 ///
 /// The same receipt outline as [`RECEIPT_REFUND_PATH`] with a percent
@@ -579,6 +583,7 @@ pub fn ReceiptPercentIcon(
 /// Primary path of [`BanknotesIcon`] (Heroicons `banknotes`).
 pub const BANKNOTES_PATH: &str = "M2.25 18.75a60.07 60.07 0 0 1 15.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 0 1 3 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 0 0-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 0 1-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 0 0 3 15h-.75M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm3 0h.008v.008H18V10.5Zm-12 0h.008v.008H6V10.5Z";
 
+/// Primary path of [`WalletIcon`] (Heroicons `wallet`).
 pub const WALLET_PATH: &str = "M21 12a2.25 2.25 0 0 0-2.25-2.25H15a3 3 0 1 1-6 0H5.25A2.25 2.25 0 0 0 3 12m18 0v6a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 18v-6m18 0V9M3 12V9m18 0a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 9m18 0V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v3";
 
 /// A wallet. MAPPS-782: the portal's Payment Methods entry, distinct from the
@@ -1757,5 +1762,51 @@ pub fn ArrowTopRightOnSquareIcon(
                 d: "M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25",
             }
         }
+    }
+}
+
+/// MAPPS-1244: every exported glyph path is distinct, so two icons cannot
+/// render the same shape under different names.
+#[cfg(test)]
+mod path_uniqueness_tests {
+    #[test]
+    fn every_exported_path_is_its_own_glyph() {
+        let paths: &[(&str, &str)] = &[
+            ("USERS_PATH", super::USERS_PATH),
+            ("DOCUMENT_PATH", super::DOCUMENT_PATH),
+            ("CURRENCY_PATH", super::CURRENCY_PATH),
+            ("DOCUMENT_CHECK_PATH", super::DOCUMENT_CHECK_PATH),
+            ("SCALE_PATH", super::SCALE_PATH),
+            ("TAG_PATH", super::TAG_PATH),
+            ("CREDIT_CARD_PATH", super::CREDIT_CARD_PATH),
+            ("DOCUMENT_TEXT_PATH", super::DOCUMENT_TEXT_PATH),
+            ("RECEIPT_REFUND_PATH", super::RECEIPT_REFUND_PATH),
+            ("RECEIPT_PERCENT_PATH", super::RECEIPT_PERCENT_PATH),
+            ("BANKNOTES_PATH", super::BANKNOTES_PATH),
+            ("WALLET_PATH", super::WALLET_PATH),
+            ("USER_GROUP_PATH", super::USER_GROUP_PATH),
+            (
+                "CLIPBOARD_DOCUMENT_LIST_PATH",
+                super::CLIPBOARD_DOCUMENT_LIST_PATH,
+            ),
+            ("TABLE_CELLS_PATH", super::TABLE_CELLS_PATH),
+            ("INBOX_ARROW_DOWN_PATH", super::INBOX_ARROW_DOWN_PATH),
+            ("SHIELD_CHECK_PATH", super::SHIELD_CHECK_PATH),
+        ];
+        for (i, (a, pa)) in paths.iter().enumerate() {
+            for (b, pb) in &paths[i + 1..] {
+                assert_ne!(pa, pb, "{a} and {b} draw the same glyph");
+            }
+        }
+    }
+
+    #[test]
+    fn each_path_constant_carries_its_own_doc() {
+        let src = include_str!("icons.rs");
+        let at = src.find("pub const RECEIPT_PERCENT_PATH").unwrap();
+        let doc = &src[src[..at].rfind("\n\n").unwrap()..at];
+        assert!(!doc.contains("WalletIcon"), "{doc}");
+        let at = src.find("pub const WALLET_PATH").unwrap();
+        assert!(src[..at].trim_end().ends_with("(Heroicons `wallet`)."));
     }
 }
