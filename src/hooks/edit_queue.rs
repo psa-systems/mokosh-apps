@@ -78,20 +78,28 @@ pub fn enqueue_pending_edit(_edit: PendingEdit) {}
 
 /// Drain and replay the offline queue after the server comes back.
 ///
-/// SCAFFOLD: today this is a no-op beyond clearing the (always-empty)
-/// queue. The real implementation is sketched, commented out, below so the
+/// SCAFFOLD: today this replays nothing. An empty queue returns at once; a
+/// non-empty one is kept as it is and logged, never cleared (MAPPS-1238). The real implementation is sketched, commented out, below so the
 /// shape is fixed: drain in `seq` order, re-issue each request through the
 /// normal authed fetch helpers, retry transient failures with exponential
 /// backoff, and surface conflicts (e.g. a `409`) to the user rather than
 /// silently dropping their edit.
 #[cfg(feature = "app")]
 pub async fn replay_pending_edits() {
-    // Nothing is ever enqueued in the shipped build, so this just resets
-    // the (empty) queue and returns. Keeping the drain here means the
-    // reconnect call site is already correct.
-    if EDIT_QUEUE.peek().is_empty() {
+    // Nothing is ever enqueued in the shipped build, so this returns at
+    // once. Keeping the drain here means the reconnect call site is already
+    // correct.
+    let held = EDIT_QUEUE.peek().len();
+    if held == 0 {
         return;
     }
+    // MAPPS-1238: something enqueued, but replay is not built yet. This used
+    // to fall through to the `clear()` below and drop every held edit with no
+    // trace, against the doc above. Keep them queued and say so; the
+    // local-first epic replaces this with the drain sketched below.
+    tracing::error!(
+        "{held} edit(s) made while offline are held but cannot be replayed yet; keeping them queued"
+    );
 
     // ---- local-first epic: replace the early-return above with this ----
     //
@@ -142,8 +150,6 @@ pub async fn replay_pending_edits() {
     //     }
     // }
     // --------------------------------------------------------------------
-
-    EDIT_QUEUE.write().clear();
 }
 
 /// Non-web stub.
@@ -162,3 +168,29 @@ pub fn use_replay_pending_edits() {
 /// Non-web stub.
 #[cfg(not(feature = "app"))]
 pub fn use_replay_pending_edits() {}
+
+/// MAPPS-1238: a non-empty queue is kept and logged, never cleared. Pinned in
+/// source because `EDIT_QUEUE` is a `GlobalSignal` that needs a runtime.
+#[cfg(test)]
+mod replay_tests {
+    #[test]
+    fn replay_never_clears_a_held_edit() {
+        let src = include_str!("edit_queue.rs");
+        let code = &src[..src.find("mod replay_tests").expect("this module")];
+        let at = code
+            .find("pub async fn replay_pending_edits()")
+            .expect("replay");
+        let end = code[at..].find("/// Non-web stub.").expect("end of replay") + at;
+        let body = &code[at..end];
+        let live: String = body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!live.contains("EDIT_QUEUE.write().clear()"), "{live}");
+        assert!(
+            live.contains("cannot be replayed yet; keeping them queued"),
+            "{live}"
+        );
+    }
+}
