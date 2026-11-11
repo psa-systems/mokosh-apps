@@ -2001,7 +2001,9 @@ part of this section's subject matter.
   for a contact session.
 - **SPEC-9.4.5**: A contact session's note composer must default new
   notes to the public note type; a staff session's composer must default
-  to the internal note type.
+  to the internal note type. The composer must render only when the
+  session holds `tickets:comment` (staff sessions always do), and the
+  Note Type selector must render only for a staff session.
 - **SPEC-9.4.6**: A contact session's ticket edit must go through the
   partial-update endpoint (title and description only), while a staff
   session's edit must go through the full-update endpoint; the choice
@@ -2060,13 +2062,20 @@ part of this section's subject matter.
   page must render a plain permission sentence, not a 403-styled banner.
 - **SPEC-9.4.20**: Each approval row's Approve and Reject actions must be
   disabled whenever the session cannot mutate.
+- **SPEC-9.4.21**: The ticket Details card's Asset and Contact editors must
+  follow the same rule as its inline Selects: when the session cannot
+  mutate or is not a staff session, the saved value (or "Not set") must
+  render as text instead of a picker. The card must carry exactly one
+  Contact row.
 
 ### 9.5 Error handling and observability
 
 - **SPEC-9.5.1**: A ticket detail fetch failure while the server is
-  unreachable must render the shared unreachable-content state; the same
-  failure while the server is reachable (a real not-found) must render a
-  distinct "Ticket not found" page with a link back to the list.
+  unreachable must render the shared unreachable-content state. While the
+  server is reachable, a 404 must render a distinct "Ticket not found"
+  page with a link back to the list, and any other failure (401, 403, 5xx)
+  must render a "Ticket unavailable" page that states the error, with the
+  same link.
 - **SPEC-9.5.2**: A failed journal source (notes, history, or time
   entries) must degrade that one source out of the merged journal rather
   than failing the whole ticket detail page; the page must list which
@@ -2129,6 +2138,14 @@ part of this section's subject matter.
   on this day in your time zone."; a work day whose own date fails to
   parse must show "This day's date could not be read, so a correction
   cannot be timed." and must send no request.
+- **SPEC-9.5.18**: A saved ticket view whose stored filter or sort cannot
+  be decoded must not be applied: the failure must be logged with the
+  view id and shown to the user, and the current filters must stay as
+  they were. A view saved with no sort (`null`) is valid.
+- **SPEC-9.5.19**: The ticket create form must refuse an unreadable Team
+  id inline and must refuse any other unreadable picked id (priority,
+  asset, contact, type, category, assignee) with a logged, visible error;
+  no picked id may be dropped to `null`.
 
 ### 9.6 Concurrency and ordering
 

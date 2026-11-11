@@ -354,11 +354,14 @@ struct RemoteTicketLookup {
 /// `is_active` so a disabled team can be filtered out of the inline editor's
 /// options the same way the team-filter dropdowns do.
 #[derive(Clone, Debug, Deserialize)]
+///
+/// MAPPS-1248: no `#[serde(default)]`. mokosh-types' `Team` always sends
+/// `name` and `is_active`, and a defaulted `is_active: false` emptied the
+/// Team editor without a trace. A body missing either now fails to decode,
+/// which `list_or_empty` logs with this editor's name.
 struct RemoteTeamOption {
     id: uuid::Uuid,
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     is_active: bool,
 }
 
@@ -1274,6 +1277,150 @@ fn sort_direction_from_param(s: &str) -> Option<SortDirection> {
     }
 }
 
+/// MAPPS-1248: the ticket list and detail page say when something went
+/// wrong instead of quietly showing something else.
+#[cfg(test)]
+mod mapps_1248_tests {
+    use super::*;
+    use crate::hooks::fetch::api::ApiError;
+    use serde_json::json;
+
+    /// The whole file without this module, which quotes every pattern it
+    /// checks. The detail page sits below this module, so a prefix is not
+    /// enough.
+    fn code() -> String {
+        let src = include_str!("tickets.rs");
+        let start = src.find("mod mapps_1248_tests").unwrap();
+        let end = start + src[start..].find("\n#[cfg(test)]").unwrap();
+        format!("{}{}", &src[..start], &src[end..])
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn status(code: u16) -> ApiError {
+        ApiError::Status {
+            code,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        }
+    }
+
+    #[test]
+    fn a_saved_view_that_cannot_be_decoded_is_refused_not_emptied() {
+        let filter = json!({"search": "printer", "status_id": "s1"});
+        let (f, sort) = decode_saved_view(&filter, &serde_json::Value::Null).unwrap();
+        assert_eq!(f.search, "printer");
+        assert!(sort.is_none(), "a view saved with no sort is valid");
+        let (_, sort) =
+            decode_saved_view(&filter, &json!({"key": "priority", "direction": "asc"})).unwrap();
+        assert!(sort == Some((TicketSortKey::Priority, SortDirection::Ascending)));
+        assert!(decode_saved_view(&json!(42), &serde_json::Value::Null).is_err());
+        assert!(decode_saved_view(&filter, &json!({"key": "nope", "direction": "asc"})).is_err());
+        assert!(
+            decode_saved_view(&filter, &json!({"key": "priority", "direction": "up"})).is_err()
+        );
+        assert!(decode_saved_view(&filter, &json!("priority")).is_err());
+    }
+
+    #[test]
+    fn a_picked_id_is_none_some_or_refused() {
+        assert!(matches!(optional_picked_id("asset", "  "), Ok(None)));
+        let id = uuid::Uuid::from_u128(5);
+        assert_eq!(optional_picked_id("asset", &id.to_string()), Ok(Some(id)));
+        let err = optional_picked_id("asset", "abc").unwrap_err();
+        assert!(err.contains("asset selection could not be read"), "{err}");
+    }
+
+    #[test]
+    fn only_a_404_reads_as_not_found() {
+        assert_eq!(
+            ticket_failure_view(Some(&status(404))).0,
+            "Ticket not found"
+        );
+        for code in [401, 403, 500] {
+            let (title, message) = ticket_failure_view(Some(&status(code)));
+            assert_eq!(title, "Ticket unavailable", "{code}");
+            assert!(
+                message.starts_with("The ticket could not be loaded."),
+                "{message}"
+            );
+        }
+        assert_eq!(
+            ticket_failure_view(Some(&ApiError::Network("down".into()))).0,
+            "Ticket unavailable"
+        );
+    }
+
+    #[test]
+    fn small_helpers_read_as_documented() {
+        assert_eq!(shown_or_not_set("  "), "Not set");
+        assert_eq!(shown_or_not_set(" Laptop "), "Laptop");
+        assert_eq!(inline_select_id("x"), None);
+        let id = uuid::Uuid::from_u128(8);
+        assert_eq!(inline_select_id(&id.to_string()), Some(id));
+    }
+
+    #[test]
+    fn a_team_row_without_is_active_fails_to_decode() {
+        let id = "00000000-0000-0000-0000-000000000001";
+        assert!(serde_json::from_str::<RemoteTeamOption>(&format!(
+            r#"{{"id":"{id}","name":"Ops","is_active":true}}"#
+        ))
+        .is_ok());
+        assert!(serde_json::from_str::<RemoteTeamOption>(&format!(
+            r#"{{"id":"{id}","name":"Ops"}}"#
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn the_detail_page_gates_and_logs_as_specified() {
+        let code = code();
+        // Finding 1: the sort comment matches the request.
+        // Quotes the stale comment it forbids, not a request.
+        assert!(!code.contains("the list query sends no `?sort=` at all")); // sort-key-guard-allow
+                                                                            // Finding 2: composer and note type.
+        assert!(code.contains("if can_comment { div { class: \"space-y-4\","));
+        assert!(code.contains("if staff_only { Select { name: \"note_type\","));
+        // Finding 3: one Contact row.
+        assert!(!code
+            .contains("DetailItem { label: \"Contact\", value: rsx!(span { \"{contact}\" }) }"));
+        // Finding 4: both pickers gated like the Selects.
+        assert_eq!(
+            code.matches("if !can_mutate || !staff_only { span {")
+                .count(),
+            2
+        );
+        // Finding 6: bulk delete failures are logged per ticket.
+        assert!(code.contains("bulk delete of ticket {id} failed: {e}"));
+        // Finding 9: no silent inline-select parse left.
+        assert!(
+            !code.contains("let Ok(new_id) = uuid::Uuid::parse_str(&e.value()) else { return; };")
+        );
+        assert!(!code.contains("Ok(u) => Some(u), Err(_) => return,"));
+        // Finding 10: the inline editors use the user-facing message.
+        for field in [
+            "status", "priority", "assignee", "asset", "type", "category", "contact", "site",
+            "team", "contract",
+        ] {
+            assert!(
+                !code.contains(&format!("\"Could not update {field}: {{err}}\"")),
+                "{field}"
+            );
+        }
+        assert!(code.matches("err.user_message()").count() >= 10);
+        // Finding 11: the trimmed note is what is posted.
+        assert!(code.contains("let content_v = note_content.read().trim().to_string();"));
+        // Finding 12: the marker resolves like the journal.
+        assert!(code.contains(
+            "let who = journal_actor(&users, &e.user_id, e.user_name.as_deref(), viewer_pair);"
+        ));
+    }
+}
+
 #[cfg(test)]
 mod pms897_sort_tests {
     use super::{ticket_sort_param, TicketSortKey};
@@ -1389,6 +1536,60 @@ struct SavedViewSort {
     direction: String,
 }
 
+/// The title and message for a ticket that did not load while the server is
+/// reachable (MAPPS-1248). Only a 404 is "not found"; a 401, 403 or 500 used
+/// to read the same way, which sent people hunting for a deleted ticket when
+/// the real cause was access or the server.
+fn ticket_failure_view(
+    failure: Option<&crate::hooks::fetch::api::ApiError>,
+) -> (&'static str, String) {
+    use crate::hooks::fetch::api::ApiError;
+    match failure {
+        Some(ApiError::Status { code: 404, .. }) | None => (
+            "Ticket not found",
+            "Ticket not found. It may have been deleted, or the link may be incorrect.".to_string(),
+        ),
+        Some(e) => (
+            "Ticket unavailable",
+            format!("The ticket could not be loaded. {}", e.user_message()),
+        ),
+    }
+}
+
+/// The id an inline-editor Select reported, or `None` (logged with the value)
+/// when it is not a UUID (MAPPS-1248). Every option is built from a UUID, so a
+/// failure here is a bug in the options, and it used to return silently.
+fn inline_select_id(raw: &str) -> Option<uuid::Uuid> {
+    uuid::Uuid::parse_str(raw)
+        .inspect_err(|e| {
+            tracing::warn!("ticket inline editor got the option value {raw:?}, not a UUID: {e}")
+        })
+        .ok()
+}
+
+/// A saved name for a read-only Details row, or "Not set" (MAPPS-1248).
+fn shown_or_not_set(name: &str) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        "Not set".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// One optional id from a create-form control: empty is `None`, a UUID is
+/// `Some`, anything else is logged and refused (MAPPS-1248).
+fn optional_picked_id(field: &str, raw: &str) -> Result<Option<uuid::Uuid>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    uuid::Uuid::parse_str(raw).map(Some).map_err(|e| {
+        tracing::warn!("ticket create: the {field} id {raw:?} is not a UUID: {e}");
+        format!("The {field} selection could not be read. Choose it again, then create the ticket.")
+    })
+}
+
 /// MAPPS-998: write a saved view's filter + sort into the live signals that
 /// already drive the fetch, the same signals "Clear filters" resets. Does NOT
 /// touch `selected_view_id` or `views_open`; callers set those around this.
@@ -1400,21 +1601,47 @@ fn apply_saved_view(
     queue_filter: &mut Signal<String>,
     sort: &mut Signal<Option<(TicketSortKey, SortDirection)>>,
     page: &mut Signal<usize>,
-) {
-    let filter: SavedViewFilter = serde_json::from_value(view.filter.clone()).unwrap_or_default();
+) -> Result<(), String> {
+    // MAPPS-1248: decoded in full before anything is applied. A filter that
+    // did not decode used to apply as an all-empty view, and a stored sort
+    // that did not decode as "no sort", both silently.
+    let (filter, next_sort) = decode_saved_view(&view.filter, &view.sort).map_err(|why| {
+        tracing::warn!("saved view {} could not be applied: {why}", view.id);
+        format!(
+            "The saved view \"{}\" could not be applied; it may need to be saved again.",
+            view.name
+        )
+    })?;
     search.set(filter.search);
     status_filter.set(filter.status_id);
     priority_filter.set(filter.priority_id);
     queue_filter.set(filter.queue_id);
-    let next_sort = serde_json::from_value::<SavedViewSort>(view.sort.clone())
-        .ok()
-        .and_then(|s| {
-            let key = ticket_sort_key_from_param(&s.key)?;
-            let dir = sort_direction_from_param(&s.direction)?;
-            Some((key, dir))
-        });
     sort.set(next_sort);
     page.set(1);
+    Ok(())
+}
+
+/// A saved view's stored filter and sort, or why they cannot be read
+/// (MAPPS-1248). A `null` sort is a view saved with no sort, which is valid;
+/// a sort that is present but does not decode, or names an unknown key or
+/// direction, is not.
+#[allow(clippy::type_complexity)]
+fn decode_saved_view(
+    filter: &serde_json::Value,
+    sort: &serde_json::Value,
+) -> Result<(SavedViewFilter, Option<(TicketSortKey, SortDirection)>), String> {
+    let filter: SavedViewFilter = serde_json::from_value(filter.clone())
+        .map_err(|e| format!("its filter is unreadable: {e}"))?;
+    if sort.is_null() {
+        return Ok((filter, None));
+    }
+    let stored: SavedViewSort =
+        serde_json::from_value(sort.clone()).map_err(|e| format!("its sort is unreadable: {e}"))?;
+    let key = ticket_sort_key_from_param(&stored.key)
+        .ok_or_else(|| format!("its sort key {:?} is unknown", stored.key))?;
+    let dir = sort_direction_from_param(&stored.direction)
+        .ok_or_else(|| format!("its sort direction {:?} is unknown", stored.direction))?;
+    Ok((filter, Some((key, dir))))
 }
 
 /// MAPPS-998: `POST /tickets/saved-views` body.
@@ -1549,8 +1776,9 @@ fn TicketListBody() -> Element {
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
     let mut queue_filter = use_signal(String::new);
-    // MAPPS-289: sortable-column state. Sorting here is entirely client-side
-    // over the fetched page; the list query sends no `?sort=` at all.
+    // MAPPS-289: sortable-column state. The list query sends it as
+    // `&sort=<key>&sort_dir=<dir>` and the server sorts (MAPPS-1248: this
+    // comment used to say the sort was client-side and never sent).
     let mut sort = use_signal(|| Some((TicketSortKey::Updated, SortDirection::Descending)));
     // MAPPS-290: page-scoped bulk selection. The header `SelectAllHeader`
     // toggles every visible row in/out; per-row `SelectRowCell` toggles
@@ -2067,7 +2295,7 @@ fn TicketListBody() -> Element {
                                             onclick: {
                                                 let view = view.clone();
                                                 move |_| {
-                                                    apply_saved_view(
+                                                    match apply_saved_view(
                                                         &view,
                                                         &mut search,
                                                         &mut status_filter,
@@ -2075,9 +2303,16 @@ fn TicketListBody() -> Element {
                                                         &mut queue_filter,
                                                         &mut sort,
                                                         &mut page,
-                                                    );
-                                                    selected_view_id.set(Some(view.id.to_string()));
-                                                    views_open.set(false);
+                                                    ) {
+                                                        Ok(()) => {
+                                                            selected_view_id.set(Some(view.id.to_string()));
+                                                            views_open.set(false);
+                                                        }
+                                                        Err(message) => crate::hooks::toast::push_toast(
+                                                            crate::components::AlertType::Error,
+                                                            message,
+                                                        ),
+                                                    }
                                                 }
                                             },
                                             "{name}"
@@ -2399,6 +2634,13 @@ fn TicketListBody() -> Element {
                                     }
                                 });
                                 let results = join_all(futs).await;
+                                // MAPPS-1248: each failure is logged with its
+                                // ticket and cause; the toast only counts them.
+                                for (id, result) in ids.iter().zip(&results) {
+                                    if let Err(e) = result {
+                                        tracing::warn!("bulk delete of ticket {id} failed: {e}");
+                                    }
+                                }
                                 let failures = results.iter().filter(|r| r.is_err()).count();
                                 // SPEC-9.5.4: one combined success/partial-failure toast, not one per ticket.
                                 if failures == 0 {
@@ -2823,6 +3065,9 @@ pub fn TicketNewPage() -> Element {
     // Populated by a lightweight dropdown fed from GET /api/v1/teams.
     // Personal tenants render neither the signal nor the input.
     let mut team_id = use_signal(String::new);
+    // MAPPS-1248: the Team field is a free-text UUID, so an unreadable one
+    // is refused inline rather than dropped from the create body.
+    let mut team_error = use_signal(String::new);
     let mut due_date = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -2968,6 +3213,7 @@ pub fn TicketNewPage() -> Element {
         // PMS-791 phase 3: team_id read once so the JSON body below can
         // consume it without re-borrowing across the closure.
         let team_id_v = team_id.read().trim().to_string();
+        team_error.set(guard.field("team_id", &team_id_v, "Team", &[Rule::Uuid]));
 
         // PMS-518: Description is now enforced (it carried the asterisk but was
         // never validated). The server accepts an empty body, so this is a
@@ -3008,24 +3254,30 @@ pub fn TicketNewPage() -> Element {
         // PMS-358: send the selected priority UUID. An empty string means
         // the priorities fetch was still in flight; let the server apply
         // its default rather than blocking the submit.
-        let priority_uuid: Option<uuid::Uuid> =
-            uuid::Uuid::parse_str(priority_id.read().as_str()).ok();
-
-        // PMS-344: asset is optional. Empty string = not picked.
-        let asset_uuid: Option<uuid::Uuid> = uuid::Uuid::parse_str(asset_id.read().as_str()).ok();
-
-        // MAPPS-207: contact is optional. Empty string = not picked.
-        let contact_uuid: Option<uuid::Uuid> =
-            uuid::Uuid::parse_str(contact_id.read().as_str()).ok();
-
-        // MAPPS-296: optional type / category / assignee. Each empty
-        // signal sends `null` so the server falls back to its default
-        // (no enforced type / category / assignee).
-        let type_uuid: Option<uuid::Uuid> = uuid::Uuid::parse_str(type_id.read().as_str()).ok();
-        let category_uuid: Option<uuid::Uuid> =
-            uuid::Uuid::parse_str(category_id.read().as_str()).ok();
-        let assignee_uuid: Option<uuid::Uuid> =
-            uuid::Uuid::parse_str(assigned_to_id.read().as_str()).ok();
+        //
+        // PMS-344 / MAPPS-207 / MAPPS-296: asset, contact, type, category
+        // and assignee are optional too; empty sends `null` so the server
+        // falls back to its default.
+        //
+        // MAPPS-1248: each of these comes from a select or a picker, so an
+        // unreadable value is a bug, not a choice. It is logged and the submit
+        // stops with a message, instead of being dropped to `null` silently.
+        let picked = [
+            ("priority", priority_id.read().clone()),
+            ("asset", asset_id.read().clone()),
+            ("contact", contact_id.read().clone()),
+            ("type", type_id.read().clone()),
+            ("category", category_id.read().clone()),
+            ("assignee", assigned_to_id.read().clone()),
+        ]
+        .map(|(field, raw)| optional_picked_id(field, &raw));
+        if let Some(Err(message)) = picked.iter().find(|r| r.is_err()) {
+            error.set(message.clone());
+            is_submitting.set(false);
+            return;
+        }
+        let [priority_uuid, asset_uuid, contact_uuid, type_uuid, category_uuid, assignee_uuid] =
+            picked.map(|r| r.unwrap_or(None));
         // MAPPS-296: Due Date stamps `scheduled_end` (the server-side
         // SLA / dispatch consume the same field). The date input only
         // emits `YYYY-MM-DD`, so we land it at 23:59 UTC on the chosen
@@ -3090,23 +3342,10 @@ pub fn TicketNewPage() -> Element {
                     }
                 };
                 // PMS-791 phase 3 / MAPPS-464: optional team routing. Absent
-                // leaves the server's NULL; an id that is present and
-                // unreadable is logged rather than dropped in silence, for the
-                // same reason `source_kb_article_id` above is.
-                let team_id: Option<uuid::Uuid> = {
-                    let raw = team_id_v.trim();
-                    if raw.is_empty() {
-                        None
-                    } else {
-                        match uuid::Uuid::parse_str(raw) {
-                            Ok(u) => Some(u),
-                            Err(e) => {
-                                tracing::warn!("team id {raw:?} is not a UUID: {e}");
-                                None
-                            }
-                        }
-                    }
-                };
+                // leaves the server's NULL. MAPPS-1248: an unreadable id never
+                // gets here; the guard above refused it inline, so this only
+                // reads a value already known to parse.
+                let team_id: Option<uuid::Uuid> = uuid::Uuid::parse_str(team_id_v.trim()).ok();
                 let body = CreateTicketBody {
                     title: title_v,
                     // MAPPS-322: Description is required and validated non-empty
@@ -3429,7 +3668,11 @@ pub fn TicketNewPage() -> Element {
                         label: "Team (UUID, optional)",
                         r#type: "text".to_string(),
                         value: team_id.read().clone(),
-                        oninput: move |e: FormEvent| team_id.set(e.value()),
+                        error: team_error.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            team_error.set(String::new());
+                            team_id.set(e.value());
+                        },
                     }
                 }
 
@@ -3684,6 +3927,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // entries. Each resource yields `Option<Option<T>>`: `None` while the
     // fetch is in flight, `Some(None)` on failure / no token.
     let id_for_ticket = props.id.clone();
+    // MAPPS-1248: why the last ticket load failed, so a 404 can read as "not
+    // found" and anything else (401, 403, 500) as the error it was. The
+    // resource keeps its `Option` shape for the many reads below.
+    let mut ticket_load_failure = use_signal(|| None::<crate::hooks::fetch::api::ApiError>);
     let ticket_resource = use_resource(move || {
         let id = id_for_ticket.clone();
         async move {
@@ -3699,12 +3946,21 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
             // recent-activity list failed client-side with "not
             // authenticated" before the request even left the browser.
             let _reachable = crate::hooks::use_server_reachable();
-            crate::hooks::fetch::api::get_authed_any::<RemoteTicketDetail>(&format!(
+            match crate::hooks::fetch::api::get_authed_any_typed::<RemoteTicketDetail>(&format!(
                 "/tickets/{id}"
             ))
             .await
-            .inspect_err(|e| tracing::error!("ticket detail load failed for {id}: {e}"))
-            .ok()
+            {
+                Ok(t) => {
+                    ticket_load_failure.set(None);
+                    Some(t)
+                }
+                Err(e) => {
+                    tracing::error!("ticket detail load failed for {id}: {e}");
+                    ticket_load_failure.set(Some(e));
+                    None
+                }
+            }
         }
     });
     // MAPPS-734: the two SLA legs from the dual-plane route (server
@@ -4089,8 +4345,9 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         Some(_) => format!("Ticket {}", props.id),
         None => "Loading…".to_string(),
     };
+    let failure_view = ticket_failure_view(ticket_load_failure.read().as_ref());
     let title = if ticket_fetch_failed {
-        "Ticket not found".to_string()
+        failure_view.0.to_string()
     } else {
         header_title.clone()
     };
@@ -4122,13 +4379,15 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         };
     }
     if ticket_fetch_failed {
+        // MAPPS-1248: only a 404 is "not found"; see `ticket_failure_view`.
+        let (failure_title, failure_message) = failure_view;
         return rsx! {
-            PageHeader { title: "Ticket not found" }
+            PageHeader { title: "{failure_title}" }
             Card {
                 div { class: "py-8 text-center",
                     p {
                         class: "text-sm text-red-600 dark:text-red-400 mb-2",
-                        "Ticket not found. It may have been deleted, or the link may be incorrect."
+                        "{failure_message}"
                     }
                     Link {
                         to: Route::TicketList {},
@@ -4183,13 +4442,11 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         .iter()
         .find(|e| e.action == "update" && e.changed_fields.iter().any(|f| f == "description"))
         .map(|e| {
-            let who = crate::utils::unresolved_person::resolve_person(
-                "ticket_journal",
-                e.user_name.as_deref(),
-                &e.user_id,
-                None,
-                &users,
-            );
+            // MAPPS-1248: the same resolution as the journal (`journal_actor`),
+            // viewer included. Without the viewer, an empty roster made the
+            // viewer's own edit read "Someone" here and by name in the journal.
+            let viewer_pair = viewer_id.zip(viewer_name.as_deref());
+            let who = journal_actor(&users, &e.user_id, e.user_name.as_deref(), viewer_pair);
             let when = fmt_datetime_in(e.timestamp, pref.as_deref(), tz);
             let when_iso = e.timestamp.to_rfc3339();
             let who_class = if who.is_system() {
@@ -5028,6 +5285,11 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 // open, and the stream below carries every source this page
                 // fetches rather than notes alone.
                 Card { title: "Journal",
+                    // MAPPS-1248: the composer is gated on `tickets:comment`. The
+                    // flag was computed and never read, so a contact without the
+                    // cap was offered a reply the server refuses. Staff bypass
+                    // `use_capability`, so nothing changes for them.
+                    if can_comment {
                     div { class: "space-y-4",
                         if !note_error.read().is_empty() {
                             ErrorBanner { "{note_error}" }
@@ -5077,6 +5339,11 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-400", "{note_upload_error}" }
                         }
                         div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                            // MAPPS-1248: staff only. A contact can only send the
+                            // default `public` type (prompt 008 rejects the rest),
+                            // which is what the comment above `default_note_type`
+                            // always said; the select rendered for them anyway.
+                            if staff_only {
                             Select {
                                 name: "note_type",
                                 label: "Note Type",
@@ -5096,6 +5363,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     }
                                     note_type.set(e.value());
                                 },
+                            }
                             }
                             // MAPPS-613: absent, not greyed, on a note that
                             // cannot be emailed. The server has always refused
@@ -5197,7 +5465,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         move || serde_json::json!({
                                             "ticket_number": ticket_number.clone(),
                                             "title": title.clone(),
-                                            "content": note_content.read().clone(),
+                                            "content": note_content.read().trim().to_string(),
                                         })
                                     },
                                     empty_note: NOTE_PREVIEW_NOTE.to_string(),
@@ -5220,10 +5488,14 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     // `note_submitting` is set, so the bail path
                                     // leaves it untouched.
                                     let mut guard = FormGuard::new();
-                                    let content_v = note_content.read().clone();
+                                    // MAPPS-1248: trimmed once, and the trimmed text is
+                                    // what is validated AND posted, as the description
+                                    // paths do. It used to validate the trim and post
+                                    // the text as typed.
+                                    let content_v = note_content.read().trim().to_string();
                                     note_content_error.set(guard.field(
                                         "content",
-                                        content_v.trim(),
+                                        &content_v,
                                         "Content",
                                         &[Rule::Required],
                                     ));
@@ -5365,6 +5637,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 "Add note"
                             }
                         }
+                    }
                     }
 
                     div { class: "mt-6 border-t border-line pt-6",
@@ -5605,7 +5878,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 let mut tr = ticket_resource;
                                 let mut hr = history_resource;
                                 let onchange = move |e: FormEvent| {
-                                    let Ok(new_id) = uuid::Uuid::parse_str(&e.value()) else {
+                                    // MAPPS-1248: an unreadable option value is logged.
+                                    let Some(new_id) = inline_select_id(&e.value()) else {
                                         return;
                                     };
                                     let save_id = save_id.clone();
@@ -5616,7 +5890,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             status_id: Some(new_id),
                                             ..Default::default()
                                         };
-                                        match crate::hooks::fetch::api::put_authed::<
+                                        match crate::hooks::fetch::api::put_authed_typed::<
                                             serde_json::Value,
                                             _,
                                         >(
@@ -5630,7 +5904,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             }
                                             Err(err) => {
                                                 field_error.set(format!(
-                                                    "Could not update status: {err}"
+                                                    "Could not update status: {}",
+                                                    err.user_message()
                                                 ));
                                             }
                                         }
@@ -5671,7 +5946,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 let mut tr = ticket_resource;
                                 let mut hr = history_resource;
                                 let onchange = move |e: FormEvent| {
-                                    let Ok(new_id) = uuid::Uuid::parse_str(&e.value()) else {
+                                    // MAPPS-1248: an unreadable option value is logged.
+                                    let Some(new_id) = inline_select_id(&e.value()) else {
                                         return;
                                     };
                                     let save_id = save_id.clone();
@@ -5681,7 +5957,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             priority_id: Some(new_id),
                                             ..Default::default()
                                         };
-                                        match crate::hooks::fetch::api::put_authed::<
+                                        match crate::hooks::fetch::api::put_authed_typed::<
                                             serde_json::Value,
                                             _,
                                         >(
@@ -5695,7 +5971,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             }
                                             Err(err) => {
                                                 field_error.set(format!(
-                                                    "Could not update priority: {err}"
+                                                    "Could not update priority: {}",
+                                                    err.user_message()
                                                 ));
                                             }
                                         }
@@ -5746,9 +6023,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let new_id: Option<uuid::Uuid> = if raw.is_empty() {
                                         None
                                     } else {
-                                        match uuid::Uuid::parse_str(&raw) {
-                                            Ok(u) => Some(u),
-                                            Err(_) => return,
+                                        // MAPPS-1248: an unreadable option value is logged.
+                                        match inline_select_id(&raw) {
+                                            Some(u) => Some(u),
+                                            None => return,
                                         }
                                     };
                                     let save_id = save_id.clone();
@@ -5761,7 +6039,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             assigned_to_id: Some(new_id),
                                             ..Default::default()
                                         };
-                                        match crate::hooks::fetch::api::put_authed::<
+                                        match crate::hooks::fetch::api::put_authed_typed::<
                                             serde_json::Value,
                                             _,
                                         >(
@@ -5775,7 +6053,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             }
                                             Err(err) => {
                                                 field_error.set(format!(
-                                                    "Could not update assignee: {err}"
+                                                    "Could not update assignee: {}",
+                                                    err.user_message()
                                                 ));
                                             }
                                         }
@@ -5814,6 +6093,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 let current_asset_id = t.asset_id.map(|u| u.to_string());
                                 let current_asset_name =
                                     t.asset_name.clone().unwrap_or_default();
+                                let asset_shown = shown_or_not_set(&current_asset_name);
                                 let save_id = props.id.clone();
                                 let mut tr = ticket_resource;
                                 let mut hr = history_resource;
@@ -5825,7 +6105,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             asset_id: Some(new_id),
                                             ..Default::default()
                                         };
-                                        match crate::hooks::fetch::api::put_authed::<
+                                        match crate::hooks::fetch::api::put_authed_typed::<
                                             serde_json::Value,
                                             _,
                                         >(
@@ -5840,7 +6120,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             }
                                             Err(err) => {
                                                 field_error.set(format!(
-                                                    "Could not update asset: {err}"
+                                                    "Could not update asset: {}",
+                                                    err.user_message()
                                                 ));
                                             }
                                         }
@@ -5852,14 +6133,16 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     DetailItem {
                                         label: "Asset",
                                         value: rsx! {
-                                            // MAPPS-357: the AssetPicker PUTs on
-                                            // select/clear but exposes no `disabled`
-                                            // prop, so it cannot be gated from this
-                                            // file (unlike the Selects above). A write
-                                            // it fires while down surfaces the inline
-                                            // "Could not update asset" error rather
-                                            // than silently succeeding; gating it needs
-                                            // a `disabled` prop on the shared component.
+                                            // MAPPS-357 / MAPPS-1248: the AssetPicker
+                                            // has no `disabled` prop, so it is gated by
+                                            // rendering: under the same rule as the
+                                            // Selects above (`!can_mutate ||
+                                            // !staff_only`) the saved value shows as
+                                            // text, so a contact session or a server
+                                            // that is down is never offered the write.
+                                            if !can_mutate || !staff_only {
+                                                span { "{asset_shown}" }
+                                            } else {
                                             crate::components::AssetPicker {
                                                 // PMS-344 follow-up
                                                 // (layout): suppress
@@ -5876,13 +6159,16 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 value: current_asset_name,
                                                 selected_id: current_asset_id,
                                                 onselect: move |(id, _name): (String, String)| {
-                                                    if let Ok(uid) = uuid::Uuid::parse_str(&id) {
-                                                        put_asset_for_select(Some(uid));
+                                                    match uuid::Uuid::parse_str(&id) {
+                                                        Ok(uid) => put_asset_for_select(Some(uid)),
+                                                        // MAPPS-1248: logged, not dropped.
+                                                        Err(e) => tracing::warn!("asset picker returned {id:?}, not a UUID: {e}"),
                                                     }
                                                 },
                                                 onclear: move |_| {
                                                     put_asset_for_clear(None);
                                                 },
+                                            }
                                             }
                                         },
                                     }
@@ -5917,9 +6203,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let new_id: Option<uuid::Uuid> = if raw.is_empty() {
                                         None
                                     } else {
-                                        match uuid::Uuid::parse_str(&raw) {
-                                            Ok(u) => Some(u),
-                                            Err(_) => return,
+                                        // MAPPS-1248: an unreadable option value is logged.
+                                        match inline_select_id(&raw) {
+                                            Some(u) => Some(u),
+                                            None => return,
                                         }
                                     };
                                     let save_id = save_id.clone();
@@ -5929,7 +6216,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             type_id: Some(new_id),
                                             ..Default::default()
                                         };
-                                        match crate::hooks::fetch::api::put_authed::<
+                                        match crate::hooks::fetch::api::put_authed_typed::<
                                             serde_json::Value,
                                             _,
                                         >(
@@ -5943,7 +6230,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             }
                                             Err(err) => {
                                                 field_error.set(format!(
-                                                    "Could not update type: {err}"
+                                                    "Could not update type: {}",
+                                                    err.user_message()
                                                 ));
                                             }
                                         }
@@ -5988,9 +6276,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let new_id: Option<uuid::Uuid> = if raw.is_empty() {
                                         None
                                     } else {
-                                        match uuid::Uuid::parse_str(&raw) {
-                                            Ok(u) => Some(u),
-                                            Err(_) => return,
+                                        // MAPPS-1248: an unreadable option value is logged.
+                                        match inline_select_id(&raw) {
+                                            Some(u) => Some(u),
+                                            None => return,
                                         }
                                     };
                                     let save_id = save_id.clone();
@@ -6000,7 +6289,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             category_id: Some(new_id),
                                             ..Default::default()
                                         };
-                                        match crate::hooks::fetch::api::put_authed::<
+                                        match crate::hooks::fetch::api::put_authed_typed::<
                                             serde_json::Value,
                                             _,
                                         >(
@@ -6014,7 +6303,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             }
                                             Err(err) => {
                                                 field_error.set(format!(
-                                                    "Could not update category: {err}"
+                                                    "Could not update category: {}",
+                                                    err.user_message()
                                                 ));
                                             }
                                         }
@@ -6047,6 +6337,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 let current_contact_id = t.contact_id.map(|u| u.to_string());
                                 let current_contact_name =
                                     t.contact_name.clone().unwrap_or_default();
+                                let contact_shown = shown_or_not_set(&current_contact_name);
                                 let company_filter = t.company_id.map(|c| c.to_string());
                                 let save_id = props.id.clone();
                                 let mut tr = ticket_resource;
@@ -6059,7 +6350,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             contact_id: Some(new_id),
                                             ..Default::default()
                                         };
-                                        match crate::hooks::fetch::api::put_authed::<
+                                        match crate::hooks::fetch::api::put_authed_typed::<
                                             serde_json::Value,
                                             _,
                                         >(
@@ -6074,7 +6365,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             }
                                             Err(err) => {
                                                 field_error.set(format!(
-                                                    "Could not update contact: {err}"
+                                                    "Could not update contact: {}",
+                                                    err.user_message()
                                                 ));
                                             }
                                         }
@@ -6086,24 +6378,27 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     DetailItem {
                                         label: "Contact",
                                         value: rsx! {
-                                            // MAPPS-357: like AssetPicker, ContactPicker
-                                            // exposes no `disabled` prop, so it cannot be
-                                            // gated from this file; a write it fires while
-                                            // down surfaces the inline error below instead
-                                            // of silently succeeding.
+                                            // MAPPS-357 / MAPPS-1248: gated the same way
+                                            // as the AssetPicker above.
+                                            if !can_mutate || !staff_only {
+                                                span { "{contact_shown}" }
+                                            } else {
                                             crate::components::ContactPicker {
                                                 label: String::new(),
                                                 value: current_contact_name,
                                                 selected_id: current_contact_id,
                                                 company_filter,
                                                 onselect: move |(id, _name): (String, String)| {
-                                                    if let Ok(uid) = uuid::Uuid::parse_str(&id) {
-                                                        put_contact_for_select(Some(uid));
+                                                    match uuid::Uuid::parse_str(&id) {
+                                                        Ok(uid) => put_contact_for_select(Some(uid)),
+                                                        // MAPPS-1248: logged, not dropped.
+                                                        Err(e) => tracing::warn!("contact picker returned {id:?}, not a UUID: {e}"),
                                                     }
                                                 },
                                                 onclear: move |_| {
                                                     put_contact_for_clear(None);
                                                 },
+                                            }
                                             }
                                         },
                                     }
@@ -6136,9 +6431,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let new_id: Option<uuid::Uuid> = if raw.is_empty() {
                                         None
                                     } else {
-                                        match uuid::Uuid::parse_str(&raw) {
-                                            Ok(u) => Some(u),
-                                            Err(_) => return,
+                                        // MAPPS-1248: an unreadable option value is logged.
+                                        match inline_select_id(&raw) {
+                                            Some(u) => Some(u),
+                                            None => return,
                                         }
                                     };
                                     let save_id = save_id.clone();
@@ -6148,7 +6444,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             site_id: Some(new_id),
                                             ..Default::default()
                                         };
-                                        match crate::hooks::fetch::api::put_authed::<
+                                        match crate::hooks::fetch::api::put_authed_typed::<
                                             serde_json::Value,
                                             _,
                                         >(
@@ -6162,7 +6458,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             }
                                             Err(err) => {
                                                 field_error.set(format!(
-                                                    "Could not update site: {err}"
+                                                    "Could not update site: {}",
+                                                    err.user_message()
                                                 ));
                                             }
                                         }
@@ -6207,9 +6504,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let new_id: Option<uuid::Uuid> = if raw.is_empty() {
                                         None
                                     } else {
-                                        match uuid::Uuid::parse_str(&raw) {
-                                            Ok(u) => Some(u),
-                                            Err(_) => return,
+                                        // MAPPS-1248: an unreadable option value is logged.
+                                        match inline_select_id(&raw) {
+                                            Some(u) => Some(u),
+                                            None => return,
                                         }
                                     };
                                     let save_id = save_id.clone();
@@ -6219,7 +6517,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             team_id: Some(new_id),
                                             ..Default::default()
                                         };
-                                        match crate::hooks::fetch::api::put_authed::<
+                                        match crate::hooks::fetch::api::put_authed_typed::<
                                             serde_json::Value,
                                             _,
                                         >(
@@ -6233,7 +6531,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             }
                                             Err(err) => {
                                                 field_error.set(format!(
-                                                    "Could not update team: {err}"
+                                                    "Could not update team: {}",
+                                                    err.user_message()
                                                 ));
                                             }
                                         }
@@ -6278,9 +6577,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let new_id: Option<uuid::Uuid> = if raw.is_empty() {
                                         None
                                     } else {
-                                        match uuid::Uuid::parse_str(&raw) {
-                                            Ok(u) => Some(u),
-                                            Err(_) => return,
+                                        // MAPPS-1248: an unreadable option value is logged.
+                                        match inline_select_id(&raw) {
+                                            Some(u) => Some(u),
+                                            None => return,
                                         }
                                     };
                                     let save_id = save_id.clone();
@@ -6290,7 +6590,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             contract_id: Some(new_id),
                                             ..Default::default()
                                         };
-                                        match crate::hooks::fetch::api::put_authed::<
+                                        match crate::hooks::fetch::api::put_authed_typed::<
                                             serde_json::Value,
                                             _,
                                         >(
@@ -6304,7 +6604,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             }
                                             Err(err) => {
                                                 field_error.set(format!(
-                                                    "Could not update contract: {err}"
+                                                    "Could not update contract: {}",
+                                                    err.user_message()
                                                 ));
                                             }
                                         }
@@ -6349,9 +6650,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let new_id: Option<uuid::Uuid> = if raw.is_empty() {
                                         None
                                     } else {
-                                        match uuid::Uuid::parse_str(&raw) {
-                                            Ok(u) => Some(u),
-                                            Err(_) => return,
+                                        // MAPPS-1248: an unreadable option value is logged.
+                                        match inline_select_id(&raw) {
+                                            Some(u) => Some(u),
+                                            None => return,
                                         }
                                     };
                                     let save_id = save_id.clone();
@@ -6438,9 +6740,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     },
                                 }
                             }
-                            if let Some(contact) = t.contact_name.as_ref().filter(|s| !s.is_empty()) {
-                                DetailItem { label: "Contact", value: rsx!(span { "{contact}" }) }
-                            }
+                            // MAPPS-1248: no read-only Contact row here; the
+                            // Details card's Contact editor above is the one row.
                             if !t.queue_name.is_empty() {
                                 DetailItem { label: "Queue", value: rsx!(span { "{t.queue_name}" }) }
                             }
