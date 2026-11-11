@@ -169,6 +169,7 @@ fn subscribe_to_system_theme() {
     use wasm_bindgen::JsCast;
 
     let Some(win) = web_sys::window() else {
+        tracing::warn!("no window; the system theme will not follow OS changes");
         return;
     };
     let Some(media) = win
@@ -176,6 +177,11 @@ fn subscribe_to_system_theme() {
         .ok()
         .flatten()
     else {
+        // MAPPS-1240: as below, a `system` theme then stays on the boot-time
+        // answer; say which object was missing.
+        tracing::warn!(
+            "no prefers-color-scheme media query; the system theme will not follow OS changes"
+        );
         return;
     };
     let cb = Closure::wrap(Box::new(move |_: web_sys::Event| {
@@ -204,6 +210,29 @@ fn subscribe_to_system_theme() {
 /// host test has either. What is pinned is that the desktop has a branch at
 /// all - it had none, and a `Theme::System` user there stayed on whatever the
 /// OS said when the app started, which reads as "the setting does nothing".
+/// MAPPS-1240: every early return in the browser subscription logs.
+#[cfg(test)]
+mod subscribe_failure_tests {
+    #[test]
+    fn a_skipped_os_theme_subscription_says_why() {
+        let src = include_str!("theme.rs");
+        let code = &src[..src.find("mod subscribe_failure_tests").unwrap()];
+        let at = code
+            .find("fn subscribe_to_system_theme() {")
+            .expect("browser subscribe");
+        let body = &code[at..];
+        let body = &body[..body.find("cb.forget();").expect("end")];
+        assert_eq!(body.matches("return;").count(), 3, "{body}");
+        assert_eq!(
+            body.matches("tracing::warn!").count() + body.matches("tracing::error!").count(),
+            3,
+            "each return logs: {body}"
+        );
+        assert!(body.contains("no window; the system theme will not follow OS changes"));
+        assert!(body.contains("no prefers-color-scheme media query"));
+    }
+}
+
 #[cfg(test)]
 mod system_theme_tests {
     const SRC: &str = include_str!("theme.rs");

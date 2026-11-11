@@ -182,16 +182,35 @@ struct RemoteTicketDetail {
     /// false and the button hides.
     #[serde(default)]
     contact_id: Option<uuid::Uuid>,
-    /// MAPPS-1222: the server joins the name but not the id (`TicketResponse`
-    /// has no `type_id` / `category_id`, only `*_name`), so the inline Type /
-    /// Category editors below resolve their current selection by matching
-    /// this name against the fetched `/tickets/types` / `/tickets/categories`
-    /// lookup rather than binding a `Select` to an id the response never
-    /// carries.
+    /// MAPPS-1223: the saved id and name of every lookup the inline editors
+    /// below can change. The editors bind to the id; the name labels a saved
+    /// value the option list no longer offers (`include_saved_option`).
+    /// `#[serde(default)]` so a server from before MAPPS-1223 still
+    /// deserialises, reading as nothing saved.
+    #[serde(default)]
+    type_id: Option<uuid::Uuid>,
     #[serde(default)]
     type_name: Option<String>,
     #[serde(default)]
+    category_id: Option<uuid::Uuid>,
+    #[serde(default)]
     category_name: Option<String>,
+    #[serde(default)]
+    site_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    site_name: Option<String>,
+    #[serde(default)]
+    team_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    team_name: Option<String>,
+    #[serde(default)]
+    contract_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    contract_name: Option<String>,
+    #[serde(default)]
+    sla_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    sla_name: Option<String>,
     #[serde(default)]
     queue_name: String,
     #[serde(default)]
@@ -296,6 +315,31 @@ struct RemoteTicketQueue {
 /// projection the New Ticket form needs; serde drops every other
 /// field. Created at the top so the new lookups in `TicketNewPage`
 /// resolve.
+/// MAPPS-1223: make sure the saved value has an option. A ticket can point at
+/// a lookup the list no longer offers (an inactive team, a retired type, a
+/// site the company list dropped), and a `Select` whose value matches no
+/// option reads "Not set" while a value is saved. The saved one is appended
+/// under its saved name.
+fn include_saved_option(
+    options: &mut Vec<SelectOption>,
+    saved_id: Option<uuid::Uuid>,
+    saved_name: Option<&str>,
+) {
+    let Some(id) = saved_id else {
+        return;
+    };
+    let value = id.to_string();
+    if options.iter().any(|o| o.value == value) {
+        return;
+    }
+    let label = saved_name
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Unnamed ({value})"));
+    options.push(SelectOption::new(value, label));
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteTicketLookup {
     id: uuid::Uuid,
@@ -3906,18 +3950,6 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
             }
         }
     });
-    // MAPPS-1222: `TicketResponse` carries no `site_id` / `team_id` /
-    // `contract_id` / `sla_id` (only the FK columns PMS-1565 now persists,
-    // none of the id/name pairs the Type/Category/Asset fields get), so
-    // unlike every other inline editor on this page these four cannot show
-    // what is already saved, only what was just picked. Each signal holds
-    // the `(id, name)` the operator last chose, set optimistically on a
-    // successful save; MAPPS-1222's follow-up tracks adding the read-side
-    // fields so these can show the saved value like the rest do.
-    let mut site_choice = use_signal::<Option<(String, String)>>(|| None);
-    let mut team_choice = use_signal::<Option<(String, String)>>(|| None);
-    let mut contract_choice = use_signal::<Option<(String, String)>>(|| None);
-    let mut sla_choice = use_signal::<Option<(String, String)>>(|| None);
     // PMS-359: per-field error message surfaced inline below the editor.
     // One signal is enough since at most one of the three editors fires
     // at a time and we always clear before the next attempt.
@@ -5863,21 +5895,19 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             // is what makes the server actually persist each
                             // one instead of silently dropping it.
                             {
-                                let current_type_id = t
-                                    .type_name
-                                    .as_deref()
-                                    .filter(|n| !n.is_empty())
-                                    .and_then(|name| {
-                                        ticket_types.iter().find(|o| o.name == name)
-                                    })
-                                    .map(|o| o.id.to_string())
-                                    .unwrap_or_default();
+                                let current_type_id =
+                                    t.type_id.map(|id| id.to_string()).unwrap_or_default();
                                 let mut type_options: Vec<SelectOption> =
                                     vec![SelectOption::new("", "None")];
                                 type_options.extend(
                                     ticket_types
                                         .iter()
                                         .map(|o| SelectOption::new(o.id.to_string(), o.name.clone())),
+                                );
+                                include_saved_option(
+                                    &mut type_options,
+                                    t.type_id,
+                                    t.type_name.as_deref(),
                                 );
                                 let save_id = props.id.clone();
                                 let mut tr = ticket_resource;
@@ -5936,21 +5966,19 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 }
                             }
                             {
-                                let current_category_id = t
-                                    .category_name
-                                    .as_deref()
-                                    .filter(|n| !n.is_empty())
-                                    .and_then(|name| {
-                                        ticket_categories.iter().find(|o| o.name == name)
-                                    })
-                                    .map(|o| o.id.to_string())
-                                    .unwrap_or_default();
+                                let current_category_id =
+                                    t.category_id.map(|id| id.to_string()).unwrap_or_default();
                                 let mut category_options: Vec<SelectOption> =
                                     vec![SelectOption::new("", "None")];
                                 category_options.extend(
                                     ticket_categories
                                         .iter()
                                         .map(|o| SelectOption::new(o.id.to_string(), o.name.clone())),
+                                );
+                                include_saved_option(
+                                    &mut category_options,
+                                    t.category_id,
+                                    t.category_name.as_deref(),
                                 );
                                 let save_id = props.id.clone();
                                 let mut tr = ticket_resource;
@@ -6081,18 +6109,10 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     }
                                 }
                             }
-                            // MAPPS-1222: Site, Team, Contract and SLA. Unlike
-                            // every editor above, `TicketResponse` carries no
-                            // id or name for any of these four, so the Select
-                            // cannot be pre-selected to what is already saved
-                            // on load; each `*_choice` signal instead tracks
-                            // what THIS session last picked and shows that
-                            // once the PUT succeeds, which still satisfies
-                            // "reflects the new value without a full reload"
-                            // without inventing a value this page was never
-                            // told. See MAPPS-1222's filed follow-up for
-                            // adding the read-side fields that would let
-                            // these pre-select like Type/Category/Contact do.
+                            // MAPPS-1222 / MAPPS-1223: Site, Team, Contract and
+                            // SLA, bound to the saved id the response now
+                            // carries, so a reload shows what is saved and a
+                            // save shows the server's value after the refetch.
                             {
                                 let mut site_options: Vec<SelectOption> =
                                     vec![SelectOption::new("", "Not set")];
@@ -6101,15 +6121,16 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         .iter()
                                         .map(|o| SelectOption::new(o.id.to_string(), o.name.clone())),
                                 );
-                                let current_site_value = site_choice
-                                    .read()
-                                    .as_ref()
-                                    .map(|(id, _)| id.clone())
-                                    .unwrap_or_default();
+                                include_saved_option(
+                                    &mut site_options,
+                                    t.site_id,
+                                    t.site_name.as_deref(),
+                                );
+                                let current_site_value =
+                                    t.site_id.map(|id| id.to_string()).unwrap_or_default();
                                 let save_id = props.id.clone();
                                 let mut tr = ticket_resource;
                                 let mut hr = history_resource;
-                                let sites_for_lookup = sites.clone();
                                 let onchange = move |e: FormEvent| {
                                     let raw = e.value();
                                     let new_id: Option<uuid::Uuid> = if raw.is_empty() {
@@ -6120,13 +6141,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             Err(_) => return,
                                         }
                                     };
-                                    let picked_name = sites_for_lookup
-                                        .iter()
-                                        .find(|o| o.id.to_string() == raw)
-                                        .map(|o| o.name.clone())
-                                        .unwrap_or_default();
                                     let save_id = save_id.clone();
-                                    let raw_for_choice = raw.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
                                         let body = UpdateTicketBody {
@@ -6142,12 +6157,6 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         .await
                                         {
                                             Ok(_) => {
-                                                if raw_for_choice.is_empty() {
-                                                    site_choice.set(None);
-                                                } else {
-                                                    site_choice
-                                                        .set(Some((raw_for_choice, picked_name)));
-                                                }
                                                 tr.restart();
                                                 hr.restart();
                                             }
@@ -6183,15 +6192,16 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         .iter()
                                         .map(|o| SelectOption::new(o.id.to_string(), o.name.clone())),
                                 );
-                                let current_team_value = team_choice
-                                    .read()
-                                    .as_ref()
-                                    .map(|(id, _)| id.clone())
-                                    .unwrap_or_default();
+                                include_saved_option(
+                                    &mut team_options,
+                                    t.team_id,
+                                    t.team_name.as_deref(),
+                                );
+                                let current_team_value =
+                                    t.team_id.map(|id| id.to_string()).unwrap_or_default();
                                 let save_id = props.id.clone();
                                 let mut tr = ticket_resource;
                                 let mut hr = history_resource;
-                                let teams_for_lookup = teams.clone();
                                 let onchange = move |e: FormEvent| {
                                     let raw = e.value();
                                     let new_id: Option<uuid::Uuid> = if raw.is_empty() {
@@ -6202,13 +6212,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             Err(_) => return,
                                         }
                                     };
-                                    let picked_name = teams_for_lookup
-                                        .iter()
-                                        .find(|o| o.id.to_string() == raw)
-                                        .map(|o| o.name.clone())
-                                        .unwrap_or_default();
                                     let save_id = save_id.clone();
-                                    let raw_for_choice = raw.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
                                         let body = UpdateTicketBody {
@@ -6224,12 +6228,6 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         .await
                                         {
                                             Ok(_) => {
-                                                if raw_for_choice.is_empty() {
-                                                    team_choice.set(None);
-                                                } else {
-                                                    team_choice
-                                                        .set(Some((raw_for_choice, picked_name)));
-                                                }
                                                 tr.restart();
                                                 hr.restart();
                                             }
@@ -6265,15 +6263,16 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         .iter()
                                         .map(|o| SelectOption::new(o.id.to_string(), o.name.clone())),
                                 );
-                                let current_contract_value = contract_choice
-                                    .read()
-                                    .as_ref()
-                                    .map(|(id, _)| id.clone())
-                                    .unwrap_or_default();
+                                include_saved_option(
+                                    &mut contract_options,
+                                    t.contract_id,
+                                    t.contract_name.as_deref(),
+                                );
+                                let current_contract_value =
+                                    t.contract_id.map(|id| id.to_string()).unwrap_or_default();
                                 let save_id = props.id.clone();
                                 let mut tr = ticket_resource;
                                 let mut hr = history_resource;
-                                let contracts_for_lookup = contracts.clone();
                                 let onchange = move |e: FormEvent| {
                                     let raw = e.value();
                                     let new_id: Option<uuid::Uuid> = if raw.is_empty() {
@@ -6284,13 +6283,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             Err(_) => return,
                                         }
                                     };
-                                    let picked_name = contracts_for_lookup
-                                        .iter()
-                                        .find(|o| o.id.to_string() == raw)
-                                        .map(|o| o.name.clone())
-                                        .unwrap_or_default();
                                     let save_id = save_id.clone();
-                                    let raw_for_choice = raw.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
                                         let body = UpdateTicketBody {
@@ -6306,12 +6299,6 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         .await
                                         {
                                             Ok(_) => {
-                                                if raw_for_choice.is_empty() {
-                                                    contract_choice.set(None);
-                                                } else {
-                                                    contract_choice
-                                                        .set(Some((raw_for_choice, picked_name)));
-                                                }
                                                 tr.restart();
                                                 hr.restart();
                                             }
@@ -6347,15 +6334,16 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         .iter()
                                         .map(|o| SelectOption::new(o.id.to_string(), o.name.clone())),
                                 );
-                                let current_sla_value = sla_choice
-                                    .read()
-                                    .as_ref()
-                                    .map(|(id, _)| id.clone())
-                                    .unwrap_or_default();
+                                include_saved_option(
+                                    &mut sla_options,
+                                    t.sla_id,
+                                    t.sla_name.as_deref(),
+                                );
+                                let current_sla_value =
+                                    t.sla_id.map(|id| id.to_string()).unwrap_or_default();
                                 let save_id = props.id.clone();
                                 let mut tr = ticket_resource;
                                 let mut hr = history_resource;
-                                let sla_policies_for_lookup = sla_policies.clone();
                                 let onchange = move |e: FormEvent| {
                                     let raw = e.value();
                                     let new_id: Option<uuid::Uuid> = if raw.is_empty() {
@@ -6366,13 +6354,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             Err(_) => return,
                                         }
                                     };
-                                    let picked_name = sla_policies_for_lookup
-                                        .iter()
-                                        .find(|o| o.id.to_string() == raw)
-                                        .map(|o| o.name.clone())
-                                        .unwrap_or_default();
                                     let save_id = save_id.clone();
-                                    let raw_for_choice = raw.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
                                         let body = UpdateTicketBody {
@@ -6388,12 +6370,6 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         .await
                                         {
                                             Ok(_) => {
-                                                if raw_for_choice.is_empty() {
-                                                    sla_choice.set(None);
-                                                } else {
-                                                    sla_choice
-                                                        .set(Some((raw_for_choice, picked_name)));
-                                                }
                                                 tr.restart();
                                                 hr.restart();
                                             }
@@ -9267,7 +9243,9 @@ mod mapps686_shared_dto_tests {
             description,
             status,
             priority,
+            type_id,
             type_name,
+            category_id,
             category_name,
             queue_name,
             source,
@@ -9275,6 +9253,16 @@ mod mapps686_shared_dto_tests {
             company_name,
             contact_id,
             contact_name,
+            // MAPPS-1223: the editable lookups, id and name each.
+            site_id,
+            site_name,
+            team_id,
+            team_name,
+            contract_id,
+            contract_number,
+            contract_name,
+            sla_id,
+            sla_name,
             assigned_to_id,
             assigned_to_name,
             sla_due_date,
@@ -9344,12 +9332,20 @@ mod mapps686_shared_dto_tests {
             // depend on the ownership gate. Populate it (Some(uuid)) in a
             // test that needs to exercise the gate through this fixture.
             contact_id: None,
-            // MAPPS-1222: the inline Type / Category editors resolve their
-            // current selection by matching these names against the fetched
-            // lookups, since `TicketResponse` carries no `type_id` /
-            // `category_id`.
+            // MAPPS-1223: each inline editor binds to the id; the name labels a
+            // saved value the option list no longer offers.
+            type_id,
             type_name,
+            category_id,
             category_name,
+            site_id,
+            site_name,
+            team_id,
+            team_name,
+            contract_id,
+            contract_name,
+            sla_id,
+            sla_name,
             queue_name,
             status: status_summary,
             priority: priority_summary,
@@ -9391,6 +9387,9 @@ mod mapps686_shared_dto_tests {
             // PMS-1368: the parent link is not rendered by this page yet; the
             // child ticket surface is a follow-up.
             parent_ticket_id,
+            // MAPPS-1223: nullable on the contract; the editor labels by name,
+            // as the contract picker does.
+            contract_number,
         );
     }
 
@@ -9905,6 +9904,130 @@ mod mapps1042_note_structured_tests {
         assert!(
             lines.iter().all(|(label, _)| *label != "Follow-up"),
             "no follow-up on the note means no Follow-up line"
+        );
+    }
+}
+
+/// MAPPS-1223: the ticket detail editors bind to the ids the server's
+/// `TicketResponse` now carries, instead of matching Type and Category by name
+/// and holding Site, Team, Contract and SLA in session-only signals that a
+/// reload forgot.
+#[cfg(test)]
+mod mapps1223_saved_lookup_tests {
+    use super::{include_saved_option, RemoteTicketDetail};
+    use crate::components::SelectOption;
+
+    const ID: &str = "11111111-1111-4111-8111-111111111111";
+
+    fn detail(extra: &str) -> RemoteTicketDetail {
+        let body = format!(
+            r#"{{"ticket_number":"T-1","title":"t","company_name":"c","queue_name":"q","created_at":"2026-08-14T00:00:00Z"{extra}}}"#
+        );
+        serde_json::from_str(&body).expect("deserialise ticket detail")
+    }
+
+    #[test]
+    fn the_saved_lookups_come_off_the_response() {
+        let t = detail(&format!(
+            r#","type_id":"{ID}","category_id":"{ID}","site_id":"{ID}","site_name":"North office","team_id":"{ID}","team_name":"Field","contract_id":"{ID}","contract_name":"Managed services","sla_id":"{ID}","sla_name":"Standard""#
+        ));
+        let id = Some(ID.parse().expect("uuid"));
+        assert_eq!(
+            (
+                t.type_id,
+                t.category_id,
+                t.site_id,
+                t.team_id,
+                t.contract_id,
+                t.sla_id
+            ),
+            (id, id, id, id, id, id)
+        );
+        assert_eq!(t.site_name.as_deref(), Some("North office"));
+        assert_eq!(t.contract_name.as_deref(), Some("Managed services"));
+    }
+
+    /// A server from before MAPPS-1223 sends none of them; the page reads that
+    /// as nothing saved rather than failing to decode the ticket.
+    #[test]
+    fn an_older_server_reads_as_nothing_saved() {
+        let t = detail("");
+        assert!(t.site_id.is_none() && t.team_id.is_none() && t.type_id.is_none());
+    }
+
+    #[test]
+    fn a_saved_value_the_list_no_longer_offers_still_has_an_option() {
+        let base = || {
+            vec![
+                SelectOption::new("", "Not set"),
+                SelectOption::new("a", "Listed"),
+            ]
+        };
+        let mut options = base();
+        include_saved_option(
+            &mut options,
+            Some(ID.parse().expect("uuid")),
+            Some("Retired team"),
+        );
+        assert_eq!(
+            options.last().map(|o| (o.value.as_str(), o.label.as_str())),
+            Some((ID, "Retired team"))
+        );
+
+        let mut listed = vec![SelectOption::new(ID, "Listed")];
+        include_saved_option(
+            &mut listed,
+            Some(ID.parse().expect("uuid")),
+            Some("Other name"),
+        );
+        assert_eq!(listed.len(), 1, "an offered value is not added twice");
+
+        let mut none = base();
+        include_saved_option(&mut none, None, Some("ignored"));
+        assert_eq!(none.len(), 2, "nothing saved adds nothing");
+
+        let mut unnamed = base();
+        include_saved_option(&mut unnamed, Some(ID.parse().expect("uuid")), Some("  "));
+        assert_eq!(
+            unnamed.last().map(|o| o.label.clone()),
+            Some(format!("Unnamed ({ID})"))
+        );
+    }
+
+    /// The editors read the saved id; nothing session-local stands in for it.
+    #[test]
+    fn every_lookup_editor_binds_to_the_saved_id() {
+        let src = include_str!("tickets.rs");
+        let head = &src[..src
+            .find("mod mapps1223_saved_lookup_tests")
+            .expect("this module")];
+        for f in ["type", "category"] {
+            assert!(
+                head.contains(&format!(
+                    "t.{f}_id.map(|id| id.to_string()).unwrap_or_default();"
+                )),
+                "{f}"
+            );
+        }
+        for f in ["site", "team", "contract", "sla"] {
+            assert!(
+                head.contains(&format!("let current_{f}_value =\n                                    t.{f}_id.map(|id| id.to_string()).unwrap_or_default();")),
+                "{f}"
+            );
+            assert!(
+                !head.contains(&format!("{f}_choice")),
+                "{f}: no session-only signal"
+            );
+        }
+        assert_eq!(
+            head.matches("include_saved_option(\n                                    &mut ")
+                .count(),
+            6,
+            "all six lookups keep their saved value"
+        );
+        assert!(
+            !head.contains("ticket_types.iter().find(|o| o.name == name)"),
+            "no name matching"
         );
     }
 }

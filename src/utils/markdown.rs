@@ -34,7 +34,20 @@ fn render_options() -> Options {
 /// finished HTML cannot tell those apart and would happily rewrite the inside
 /// of an `href`.
 fn to_html(src: &str, people: &[Mention], api_origin: &str) -> String {
+    to_html_with(src, people, api_origin, false)
+}
+
+/// [`to_html`], with `interactive` making each task-list checkbox clickable
+/// and tagging it `data-ti="<index>"`.
+///
+/// MAPPS-1241: the tagging happens on the parser's own `TaskListMarker`
+/// events, so only real task checkboxes are counted. It used to run over the
+/// finished HTML and index every `<input type="checkbox"`, including one an
+/// author wrote in raw HTML (the sanitizer allows it), which shifted every
+/// later index by one and made `toggle_task` flip the wrong item.
+fn to_html_with(src: &str, people: &[Mention], api_origin: &str, interactive: bool) -> String {
     let parser = Parser::new_ext(src, render_options());
+    let mut task_index = 0usize;
 
     let mut events: Vec<Event> = Vec::new();
     // Fence info string while inside a fenced block; `None` outside one.
@@ -50,9 +63,15 @@ fn to_html(src: &str, people: &[Mention], api_origin: &str) -> String {
         match event {
             // MAPPS-741: a heading carries an id derived from its text, so a
             // table of contents can point at it and the id survives any edit
-            // that leaves the heading alone. Ammonia prefixes it (`kb-`) on
-            // the way out, along with any `#fragment` link, so an author's
-            // own `id` cannot collide with the page chrome.
+            // that leaves the heading alone.
+            //
+            // MAPPS-1241: the id is written here already
+            // prefixed, as `heading_dom_id(slug)`. It used to be the bare slug,
+            // left for ammonia's `id_prefix` to prefix, but ammonia skips an id
+            // that already starts with the prefix, so a heading slugged
+            // `kb-setup` kept `kb-setup` while the table of contents and every
+            // fragment link named `kb-kb-setup`. Ammonia still prefixes an id
+            // an author writes in raw HTML, so that cannot name page chrome.
             Event::Start(Tag::Heading {
                 level,
                 classes,
@@ -61,7 +80,7 @@ fn to_html(src: &str, people: &[Mention], api_origin: &str) -> String {
             }) => {
                 events.push(Event::Start(Tag::Heading {
                     level,
-                    id: heading_ids.next().map(Into::into),
+                    id: heading_ids.next().map(|slug| heading_dom_id(&slug).into()),
                     classes,
                     attrs,
                 }));
@@ -125,6 +144,16 @@ fn to_html(src: &str, people: &[Mention], api_origin: &str) -> String {
             Event::Text(ref text) if link_depth == 0 => {
                 autolink_into(text, people, &mut events);
             }
+            // The shape pulldown writes for a marker, minus `disabled`, plus
+            // the index.
+            Event::TaskListMarker(checked) if interactive => {
+                let checked = if checked { " checked=\"\"" } else { "" };
+                events.push(Event::Html(
+                    format!("<input data-ti=\"{task_index}\" type=\"checkbox\"{checked}/>\n")
+                        .into(),
+                ));
+                task_index += 1;
+            }
             other => events.push(other),
         }
     }
@@ -140,8 +169,12 @@ fn to_html(src: &str, people: &[Mention], api_origin: &str) -> String {
 /// exactly this on the article page (read from the DOM); the editor runs it
 /// over the unsaved body to say, before the save, which anchors the edit
 /// will orphan, with no DOM in the loop and the same answer on both hosts.
-pub fn rendered_text(src: &str) -> String {
-    let html = render_markdown(src);
+///
+/// MAPPS-1241: `people` is the same mention directory the page renders with,
+/// so a resolved `@handle` reads as the chip's `@<display name>` here too. With
+/// none, every mention stays its handle, which is what the page shows then.
+pub fn rendered_text(src: &str, people: &[Mention]) -> String {
+    let html = render_markdown_with_mentions(src, people, "");
     let mut out = String::with_capacity(html.len());
     let mut chars = html.chars().peekable();
     while let Some(c) = chars.next() {
@@ -217,9 +250,11 @@ pub struct Heading {
     pub slug: String,
 }
 
-/// The prefix ammonia puts on every `id` in rendered Markdown (MAPPS-741),
-/// and so on every `#fragment` link, so nothing an author writes can name
-/// an element of the page chrome.
+/// The prefix every `id` in rendered Markdown carries (MAPPS-741), so nothing
+/// an author writes can name an element of the page chrome. The renderer
+/// writes it on heading ids and on `#fragment` links itself (`to_html`);
+/// ammonia's `id_prefix` adds it to any other id (raw HTML) and never
+/// touches an `href` (MAPPS-1241).
 pub const ID_PREFIX: &str = "kb-";
 
 /// The id a heading has in the rendered document.
@@ -534,10 +569,11 @@ fn sanitize(html: &str) -> String {
     static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
         let mut builder = ammonia::Builder::default();
         builder
-            // MAPPS-741: headings carry the id the renderer gave them, and only
-            // headings carry an id at all. `id_prefix` puts `kb-` on every id
-            // AND on every `#fragment` href, so an in-article link keeps working
-            // and an author-written id cannot name a page element.
+            // MAPPS-741: headings carry the id the renderer gave them (already
+            // prefixed), and only headings carry an id at all. `id_prefix` puts
+            // `kb-` on any id that lacks it, so an author-written id cannot name
+            // a page element. It rewrites ids only, never an `href`: the
+            // renderer moves `#fragment` links itself (MAPPS-1241).
             .add_tag_attributes("h1", ["id"])
             .add_tag_attributes("h2", ["id"])
             .add_tag_attributes("h3", ["id"])
@@ -564,7 +600,7 @@ fn sanitize(html: &str) -> String {
             // The language marker pulldown puts on a fenced block. Kept for the
             // block styling and so a reader can see what the fence claimed, even
             // though the colours come from the spans inside.
-            .add_allowed_classes("code", LANGUAGE_CLASSES.iter().copied())
+            .add_allowed_classes("code", LANGUAGE_CLASSES.iter().map(String::as_str))
             .add_tag_attributes("span", ["style"])
             // MAPPS-573: authors colour text with `<span style="color:red">`, which
             // the default allowlist dropped entirely. Blanket `style` is a CSS
@@ -584,27 +620,17 @@ fn sanitize(html: &str) -> String {
     SANITIZER.clean(html).to_string()
 }
 
-/// `class` values permitted on a fenced code block: `language-<name>` for the
-/// languages the highlighter knows, plus the plain marker pulldown emits.
-static LANGUAGE_CLASSES: &[&str] = &[
-    "language-bash",
-    "language-console",
-    "language-diff",
-    "language-ini",
-    "language-js",
-    "language-json",
-    "language-jsonc",
-    "language-patch",
-    "language-python",
-    "language-rust",
-    "language-shell",
-    "language-sql",
-    "language-toml",
-    "language-ts",
-    "language-typescript",
-    "language-yaml",
-    "language-yml",
-];
+/// `class` values permitted on a fenced code block: `language-<name>` for
+/// every fence name the highlighter recognises. Derived from
+/// [`highlight::LANGUAGE_NAMES`] (MAPPS-1241): the hand-kept list here had
+/// drifted, so a fence named `rs`, `py`, `sh`, `javascript` and a dozen
+/// more was coloured but lost its `language-` class in sanitized output.
+static LANGUAGE_CLASSES: LazyLock<Vec<String>> = LazyLock::new(|| {
+    highlight::LANGUAGE_NAMES
+        .iter()
+        .map(|name| format!("language-{name}"))
+        .collect()
+});
 
 /// Accept `color: <value>` and nothing else.
 ///
@@ -662,22 +688,9 @@ pub fn render_markdown_interactive_with_mentions(
     people: &[Mention],
     api_origin: &str,
 ) -> String {
-    // pulldown emits each task checkbox as `<input disabled="" type="checkbox"`
-    // (optionally ` checked=""`). Drop `disabled` to make them clickable, then
-    // tag each in document order with its index.
-    let html = to_html(src, people, api_origin).replace(" disabled=\"\"", "");
-    let needle = "<input type=\"checkbox\"";
-    let mut out = String::with_capacity(html.len());
-    let mut rest = html.as_str();
-    let mut i = 0usize;
-    while let Some(pos) = rest.find(needle) {
-        out.push_str(&rest[..pos]);
-        out.push_str(&format!("<input data-ti=\"{i}\" type=\"checkbox\""));
-        i += 1;
-        rest = &rest[pos + needle.len()..];
-    }
-    out.push_str(rest);
-    sanitize(&out)
+    // Each real task checkbox is emitted clickable and indexed by `to_html_with`;
+    // an author's raw `<input>` passes through untouched (MAPPS-1241).
+    sanitize(&to_html_with(src, people, api_origin, true))
 }
 
 /// Byte offset of the marker char (the space/x/X inside `[ ]`) for every
@@ -773,6 +786,87 @@ pub fn block_index_at(ranges: &[std::ops::Range<usize>], byte_offset: usize) -> 
             .rposition(|r| r.start <= byte_offset)
             .unwrap_or(0),
     )
+}
+
+/// MAPPS-1241: heading ids, fragment links, the comment-anchor text, task
+/// indices and the language classes.
+#[cfg(test)]
+mod mapps_1241_tests {
+    use super::*;
+
+    #[test]
+    fn a_slug_that_starts_with_the_prefix_keeps_one_id_everywhere() {
+        let src = "# KB setup\n\nSee [setup](#kb-setup).\n";
+        let h = &headings(src)[0];
+        assert_eq!(h.slug, "kb-setup");
+        let id = heading_dom_id(&h.slug);
+        let html = render_markdown(src);
+        assert!(
+            html.contains(&format!("id=\"{id}\"")),
+            "the document id is heading_dom_id(slug): {html}"
+        );
+        assert!(
+            html.contains(&format!("href=\"#{id}\"")),
+            "the fragment link names it: {html}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_heading_and_a_raw_html_id_are_still_prefixed() {
+        let html = render_markdown("## Notes\n\n<h3 id=\"chrome\">raw</h3>\n");
+        assert!(html.contains("id=\"kb-notes\""), "{html}");
+        assert!(
+            html.contains("id=\"kb-chrome\""),
+            "ammonia still prefixes an author id: {html}"
+        );
+    }
+
+    #[test]
+    fn the_comments_say_the_renderer_moves_fragment_links() {
+        let src = include_str!("markdown.rs");
+        let code = &src[..src.find("mod mapps_1241_tests").unwrap()];
+        assert!(!code.contains(concat!("AND on every `#fragment`", " href")));
+        assert!(!code.contains(concat!("and so on every `#fragment`", " link")));
+        assert!(code.contains("touches an `href`"));
+        assert!(code.contains("renderer moves `#fragment` links itself"));
+    }
+
+    #[test]
+    fn rendered_text_reads_a_mention_as_the_page_shows_it() {
+        let people = vec![Mention {
+            id: "u-alex".into(),
+            display: "Alex Ng".into(),
+            handle: "alex".into(),
+        }];
+        assert!(rendered_text("ask @alex", &people).contains("@Alex Ng"));
+        assert!(rendered_text("ask @alex", &[]).contains("@alex"));
+    }
+
+    #[test]
+    fn a_raw_checkbox_does_not_shift_the_task_indices() {
+        let src = "<input type=\"checkbox\">\n\n- [ ] first\n- [x] second\n";
+        let out = render_markdown_interactive(src);
+        assert_eq!(count_tasks(src), 2);
+        assert_eq!(out.matches("data-ti=").count(), 2, "{out}");
+        let first = out.find("data-ti=\"0\"").expect("index 0");
+        let second = out.find("data-ti=\"1\"").expect("index 1");
+        assert!(
+            first < out.find("first").unwrap() && second < out.find("second").unwrap(),
+            "{out}"
+        );
+        assert!(!out.contains("data-ti=\"2\""), "{out}");
+    }
+
+    #[test]
+    fn every_language_the_highlighter_knows_keeps_its_class() {
+        for name in highlight::LANGUAGE_NAMES {
+            let html = render_markdown(&format!("```{name}\nx\n```\n"));
+            assert!(
+                html.contains(&format!("class=\"language-{name}\"")),
+                "{name}: {html}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1125,14 +1219,14 @@ mod tests {
     fn directory() -> Vec<Mention> {
         vec![
             Mention {
-                id: "u-long".to_string(),
-                display: "Long Le".to_string(),
-                handle: "long".to_string(),
+                id: "u-alex".to_string(),
+                display: "Alex Ng".to_string(),
+                handle: "alex".to_string(),
             },
             Mention {
-                id: "u-nate".to_string(),
-                display: "Nate Fisher".to_string(),
-                handle: "nate".to_string(),
+                id: "u-dana".to_string(),
+                display: "Dana Smith".to_string(),
+                handle: "dana".to_string(),
             },
         ]
     }
@@ -1144,17 +1238,17 @@ mod tests {
     /// It did not, so on a split-origin deployment the browser asked the SPA
     /// host, Caddy's SPA fallback answered `index.html` with a 200, and the
     /// `<img>` drew the broken-image box with the alt text under it. Verified
-    /// against staging while diagnosing: `msp.a8n.systems` answered that path
-    /// `200 text/html` and `api.msp.a8n.systems` answered it `404 application/json`.
+    /// against staging while diagnosing: `app.example.test` answered that path
+    /// `200 text/html` and `api.example.test` answered it `404 application/json`.
     #[test]
     fn an_attachment_path_is_joined_onto_the_api_origin() {
         let out = render_markdown_with_mentions(
             "![a screenshot](/api/v1/public/kb/attachments/abc)",
             &[],
-            "https://api.msp.a8n.systems",
+            "https://api.example.test",
         );
         assert!(
-            out.contains(r#"src="https://api.msp.a8n.systems/api/v1/public/kb/attachments/abc""#),
+            out.contains(r#"src="https://api.example.test/api/v1/public/kb/attachments/abc""#),
             "the image is addressed to the API, not to whatever host serves the SPA: {out}"
         );
         assert!(out.contains(r#"alt="a screenshot""#), "{out}");
@@ -1179,7 +1273,7 @@ mod tests {
     /// absolute URL is left alone.
     #[test]
     fn only_an_api_path_is_rewritten() {
-        let origin = "https://api.msp.a8n.systems";
+        let origin = "https://api.example.test";
         for (src, expect) in [
             ("![x](/assets/diagram.png)", r#"src="/assets/diagram.png""#),
             (
@@ -1199,11 +1293,8 @@ mod tests {
     /// the regex-over-finished-HTML mistake the module header warns about.
     #[test]
     fn a_link_destination_is_not_touched() {
-        let out = render_markdown_with_mentions(
-            "[docs](/api/v1/docs)",
-            &[],
-            "https://api.msp.a8n.systems",
-        );
+        let out =
+            render_markdown_with_mentions("[docs](/api/v1/docs)", &[], "https://api.example.test");
         assert!(out.contains(r#"href="/api/v1/docs""#), "{out}");
     }
 
@@ -1215,25 +1306,25 @@ mod tests {
         let out = render_markdown_interactive_with_mentions(
             "- [ ] check ![shot](/api/v1/public/kb/attachments/abc)",
             &[],
-            "https://api.msp.a8n.systems",
+            "https://api.example.test",
         );
         assert!(
-            out.contains(r#"src="https://api.msp.a8n.systems/api/v1/public/kb/attachments/abc""#),
+            out.contains(r#"src="https://api.example.test/api/v1/public/kb/attachments/abc""#),
             "{out}"
         );
     }
 
     #[test]
     fn a_resolved_mention_becomes_a_chip_naming_the_person() {
-        let out = render_markdown_with_mentions("ask @long about it", &directory(), "");
+        let out = render_markdown_with_mentions("ask @alex about it", &directory(), "");
         assert!(out.contains(r#"class="mention""#), "{out}");
         assert!(
-            out.contains(r#"data-mention="u-long""#),
+            out.contains(r#"data-mention="u-alex""#),
             "the id rides along: {out}"
         );
-        assert!(out.contains("@Long Le"), "the chip shows the person: {out}");
+        assert!(out.contains("@Alex Ng"), "the chip shows the person: {out}");
         assert!(
-            out.contains(r#"title="Long Le (@long)""#),
+            out.contains(r#"title="Alex Ng (@alex)""#),
             "hover answers who this is: {out}"
         );
     }
@@ -1253,21 +1344,21 @@ mod tests {
     fn an_at_in_prose_code_or_a_link_is_left_alone() {
         let people = directory();
 
-        // An email address in prose. `@niceguyit.com` must not resolve, and the
+        // An email address in prose. `@example.com` must not resolve, and the
         // address must survive whole.
-        let email = render_markdown_with_mentions("mail long@niceguyit.com today", &people, "");
+        let email = render_markdown_with_mentions("mail alex@example.com today", &people, "");
         assert!(!email.contains("mention"), "{email}");
-        assert!(email.contains("long@niceguyit.com"), "{email}");
+        assert!(email.contains("alex@example.com"), "{email}");
 
         // Inside code, both kinds.
-        let code = render_markdown_with_mentions("`@long`", &people, "");
+        let code = render_markdown_with_mentions("`@alex`", &people, "");
         assert!(!code.contains("mention"), "{code}");
         let fenced =
             render_markdown_with_mentions("```python\n@decorator\ndef f(): pass\n```", &people, "");
         assert!(!fenced.contains("mention"), "{fenced}");
 
         // Inside an existing link's text.
-        let linked = render_markdown_with_mentions("[@long](https://x.test)", &people, "");
+        let linked = render_markdown_with_mentions("[@alex](https://x.test)", &people, "");
         assert!(!linked.contains("mention"), "{linked}");
         assert!(linked.contains(r#"href="https://x.test""#), "{linked}");
     }
@@ -1277,12 +1368,12 @@ mod tests {
     #[test]
     fn a_mention_and_a_url_in_the_same_text_both_render() {
         let out = render_markdown_with_mentions(
-            "see https://x.test/a then ask @nate about it",
+            "see https://x.test/a then ask @dana about it",
             &directory(),
             "",
         );
         assert!(out.contains(r#"href="https://x.test/a""#), "{out}");
-        assert!(out.contains(r#"data-mention="u-nate""#), "{out}");
+        assert!(out.contains(r#"data-mention="u-dana""#), "{out}");
         // And in the order they appear.
         let link_at = out.find("href=").expect("link renders");
         let chip_at = out.find("data-mention=").expect("chip renders");
@@ -1314,7 +1405,7 @@ mod tests {
     /// loses nothing.
     #[test]
     fn an_empty_directory_changes_nothing() {
-        let src = "ask @long and see https://x.test";
+        let src = "ask @alex and see https://x.test";
         assert_eq!(
             render_markdown_with_mentions(src, &[], ""),
             render_markdown(src)
@@ -1355,13 +1446,13 @@ mod reported_article {
 
 Features
 
-* [ ] <span style="color:red">**REST API**</span> - @niceguyit
+* [ ] <span style="color:red">**REST API**</span> - @acmeworks
     - [ ] Secrets and tokens stored in Infisical
 * [x] Ticketing. **Built** (PSA-19).
 
 # Build status
 
-Verified by reading code on `main`: mokosh-server `bfeaf92e`. See https://dev.a8n.run/psa-systems for more.
+Verified by reading code on `main`: mokosh-server `bfeaf92e`. See https://app.example.test/acme for more.
 
 | Issue | Area | Status |
 |---|---|---|
@@ -1381,7 +1472,7 @@ export TOKEN="$MOKOSH_TOKEN"
         assert_eq!(out.matches("type=\"checkbox\"").count(), 3, "{out}");
         assert!(out.contains("<code>main</code>"), "inline code: {out}");
         assert!(
-            out.contains(r#"<a href="https://dev.a8n.run/psa-systems""#),
+            out.contains(r#"<a href="https://app.example.test/acme""#),
             "bare URL autolinked: {out}"
         );
         assert!(
@@ -1395,7 +1486,7 @@ export TOKEN="$MOKOSH_TOKEN"
         assert!(out.contains(r#"<code class="language-bash""#), "{out}");
     }
 
-    /// MAPPS-578 against the same article. `@niceguyit` is the mention it
+    /// MAPPS-578 against the same article. `@acmeworks` is the mention it
     /// actually carries, and whether it resolves is a property of the tenant's
     /// directory, not of the text. Both outcomes are pinned, because the
     /// unresolved one is the half that must not decorate anything.
@@ -1404,7 +1495,7 @@ export TOKEN="$MOKOSH_TOKEN"
         let known = vec![Mention {
             id: "u-ngit".to_string(),
             display: "Nice Guy IT".to_string(),
-            handle: "niceguyit".to_string(),
+            handle: "acmeworks".to_string(),
         }];
         let resolved = render_markdown_with_mentions(SRC, &known, "");
         assert!(
@@ -1422,7 +1513,7 @@ export TOKEN="$MOKOSH_TOKEN"
         for directory in [&stranger[..], &[][..]] {
             let out = render_markdown_with_mentions(SRC, directory, "");
             assert!(!out.contains("data-mention"), "no chip: {out}");
-            assert!(out.contains("@niceguyit"), "text unchanged: {out}");
+            assert!(out.contains("@acmeworks"), "text unchanged: {out}");
         }
 
         // The article's own inline-code and fenced content is never touched,
@@ -1538,7 +1629,10 @@ mod rendered_text_tests {
 
     #[test]
     fn tags_go_and_entities_come_back() {
-        let text = rendered_text("# Title\n\nA **bold** step & a <b>tag</b>.\n\n- one\n- two\n");
+        let text = rendered_text(
+            "# Title\n\nA **bold** step & a <b>tag</b>.\n\n- one\n- two\n",
+            &[],
+        );
         assert!(text.contains("Title"));
         assert!(text.contains("A bold step & a tag."), "{text:?}");
         assert!(!text.contains('<'), "{text:?}");
@@ -1547,7 +1641,7 @@ mod rendered_text_tests {
 
     #[test]
     fn a_literal_less_than_survives_as_text() {
-        let text = rendered_text("3 < 4 and \"quoted\"\n");
+        let text = rendered_text("3 < 4 and \"quoted\"\n", &[]);
         assert!(text.contains("3 < 4"), "{text:?}");
         assert!(text.contains("\"quoted\""), "{text:?}");
     }
