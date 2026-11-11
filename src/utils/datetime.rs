@@ -7,9 +7,12 @@
 //! renders it through the format string stored on
 //! `users.date_format_string`. When that field is `None` we fall back to
 //! a locale rendering, but still pinned to the profile timezone so the
-//! profile setting takes effect on every screen. Timezone resolution
-//! falls back to UTC only when there is no signed-in user or the stored
-//! zone is not a valid IANA name (MAPPS-208).
+//! profile setting takes effect on every screen. With no signed-in user,
+//! or a saved zone that is unset, a placeholder or not a valid IANA name,
+//! the zone is the one the browser (or OS) reports, through
+//! [`effective_timezone`] (MAPPS-969); UTC is the last resort, when that
+//! detection fails or there is no UI runtime at all (MAPPS-208,
+//! MAPPS-1240 corrected this paragraph, which said UTC).
 //!
 //! The format grammar matches the dominant moment.js / day.js
 //! grammar so the help text we link to is standard and users moving
@@ -258,11 +261,18 @@ fn locale_fallback(dt: DateTime<Utc>, tz: Tz) -> String {
             dt.timestamp_millis() as f64
         ));
         let opts = js_sys::Object::new();
-        let _ = js_sys::Reflect::set(
+        // MAPPS-1240: without the option the string renders in the browser
+        // zone, not the profile one, so a failure is logged.
+        if let Err(e) = js_sys::Reflect::set(
             &opts,
             &wasm_bindgen::JsValue::from_str("timeZone"),
             &wasm_bindgen::JsValue::from_str(tz.name()),
-        );
+        ) {
+            tracing::warn!(
+                "could not pin the date rendering to {}; it shows in the browser zone: {e:?}",
+                tz.name()
+            );
+        }
         let formatted: String = date.to_locale_string("en-US", opts.as_ref()).into();
         if formatted.is_empty() {
             dt.with_timezone(&tz)
@@ -441,9 +451,12 @@ pub fn user_format_pref() -> Option<String> {
 /// MAPPS-208: resolve the active user's IANA timezone off the
 /// AuthContext and parse it to a [`Tz`]. Mirrors [`user_format_pref`]
 /// so callers do not have to thread the value through their signature.
-/// Falls back to UTC when there is no context, no signed-in user; the
-/// placeholder / unparseable arms land through [`effective_timezone`]
-/// so the form's auto-detect pledge matches what the renderer uses.
+/// With no context or no signed-in user the saved zone reads as empty, and
+/// that, like the placeholder and unparseable arms, resolves through
+/// [`effective_timezone`] to the detected browser or OS zone, so the
+/// form's auto-detect pledge matches what the renderer uses. UTC only when
+/// detection fails, or outside a Dioxus runtime (MAPPS-1240: this said a
+/// signed-out caller got UTC).
 ///
 /// Not a hook, for the reason given on [`user_format_pref`] (MAPPS-1127).
 pub fn user_timezone() -> Tz {
@@ -526,6 +539,37 @@ mod relative_label_tests {
         assert_eq!(relative_label(now - Duration::days(45), now), "1 month ago");
         assert_eq!(relative_label(now - Duration::days(400), now), "1 year ago");
         assert_eq!(relative_label(now + Duration::days(2), now), "in 2 days");
+    }
+}
+
+/// MAPPS-1240: the timezone docs match `effective_timezone`, and a failed
+/// `timeZone` option is logged.
+#[cfg(test)]
+mod mapps_1240_tests {
+    #[test]
+    fn the_docs_say_signed_out_uses_the_detected_zone() {
+        let src = include_str!("datetime.rs");
+        let code = &src[..src.find("mod mapps_1240_tests").unwrap()];
+        assert!(!code.contains(concat!(
+            "falls back to UTC only when there is no",
+            " signed-in user"
+        )));
+        assert!(!code.contains(concat!(
+            "Falls back to UTC when there is no context,",
+            " no signed-in user;"
+        )));
+        assert!(code.contains("the zone is the one the browser (or OS) reports"));
+    }
+
+    #[test]
+    fn a_failed_time_zone_option_is_logged() {
+        let src = include_str!("datetime.rs");
+        let code = &src[..src.find("mod mapps_1240_tests").unwrap()];
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(!flat.contains("let _ = js_sys::Reflect::set( &opts,"));
+        assert!(
+            flat.contains("could not pin the date rendering to {}; it shows in the browser zone")
+        );
     }
 }
 
