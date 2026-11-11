@@ -25,6 +25,7 @@ const PER_PAGE: usize = 25;
 /// MAPPS-517: entries rendered in the ticket journal. The stream merges three
 /// sources, each read in full, so a long-running ticket would otherwise render
 /// hundreds of list items; the count of the rest is stated under the stream.
+// SPEC-9.3.2: journal shows at most 50 entries with a "Showing N of M" notice.
 const JOURNAL_LIMIT: usize = 50;
 
 /// Shown under the email checkbox on a public note. States the one thing that
@@ -39,6 +40,7 @@ use crate::Route;
 /// encoding. Larger files are rejected with an inline copy string so the
 /// SPA never fires a `POST /tickets/{id}/attachments` that the server
 /// would slice down anyway. 5 MB, in bytes.
+// SPEC-9.3.3: client rejects an attachment over 5 MiB before upload.
 pub(crate) const TICKET_ATTACHMENT_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
 /// MAPPS-607: should the Reopen button render? Split out of the render
@@ -51,6 +53,7 @@ pub(crate) const TICKET_ATTACHMENT_MAX_BYTES: u64 = 5 * 1024 * 1024;
 /// AND-ed on top so a status match alone doesn't render the button for
 /// a contact who lacks `tickets:reopen`; staff sessions bypass the cap
 /// unconditionally via `use_capability`.
+// SPEC-9.4.1: status match AND cap check; staff bypass the cap via use_capability at the call site.
 pub(crate) fn should_show_reopen(status_name: &str, has_reopen_cap: bool) -> bool {
     if !has_reopen_cap {
         return false;
@@ -83,6 +86,7 @@ pub(crate) fn should_show_reopen(status_name: &str, has_reopen_cap: bool) -> boo
 /// Split out of the render body so the four combinations are unit-testable
 /// on the native `cargo test --lib` target (touching `use_capability`
 /// from here would panic without the wasm environment).
+// SPEC-9.4.2: a contact may edit only their own ticket, and only with the edit-own capability.
 pub(crate) fn contact_can_edit_ticket(
     reporter_contact_id: Option<uuid::Uuid>,
     my_contact_id: Option<uuid::Uuid>,
@@ -437,6 +441,8 @@ struct RemoteNote {
 // ============================================================================
 
 /// `POST /api/v1/tickets`, sent by the New Ticket form.
+// SPEC-9.2.3: sends exactly these fields; all other create-contract fields are
+// deliberately not offered by this form (see mapps686_shared_dto_tests).
 #[derive(Debug, Serialize)]
 struct CreateTicketBody {
     title: String,
@@ -464,6 +470,8 @@ struct CreateTicketBody {
 /// Every field is omitted rather than sent as null unless the editor that
 /// fired set it, so a status change carries `status_id` alone: the same wire
 /// bytes the hand-built JSON literals this replaced produced.
+// SPEC-9.2.4: sends exactly these fields; all other update-contract fields
+// are deliberately not editable from this page (see mapps686_shared_dto_tests).
 #[derive(Debug, Default, Serialize)]
 struct UpdateTicketBody {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -477,6 +485,7 @@ struct UpdateTicketBody {
     /// Doubled because clearing is a real value here: absent leaves the
     /// assignee alone, `null` is the Unassign. The shared DTO types the inner
     /// half; the outer half is this page's own presence flag.
+    // SPEC-9.2.2: omitted = leave unchanged, Some(None) = explicit clear/unassign.
     #[serde(skip_serializing_if = "Option::is_none")]
     assigned_to_id: Option<Option<uuid::Uuid>>,
     /// The shared DTO is itself a double `Option` (PMS-344's clearable FK) and
@@ -550,6 +559,7 @@ struct UpdateNoteBody {
 /// time entry. The permission half: the author, or an admin, which is the
 /// server's own default policy.
 ///
+// SPEC-9.4.8: an emailed public note is frozen for everyone, admin included.
 /// The intrinsic row-state gates live in `mokosh_types::tickets::note_is_editable`
 /// (shared with mokosh-server's PMS-974 enforcement; see MAPPS-891 and
 /// mokosh-server #942). This wrapper owns the SPA-specific bits that are not
@@ -557,10 +567,12 @@ struct UpdateNoteBody {
 /// the string-to-`NoteType` decode (an unknown kind means no, since offering
 /// a control that cannot work is worse than hiding one that could), and the
 /// `admin OR author` role resolution the SPA computes rather than fetches.
+// SPEC-9.4.7: server's can_edit answer wins; otherwise fall back to role/type rules below.
 fn note_is_editable(note: &RemoteNote, viewer: Option<uuid::Uuid>, viewer_is_admin: bool) -> bool {
     if let Some(server) = note.can_edit {
         return server;
     }
+    // SPEC-9.2.7: note_type decodes as an open string, not a closed enum; unknown kinds are not editable.
     let Some(note_type) = NoteType::from_str(&note.note_type) else {
         return false;
     };
@@ -596,6 +608,7 @@ fn note_structured_lines(note: &RemoteNote) -> Vec<(&'static str, String)> {
         // "Not needed", indistinguishable from a real `false`. Branch
         // explicitly on the three cases so an invalid payload reads as
         // an explicit, logged failure rather than a plausible value.
+        // SPEC-9.2.6: three cases only; Not needed / Needed-with-details / Invalid follow-up data.
         match follow_up.get("needed") {
             Some(serde_json::Value::Bool(needed)) => {
                 let mut value = if *needed {
@@ -628,6 +641,7 @@ fn note_structured_lines(note: &RemoteNote) -> Vec<(&'static str, String)> {
 /// `DELETE /tickets/{id}` (`mokosh-server/src/modules/tickets/routes.rs`),
 /// which allows `super_admin`/`admin`/`manager`. Returns the disabled state
 /// and, when disabled, the reason to show in the button's title.
+// SPEC-9.4.3: mirrors server's manager-or-above floor on ticket delete.
 fn ticket_delete_gate(
     deleting: bool,
     can_mutate: bool,
@@ -757,6 +771,7 @@ struct RemoteTimeEntry {
 
 /// Mirror of the server `SlaStatus` enum (snake_case wire form). Defaults
 /// to `NotApplicable` so a ticket with no SLA configured still decodes.
+// SPEC-9.2.1: unmatched/absent SLA status decodes to NotApplicable, not an error.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SlaStatus {
@@ -1085,6 +1100,7 @@ fn history_changes(entry: &HistoryEntry) -> Vec<ChangeLine> {
 /// anything no source records - attachments and approvals write no audit row
 /// against the ticket - which is why the journal says so on screen instead of
 /// reading as complete.
+// SPEC-9.9.1: footer explicitly states attachments/approvals are excluded from the journal.
 fn build_journal(
     notes: &[RemoteNote],
     history: &[HistoryEntry],
@@ -1182,6 +1198,7 @@ fn build_journal(
     // key costs nothing, and `clippy::unnecessary_sort_by` rejects the
     // comparator form. Both are stable sorts, so entries sharing a timestamp
     // keep the order they were pushed in.
+    // SPEC-9.6.4: stable sort by Reverse(timestamp) keeps same-timestamp entries in push order.
     entries.sort_by_key(|e| std::cmp::Reverse(e.at));
     entries
 }
@@ -1331,6 +1348,7 @@ fn ticket_sort_dir_for(
 /// page 3 of a different ordering - a jump to unrelated rows that reads as a
 /// bug. `contacts.rs::toggle_sort` has taken the page for the same reason since
 /// it was paged.
+// SPEC-9.1.4: changing the sort column resets the list to page 1.
 fn toggle_ticket_sort(
     current: &mut Signal<Option<(TicketSortKey, SortDirection)>>,
     key: TicketSortKey,
@@ -1422,6 +1440,7 @@ struct RenameViewBody {
 /// otherwise hand back page N of the NEW results, which can be past the end of
 /// a smaller result set and render an empty list even though page one has
 /// matches.
+// SPEC-9.1.4: changing the search text resets the list to page 1.
 fn set_ticket_search(search: &mut Signal<String>, page: &mut Signal<usize>, value: String) {
     search.set(value);
     page.set(1);
@@ -1498,6 +1517,7 @@ mod mapps837_search_resets_page_tests {
 /// invoices could neither report a problem in the portal nor tell that they
 /// could ask to.
 #[component]
+// SPEC-9.1.1: gate the list body on tickets:read; render nothing usable otherwise.
 pub fn TicketListPage() -> Element {
     let contact_can_read = crate::hooks::capabilities::use_capability("tickets:read");
     if crate::hooks::fetch::api::has_contact_session() && !contact_can_read {
@@ -1579,6 +1599,8 @@ fn TicketListBody() -> Element {
     // back. Empty fetch (offline / 403) falls back to no options so the
     // filter just renders the "All Statuses" placeholder, which is
     // strictly better than fabricating slugs.
+    // SPEC-9.1.2: each filter-option fetch degrades independently to an empty
+    // list on its own failure, rather than failing the whole filter card.
     let status_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::list_or_empty(
@@ -1641,7 +1663,9 @@ fn TicketListBody() -> Element {
     // MAPPS-855: debounce the search dependency so a burst of keystrokes
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke.
+    // SPEC-9.1.3: debounce the search box by 300ms before it joins the list request.
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
+    // SPEC-9.3.1: list pages at PER_PAGE (25) rows per page.
     let mut tickets_resource = use_resource(move || {
         let q = search_debounced.read().trim().to_string();
         let status_id = status_filter.read().clone();
@@ -1760,6 +1784,7 @@ fn TicketListBody() -> Element {
             save_error.set("Enter a view name.".to_string());
             return;
         }
+        // SPEC-9.3.4: saved view names capped at 100 characters on submit.
         if name.chars().count() > 100 {
             save_error.set("View names are capped at 100 characters.".to_string());
             return;
@@ -1777,6 +1802,7 @@ fn TicketListBody() -> Element {
         saving_view.set(true);
         save_error.set(String::new());
         spawn(async move {
+            // SPEC-9.8.1: the network call compiles to a no-op without the app feature.
             #[cfg(feature = "app")]
             {
                 use crate::hooks::fetch::api::ApiError;
@@ -2113,6 +2139,7 @@ fn TicketListBody() -> Element {
                     }
                 }
                 div { class: "flex gap-4",
+                    // SPEC-9.1.4: changing a filter resets the list to page 1.
                     Select {
                         name: "status",
                         options: status_options,
@@ -2322,6 +2349,7 @@ fn TicketListBody() -> Element {
                 disabled: bulk_delete_running() || !can_mutate,
                 title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                 onclick: move |_| {
+                    // SPEC-9.1.6: snapshot selected ids at confirm-dialog open time.
                     // MAPPS-310: stash the snapshot + open the
                     // confirmation dialog. The actual delete fanout
                     // runs from the dialog's confirm handler so an
@@ -2372,6 +2400,7 @@ fn TicketListBody() -> Element {
                                 });
                                 let results = join_all(futs).await;
                                 let failures = results.iter().filter(|r| r.is_err()).count();
+                                // SPEC-9.5.4: one combined success/partial-failure toast, not one per ticket.
                                 if failures == 0 {
                                     crate::hooks::toast::push_toast(
                                         crate::components::AlertType::Success,
@@ -2496,6 +2525,7 @@ fn TicketListBody() -> Element {
                             actions: rsx! {
                                 Button {
                                     variant: ButtonVariant::Secondary,
+                                    // SPEC-9.1.5: clears status, priority, and queue filters together.
                                     onclick: move |_| {
                                         set_ticket_search(&mut search, &mut page, String::new());
                                         status_filter.set(String::new());
@@ -2645,6 +2675,7 @@ struct CompanyPrefill {
     name: String,
 }
 
+// SPEC-9.1.7: seed the create form's Company field from the URL query string.
 fn read_company_prefill_from_url() -> CompanyPrefill {
     #[cfg(feature = "app")]
     {
@@ -2694,6 +2725,7 @@ struct KbArticlePrefill {
     url: String,
 }
 
+// SPEC-9.1.7: seed the create form's Description field from a KB-article prefill.
 fn read_kb_prefill_from_url() -> KbArticlePrefill {
     #[cfg(feature = "app")]
     {
@@ -2886,6 +2918,8 @@ pub fn TicketNewPage() -> Element {
     // every time the resource transitions to Ready, but a non-empty
     // priority_id signal short-circuits so an in-progress user selection
     // is never clobbered by a late-arriving fetch.
+    // SPEC-9.1.7: auto-select the default priority only while the field is
+    // still empty, so a late-arriving fetch never overwrites a user pick.
     use_effect(move || {
         if !priority_id.read().is_empty() {
             return;
@@ -3118,6 +3152,9 @@ pub fn TicketNewPage() -> Element {
                         });
                     }
                     Err(err) => {
+                        // SPEC-9.5.5: route a server field error to title,
+                        // description, or company in that priority order
+                        // before falling back to the generic banner.
                         // Surface the failure in the form and keep it
                         // mounted so the user can retry without losing
                         // their text. Route a server-flagged Title
@@ -3275,6 +3312,8 @@ pub fn TicketNewPage() -> Element {
                     }
                 }
 
+                // SPEC-9.1.12: every Markdown-bearing field uses the shared editor,
+                // never a bare text area.
                 // MAPPS-592: the same field as the edit modal's, so it gets the
                 // same editor. A description written here is rendered as
                 // Markdown from the moment the ticket exists.
@@ -3383,6 +3422,7 @@ pub fn TicketNewPage() -> Element {
                 // dropdown component fed by GET /api/v1/teams is filed
                 // as a follow-up. Personal tenants hide the field
                 // entirely per Q4 default.
+                // SPEC-9.1.8: the Team field is hidden entirely, not disabled, for a personal tenant.
                 if !crate::hooks::use_auth().read().is_personal_tenant() {
                     Input {
                         name: "team_id",
@@ -3458,6 +3498,7 @@ fn ticket_upload_help() -> String {
 /// the same action the toolbar's URL field takes, so an uploaded image and a
 /// linked one land identically. The server re-checks type and size; the
 /// check here only spares the author a five-megabyte round trip.
+// SPEC-9.7.2: inline image upload posts to its own route, distinct from the whole-file attachment endpoint.
 fn start_inline_image_upload(
     ticket_id: String,
     target_id: String,
@@ -3518,6 +3559,7 @@ fn start_inline_image_upload(
 /// because the body calls a long run of hooks and a return ahead of them is
 /// only safe while the answer can never change during a mount.
 #[component]
+// SPEC-9.1.9: gate the detail body on tickets:read; render nothing usable otherwise.
 pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let contact_can_read = crate::hooks::capabilities::use_capability("tickets:read");
     if crate::hooks::fetch::api::has_contact_session() && !contact_can_read {
@@ -3600,6 +3642,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // remains" pin. Contacts never see the note-type selector; the default
     // has to be `public` for them so the inline composer's submit does not
     // post an internal note (mokosh-server prompt 008 rejects it anyway).
+    // SPEC-9.4.5: note composer default type depends on the session plane (staff vs contact).
     let default_note_type = if staff_only { "internal" } else { "public" };
     let mut note_type = use_signal(|| default_note_type.to_string());
     let mut note_content = use_signal(String::new);
@@ -3678,6 +3721,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // and a parent lists its children, both read with the PMS-1368 filter.
     // Keyed on the ticket itself so it follows a navigation between tickets.
     let id_for_family = props.id.clone();
+    // SPEC-9.6.6: branches on parent_ticket_id presence, never fetches both parent and children.
     let family_resource = use_resource(move || {
         let id = id_for_family.clone();
         let parent_id = ticket_resource
@@ -3721,6 +3765,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         .and_then(|t| t.parent_ticket_id)
         .map(|id| id.to_string());
 
+    // SPEC-9.7.1: SLA panel is fetched dual-plane (get_authed_any), reachable from either session.
     let sla_resource = use_resource(move || {
         let id = id_for_sla.clone();
         let _ticket = ticket_resource.read().clone();
@@ -4069,6 +4114,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     // created by editing in the page and is answered here rather than inherited.
     crate::hooks::use_unsaved_guard(editor_dirty.into());
 
+    // SPEC-9.6.2: every hook above runs unconditionally before this first early return.
+    // SPEC-9.5.1: an unreachable server renders "content unavailable", distinct from a real 404 below.
     if ticket_fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Ticket".to_string() }
@@ -4162,9 +4209,11 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     let notes_snap = notes_resource.read_unchecked().clone();
     let notes_failed = matches!(notes_snap, Some(None));
     let notes: Vec<RemoteNote> = notes_snap.flatten().unwrap_or_default();
+    // SPEC-9.6.1: read_unchecked avoids subscribing this render to every resource tick.
     let time_snap = time_resource.read_unchecked().clone();
     let time_failed = matches!(time_snap, Some(None));
     let time_entries: Vec<RemoteTimeEntry> = time_snap.flatten().unwrap_or_default();
+    // SPEC-9.2.5: Time Logged total is always summed from fetched entries, never read off the ticket.
     let total_minutes: i32 = time_entries.iter().map(|e| e.duration_minutes).sum();
     let total_hours_label = format!("{:.1} hours", total_minutes as f64 / 60.0);
 
@@ -4217,6 +4266,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
             // on that verb and verifies the caller is the reporter); staff
             // sessions keep the existing PUT so priority/status/etc callers
             // that share this endpoint shape aren't affected.
+            // SPEC-9.4.6: contact session uses PATCH (title+description only); staff keeps PUT.
             #[cfg(feature = "web")]
             let is_contact = crate::hooks::fetch::api::has_contact_session();
             #[cfg(not(feature = "web"))]
@@ -4304,6 +4354,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
     rsx! {
         PageHeader {
             title: "{header_title}",
+            // SPEC-9.1.10: the title/description editor edits the page content
+            // in place; it never opens as a modal.
             // MAPPS-594: while editing, the title is edited where the title is.
             // The reference in the report does exactly this, and it is what
             // makes an in-page edit read as editing the ticket rather than
@@ -4416,6 +4468,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                             // Clear so re-selecting the same file
                                             // still fires `change` (browsers
                                             // dedupe the identical FileList).
+                                            // SPEC-9.9.2: clear the hidden file input's previous selection before each open.
                                             input.set_value("");
                                             input.click();
                                         }
@@ -4492,6 +4545,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                     let content_type = file
                         .content_type()
                         .unwrap_or_else(|| "application/octet-stream".to_string());
+                    // SPEC-9.7.5: reject an oversized attachment client-side before any upload attempt.
                     let size = file.size();
                     if size > TICKET_ATTACHMENT_MAX_BYTES {
                         attach_error.set("File too large".to_string());
@@ -4808,6 +4862,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     div { class: "flex justify-end gap-2",
                                         Button {
                                             variant: ButtonVariant::Secondary,
+                                            // SPEC-9.1.11: untouched edit closes with no
+                                            // confirmation; a dirty edit shows one first.
                                             onclick: move |_| {
                                                 // Only asks when there is
                                                 // something to lose; a
@@ -4861,6 +4917,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                     let mut tr = ticket_resource;
                                                     let mut hr = history_resource;
                                                     spawn(async move {
+                                                        // SPEC-9.7.6: checkbox toggle saves only the description field; refreshes ticket+history.
                                                         let body = UpdateTicketBody {
                                                             description: Some(new_desc),
                                                             ..Default::default()
@@ -4906,6 +4963,8 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 // which request a ticket belongs to frames everything below
                 // it. Absent for an ordinary ticket, which is nearly all of
                 // them, so the card does not appear at all.
+                // SPEC-9.1.13: family card renders only for a child or a
+                // non-empty parent; an empty-children parent renders no card.
                 match family_resource.read().clone().flatten() {
                     // The id comes from this ticket's own `parent_ticket_id`;
                     // the fetched parent is what supplies its NUMBER, which is
@@ -4960,6 +5019,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                 // have no cap for). Rendering the card only to show
                 // "Could not load approvals" is noise; the workflow is
                 // not one the contact can participate in.
+                // SPEC-9.4.4: a contact session never sees staff approvals; the section is hidden, not disabled.
                 if !crate::hooks::fetch::api::has_contact_session() {
                     ApprovalsSection { entity_id: props.id.clone() }
                 }
@@ -5043,6 +5103,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                             // disabled control on an internal note still tells
                             // the reader that internal commentary is the sort
                             // of thing this app can mail to a customer.
+                            // SPEC-9.4.9: the email checkbox is absent (not disabled) on a non-public note.
                             if note_is_public {
                                 div { class: "flex items-end",
                                     Checkbox {
@@ -5329,6 +5390,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                         // draft of whatever used to be first. A
                                         // note has an id; the other sources are
                                         // identified by when they happened.
+                                        // SPEC-9.6.3: keyed on entry id/timestamp, never on list position.
                                         {
                                             let entry_key = match entry.editable_note {
                                                 Some(id) => id.to_string(),
@@ -5368,6 +5430,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 }
                             }
                         }
+                        // SPEC-9.5.2: a failed journal source degrades gracefully; the gap is listed, not a hard error.
                         if !journal_gaps.is_empty() {
                             p { class: "mt-4 text-xs text-red-600 dark:text-red-400",
                                 "This ticket's {journal_gaps_label} could not be loaded, so the journal is missing entries. Reload the page to try again."
@@ -5411,6 +5474,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                 p { class: "text-xs text-subtle",
                                     "Add a short note explaining what you're asking your MSP to review (1-2000 characters)."
                                 }
+                                // SPEC-9.3.5: approval-request note length is bounded to 1-2000 chars.
                                 Textarea {
                                     name: "request-approval-note",
                                     label: "Note",
@@ -5459,6 +5523,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                                 #[cfg(feature = "web")]
                                                 {
                                                     let body = serde_json::json!({ "note": note_v });
+                                                    // SPEC-9.7.3: contact-facing approval-request endpoint, distinct from the staff approvals endpoint.
                                                     let path = format!("/tickets/{id}/approvals/request");
                                                     match crate::hooks::fetch::api::post_authed_any_typed::<
                                                         serde_json::Value,
@@ -5546,6 +5611,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                                     let save_id = save_id.clone();
                                     spawn(async move {
                                         field_error.set(String::new());
+                                        // SPEC-9.6.5: send only this one changed field; refresh both ticket and history on success.
                                         let body = UpdateTicketBody {
                                             status_id: Some(new_id),
                                             ..Default::default()
@@ -6712,6 +6778,7 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                         view_pref_key: "ticket_note_view_mode".to_string(),
                                         required: true,
                                         rules: vec![Rule::Required],
+                                        // SPEC-9.5.3: note-edit refusal renders inline next to the note, not a toast/banner.
                                         error: edit_error.read().clone(),
                                         value: draft.read().clone(),
                                         people: props.people.clone(),
@@ -6778,6 +6845,8 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                                 // with `#` reads as a heading. The output is
                                 // sanitized either way, and `@handle` now
                                 // resolves (MAPPS-578), which is the upside.
+                                // SPEC-9.1.12: a rendered note displays through the
+                                // shared Markdown renderer, not as preformatted raw text.
                                 div { class: "mt-2 bg-surface-2 rounded-md p-3",
                                     crate::components::Markdown { content: content.clone(), people: Some(props.people.clone()) }
                                 }
@@ -6851,6 +6920,7 @@ struct TicketApprovalRow {
 /// (`target` = ticket | change_request | quote | time_entry), so this
 /// section is parameterised by entity rather than forked per entity.
 /// The defaults keep it a drop-in for its original ticket call site.
+// SPEC-9.7.4: staff approvals endpoint is parameterized by entity segment, not hardcoded to tickets.
 #[derive(Props, Clone, PartialEq)]
 pub struct ApprovalsSectionProps {
     /// The parent entity's id.
@@ -6923,6 +6993,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
         // goes to the form-level banner; `note_invalid` blocks the submit and
         // focuses the approver picker. Runs before `request_submitting` is set,
         // so the bail path leaves it untouched.
+        // SPEC-9.1.14: exactly one of approver_user_id or approver_role must be set.
         let mut guard = FormGuard::new();
         if user_id.is_empty() && role.is_empty() {
             request_error.set("Pick an approver or enter a role.".to_string());
@@ -7005,6 +7076,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                 Button {
                     variant: ButtonVariant::Primary,
                     // MAPPS-357: block requesting an approval while the server is down.
+                    // SPEC-9.1.14: Request approval action is disabled while !can_mutate.
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't request an approval while the server is unreachable".to_string()),
                     onclick: move |_| show_request.set(true),

@@ -133,11 +133,24 @@ async fn read_bytes(file: &web_sys::File) -> Option<Vec<u8>> {
 /// number per byte would cost about four times the transfer for the same image.
 /// `FileReader` produces the standard alphabet, which is what decodes it below.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Debug)]
 struct PastedImage {
     name: String,
     mime: String,
     data: String,
+}
+
+/// What the injected script posts for one paste: the image, or the reason
+/// `FileReader` could not read it. MAPPS-1236: the failure used to stop at
+/// `console.error` inside the webview, where nobody looks, so the author saw
+/// a paste that did nothing; it now reaches the same toast the browser
+/// build shows.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(serde::Deserialize, Debug)]
+#[serde(untagged)]
+enum PasteMessage {
+    Image(PastedImage),
+    Failed { error: String },
 }
 
 /// The desktop renderer runs the UI in a webview, so there is no clipboard to
@@ -179,7 +192,7 @@ pub fn on_paste_image(id: &str, on_file: dioxus::prelude::EventHandler<(String, 
             e.preventDefault(); \
             const reader = new FileReader(); \
             reader.onload = () => dioxus.send({{ name: file.name || 'pasted-image', mime: file.type, data: String(reader.result).split(',')[1] || '' }}); \
-            reader.onerror = () => console.error('the pasted image could not be read', reader.error); \
+            reader.onerror = () => dioxus.send({{ error: String(reader.error) }}); \
             reader.readAsDataURL(file); \
          }}); \
          return 'installed';",
@@ -187,8 +200,15 @@ pub fn on_paste_image(id: &str, on_file: dioxus::prelude::EventHandler<(String, 
     ));
     dioxus::prelude::spawn(async move {
         loop {
-            match eval.recv::<PastedImage>().await {
-                Ok(image) => match STANDARD.decode(&image.data) {
+            match eval.recv::<PasteMessage>().await {
+                Ok(PasteMessage::Failed { error }) => {
+                    tracing::error!("a pasted image could not be read in the webview: {error}");
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Error,
+                        "The pasted image could not be read.",
+                    );
+                }
+                Ok(PasteMessage::Image(image)) => match STANDARD.decode(&image.data) {
                     Ok(bytes) => on_file.call((image.name, image.mime, bytes)),
                     // Nothing else would say why: the paste was intercepted, so
                     // the author sees neither their image nor their text.
@@ -217,6 +237,53 @@ pub fn on_paste_image(id: &str, on_file: dioxus::prelude::EventHandler<(String, 
 /// is the shape of the code rather than its behaviour. Each assertion quotes
 /// the pattern it looks for, so the scan stops at this module or it would match
 /// itself and pass with the feature removed.
+/// MAPPS-1236: the desktop read failure reaches Rust, and both shapes the
+/// script posts decode to the right variant.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod desktop_paste_tests {
+    use super::PasteMessage;
+
+    #[test]
+    fn an_image_message_decodes_as_an_image() {
+        let msg: PasteMessage = serde_json::from_value(
+            serde_json::json!({"name": "a.png", "mime": "image/png", "data": "AQID"}),
+        )
+        .unwrap();
+        let PasteMessage::Image(image) = msg else {
+            panic!("decoded as {msg:?}");
+        };
+        assert_eq!(
+            (
+                image.name.as_str(),
+                image.mime.as_str(),
+                image.data.as_str()
+            ),
+            ("a.png", "image/png", "AQID")
+        );
+    }
+
+    #[test]
+    fn a_read_failure_decodes_as_a_failure() {
+        let msg: PasteMessage =
+            serde_json::from_value(serde_json::json!({"error": "NotReadableError"})).unwrap();
+        assert!(
+            matches!(msg, PasteMessage::Failed { ref error } if error == "NotReadableError"),
+            "{msg:?}"
+        );
+    }
+
+    #[test]
+    fn the_script_sends_the_failure_instead_of_only_logging_it() {
+        let src = include_str!("clipboard.rs");
+        let code = &src[..src.find("mod desktop_paste_tests").expect("this module")];
+        assert!(
+            code.contains("reader.onerror = () => dioxus.send({{ error: String(reader.error) }});")
+        );
+        assert!(!code.contains(concat!("reader.onerror = () => console", ".error")));
+        assert!(code.contains("Ok(PasteMessage::Failed { error }) =>"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     const SRC: &str = include_str!("clipboard.rs");
@@ -328,7 +395,7 @@ mod tests {
              costs about four times the transfer"
         );
         assert!(
-            code.contains("eval.recv::<PastedImage>().await"),
+            code.contains("eval.recv::<PasteMessage>().await"),
             "a spawned task loops on the channel, the MAPPS-511 shape"
         );
         assert!(
