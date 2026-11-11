@@ -1279,6 +1279,102 @@ fn sort_direction_from_param(s: &str) -> Option<SortDirection> {
 
 /// MAPPS-1248: the ticket list and detail page say when something went
 /// wrong instead of quietly showing something else.
+/// MAPPS-1249: the approvals section and the note edit fail visibly, and
+/// the comments describe the code they sit on.
+#[cfg(test)]
+mod mapps_1249_tests {
+    use super::approver_roster_note;
+
+    /// The whole file without this module, which quotes what it checks.
+    fn code() -> String {
+        let src = include_str!("tickets.rs");
+        let start = src.find("mod mapps_1249_tests").unwrap();
+        let end = start + src[start..].find("\n#[cfg(test)]").unwrap();
+        format!("{}{}", &src[..start], &src[end..])
+    }
+
+    fn flat() -> String {
+        code().split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn an_empty_or_loading_roster_is_said_beside_the_picker() {
+        assert!(approver_roster_note(None)
+            .unwrap()
+            .contains("still on their way"));
+        assert!(approver_roster_note(Some(&Vec::new()))
+            .unwrap()
+            .contains("could not be loaded"));
+        let one = vec![crate::hooks::UserRow {
+            id: uuid::Uuid::from_u128(1),
+            ..Default::default()
+        }];
+        assert_eq!(approver_roster_note(Some(&one)), None);
+    }
+
+    #[test]
+    fn an_unreadable_approver_sends_nothing() {
+        let flat = flat();
+        assert!(!flat.contains("if let Ok(u) = uuid::Uuid::parse_str(&user_id) {"));
+        let guard = flat
+            .find("the approver id {user_id:?} is not a UUID")
+            .expect("logged");
+        let armed = flat[guard..]
+            .find("request_submitting.set(true);")
+            .expect("armed after")
+            + guard;
+        let refused = flat[guard..].find("return;").expect("refused") + guard;
+        assert!(
+            refused < armed,
+            "the bad id returns before anything is sent"
+        );
+    }
+
+    #[test]
+    fn a_note_edit_raises_its_guard_before_spawning() {
+        let flat = flat();
+        let at = flat
+            .find("let path = format!(\"/tickets/{ticket_id}/notes/{note_id}\");")
+            .unwrap();
+        let rest = &flat[at..];
+        let raise = rest.find("saving.set(true);").unwrap();
+        let spawn = rest.find("spawn(async move {").unwrap();
+        assert!(raise < spawn, "{}", &rest[..raise.max(spawn) + 20]);
+    }
+
+    #[test]
+    fn the_comments_describe_the_code() {
+        let code = code();
+        // The MAPPS-686 doc is on its own module.
+        let m686 = code
+            .find(concat!("mod mapps686", "_shared_dto_tests"))
+            .unwrap();
+        assert!(code[..m686]
+            .trim_end()
+            .rsplit("\n\n")
+            .next()
+            .unwrap()
+            .contains("MAPPS-686: the shared-DTO contract"));
+        let m734 = code
+            .find(concat!("mod mapps734", "_sla_panel_tests"))
+            .unwrap();
+        assert!(!code[code[..m734].rfind("\n\n").unwrap()..m734].contains("MAPPS-686"));
+        // Stale claims gone.
+        assert!(!code.contains(concat!("offers Status, Priority, Assignee", " and Asset")));
+        assert!(!code.contains(concat!(
+            "the parent link is not rendered",
+            " by this page yet"
+        )));
+        assert!(!code.contains(concat!("omits `reporter", "_contact_id` and a")));
+        assert!(!code.contains(concat!("only the approvals modal", " remains")));
+        assert_eq!(
+            code.matches("        Modal {\n").count(),
+            3,
+            "three modals, as the comments now say"
+        );
+    }
+}
+
 #[cfg(test)]
 mod mapps_1248_tests {
     use super::*;
@@ -1574,6 +1670,20 @@ fn shown_or_not_set(name: &str) -> String {
         "Not set".to_string()
     } else {
         name.to_string()
+    }
+}
+
+/// What the approval dialog says beside the Approver picker when the roster
+/// gave it no people (MAPPS-1249). The roster always holds the signed-in user,
+/// so a resolved empty list means the load failed or was refused; still
+/// loading says so too. `None` when there is a list to pick from.
+fn approver_roster_note(snapshot: Option<&Vec<UserOpt>>) -> Option<&'static str> {
+    match snapshot {
+        None => Some("The people who can approve are still on their way…"),
+        Some(users) if users.is_empty() => Some(
+            "The list of people could not be loaded, so no approver can be picked. Enter a role instead, or reload the page.",
+        ),
+        Some(_) => None,
     }
 }
 
@@ -6834,17 +6944,19 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
         // opened it. MAPPS-610 moved the composer into the Journal card
         // above and swapped the bare Textarea for the shared
         // MarkdownEditor, which is now the only path for adding a
-        // note. The MAPPS-594 pin in `mapps594_in_page_edit_tests`
-        // enforces the "only the approvals modal remains" invariant.
+        // note. The MAPPS-594 pin in `mapps594_in_page_edit_tests` allows
+        // exactly three Modals in this file: the staff `ApprovalsSection`
+        // request-approver picker and the list page's save-view and
+        // rename-view dialogs (MAPPS-1249: this said only one remained).
 
         // mokosh-contact-login (MAPPS-594 pin): the standalone MAPPS-609
         // "Request approval" Modal that used to live here retired with the
         // outer ticket-page cover. The same form (fields, handler,
         // dual-plane endpoint) now expands inline inside the sidebar
         // Actions card above, so the reader stays on the ticket they were
-        // reading. `mapps594_in_page_edit_tests` enforces the "only the
-        // approvals modal remains" invariant (the sole surviving Modal is
-        // the staff `ApprovalsSection` request-approver picker).
+        // reading. `mapps594_in_page_edit_tests` allows exactly three Modals
+        // in this file: the `ApprovalsSection` request-approver picker and the
+        // list page's save-view and rename-view dialogs.
     }
 }
 
@@ -6986,8 +7098,11 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                 return;
             }
             let path = format!("/tickets/{ticket_id}/notes/{note_id}");
+            // MAPPS-1249: raised before the task spawns, as the note composer
+            // and the approval request do. Set inside the task, two quick
+            // clicks both passed the guard above and sent two PUTs.
+            saving.set(true);
             spawn(async move {
-                saving.set(true);
                 let body = UpdateNoteBody { content: next };
                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
                     .await
@@ -7270,7 +7385,11 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
     };
     let loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
-    let users = users_resource.read_unchecked().clone().unwrap_or_default();
+    let users_snapshot = users_resource.read_unchecked().clone();
+    // MAPPS-1249: say beside the picker when the roster
+    // gave it nothing, instead of an empty list that reads as "no users".
+    let roster_note = approver_roster_note(users_snapshot.as_ref());
+    let users = users_snapshot.unwrap_or_default();
     // MAPPS-939: resolve once for the whole approvals list, not once per row.
     let tz = crate::utils::datetime::user_timezone();
     let pref = crate::utils::datetime::user_format_pref();
@@ -7312,17 +7431,36 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
         // `onclick` handler and must stay `FnMut`, so it cannot move the
         // captured segment out of itself.
         let segment = segment_for_submit.clone();
+        // MAPPS-1249: an approver id that is not a UUID stops here, logged and
+        // shown, and nothing is sent. It used to be left out of the body, so
+        // the request went with no approver and only the server's refusal
+        // said anything.
+        let approver = if user_id.is_empty() {
+            None
+        } else {
+            match uuid::Uuid::parse_str(&user_id) {
+                Ok(u) => Some(u),
+                Err(e) => {
+                    tracing::warn!(
+                        "approval request: the approver id {user_id:?} is not a UUID: {e}"
+                    );
+                    request_error.set(
+                        "The approver selection could not be read. Pick the approver again."
+                            .to_string(),
+                    );
+                    return;
+                }
+            }
+        };
         request_submitting.set(true);
         request_error.set(String::new());
         spawn(async move {
             let mut body = serde_json::Map::new();
-            if !user_id.is_empty() {
-                if let Ok(u) = uuid::Uuid::parse_str(&user_id) {
-                    body.insert(
-                        "approver_user_id".to_string(),
-                        serde_json::Value::String(u.to_string()),
-                    );
-                }
+            if let Some(u) = approver {
+                body.insert(
+                    "approver_user_id".to_string(),
+                    serde_json::Value::String(u.to_string()),
+                );
             }
             if !role.is_empty() {
                 body.insert("approver_role".to_string(), serde_json::Value::String(role));
@@ -7531,6 +7669,9 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                     value: approver_user_id.read().clone(),
                     onchange: move |e: FormEvent| approver_user_id.set(e.value()),
                 }
+                if let Some(note) = roster_note {
+                    p { class: "text-xs text-red-600 dark:text-red-400", role: "alert", "{note}" }
+                }
                 crate::components::Input {
                     name: "approver_role",
                     label: "Approver role (optional)",
@@ -7625,7 +7766,7 @@ mod mapps_607_tests {
 
     #[test]
     fn edit_hidden_when_reporter_and_my_ids_missing() {
-        // A pre-PMS-937 server that omits `reporter_contact_id` and a
+        // A pre-PMS-937 server that omits `contact_id` and a
         // pre-PMS-937 login response that never stashed `contact_id`
         // both fall through to `None`. Both must fail-closed.
         assert!(!contact_can_edit_ticket(None, None, true));
@@ -8905,22 +9046,6 @@ mod prefill_tests {
     }
 }
 
-/// MAPPS-686: the shared-DTO contract for this page's ticket and note writes,
-/// and for the payloads it decodes (MAPPS-698 added the time entry).
-///
-/// `mokosh_types::tickets` derives `Deserialize` on the request types and
-/// `Serialize` on the response types, which is the server's half of the wire
-/// and the opposite of what a client needs, so this page cannot use them
-/// directly. These functions are the substitute: each destructures the shared
-/// DTO exhaustively and feeds the bindings into the struct this page actually
-/// sends or decodes, so a field added, removed, renamed or retyped on
-/// mokosh-server fails this build instead of drifting silently. They are never
-/// called; compiling them is the whole check. Same shape as the MAPPS-627 gate
-/// in `src/pages/time.rs`.
-///
-/// The user, ticket-status, priority, type and category lookups this page also
-/// decodes are picker subsets (an id and a label) and are deliberately not
-/// gated; see the audit in `docs/client-server-integration.md`.
 /// MAPPS-734: the SLA block on the ticket detail.
 #[cfg(test)]
 mod mapps734_sla_panel_tests {
@@ -9163,6 +9288,24 @@ mod mapps731_detail_row_tests {
     }
 }
 
+/// MAPPS-686: the shared-DTO contract for this page's ticket and note writes,
+/// and for the payloads it decodes (MAPPS-698 added the time entry).
+///
+/// `mokosh_types::tickets` derives `Deserialize` on the request types and
+/// `Serialize` on the response types, which is the server's half of the wire
+/// and the opposite of what a client needs, so this page cannot use them
+/// directly. These functions are the substitute: each destructures the shared
+/// DTO exhaustively and feeds the bindings into the struct this page actually
+/// sends or decodes, so a field added, removed, renamed or retyped on
+/// mokosh-server fails this build instead of drifting silently. They are never
+/// called; compiling them is the whole check. Same shape as the MAPPS-627 gate
+/// in `src/pages/time.rs`.
+///
+/// The user, ticket-status, priority, type and category lookups this page also
+/// decodes are picker subsets (an id and a label) and are deliberately not
+/// gated; see the audit in `docs/client-server-integration.md`.
+///
+/// MAPPS-1249: this doc sat above `mapps734_sla_panel_tests`.
 #[cfg(test)]
 mod mapps686_shared_dto_tests {
     use super::{
@@ -9479,12 +9622,13 @@ mod mapps686_shared_dto_tests {
             contract_id,
             sla_id,
         };
-        // Editable on the ticket, but not from this page: the detail sidebar
-        // offers Status, Priority, Assignee and Asset, and the card above it
-        // offers Title and Description. `queue_id` is routing the server
-        // resolves from the company, not an operator pick; the rest are a
-        // later edit this page has never offered and `billing_status` is
-        // invoicing's to move.
+        // Editable on the ticket, but not from this page. Everything this page
+        // does edit is in `UpdateTicketBody` above (MAPPS-1222 added type,
+        // category, contact, site, team, contract and SLA; MAPPS-1249 fixed
+        // this comment, which still listed four). `queue_id` is routing the
+        // server resolves from the company, not an operator pick; the
+        // schedule, estimate, billable flag, custom fields and tags are not
+        // offered here; and `billing_status` is invoicing's to move.
         let _ = (
             queue_id,
             scheduled_start,
@@ -9685,9 +9829,6 @@ mod mapps686_shared_dto_tests {
             status_color,
             status_is_closed,
             priority_color,
-            // PMS-1368: the parent link is not rendered by this page yet; the
-            // child ticket surface is a follow-up.
-            parent_ticket_id,
             // MAPPS-1223: nullable on the contract; the editor labels by name,
             // as the contract picker does.
             contract_number,
