@@ -2313,10 +2313,13 @@ part of this section's subject matter.
 - **SPEC-9.9.6**: `RequestFormPage` must discard a blank or
   whitespace-only text answer from the submission payload entirely,
   matching the server's own "blank is absent" rule.
-- **SPEC-9.9.7**: `WorkDayStrip`'s open correction form and its pending
-  "removing" confirmation must each be cleared immediately before the
-  corresponding mutation is sent, so a stale open form cannot be
-  resubmitted against an id the mutation has already made stale.
+- **SPEC-9.9.7**: `WorkDayStrip`'s open correction form must be cleared
+  immediately before the corresponding mutation is sent, so a stale open
+  form cannot be resubmitted against an id the mutation has already made
+  stale. Its "removing" confirmation must instead stay open, showing the
+  busy state, until the delete settles: it closes on success and keeps the
+  server's error on failure. A second confirm while the delete is in
+  flight must be a no-op (SPEC-9.6.13).
 
 ## 8. Contact sync and import
 

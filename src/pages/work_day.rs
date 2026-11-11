@@ -406,6 +406,10 @@ pub(crate) const MODULES_OFF_NOTICE: &str = "Clocking in and out needs the Times
 
 /// The strip on the Time page: clock in and out, breaks when the tenant
 /// tracks them, the day's segments, the per-item breakdown and the gap.
+/// The name shown for a viewed day whose owner is not in the roster
+/// (MAPPS-1251). The id rides in the tooltip.
+const UNKNOWN_PERSON: &str = "an unknown person";
+
 #[component]
 pub fn WorkDayStrip() -> Element {
     let auth = crate::hooks::use_auth();
@@ -673,9 +677,18 @@ pub fn WorkDayStrip() -> Element {
             {
                 // SPEC-9.7.12: segment-delete against its own dedicated endpoint.
                 let path = format!("/workday/segments/{id}");
+                // MAPPS-1251: the confirmation closes only once the delete
+                // has succeeded; a refusal stays in the dialog, which shows
+                // `action_error` and the busy state while this runs.
                 match crate::hooks::fetch::api::delete_authed(&path).await {
-                    Ok(()) => day_resource.restart(),
-                    Err(e) => action_error.set(e),
+                    Ok(()) => {
+                        removing.set(None);
+                        day_resource.restart();
+                    }
+                    Err(e) => {
+                        tracing::warn!("removing work-day segment {id} failed: {e}");
+                        action_error.set(e);
+                    }
                 }
             }
             #[cfg(not(feature = "app"))]
@@ -750,15 +763,23 @@ pub fn WorkDayStrip() -> Element {
                 .find(|u| u.id == id)
                 .and_then(|u| u.display_name());
             match resolved {
-                Some(name) => name,
+                Some(name) => (name, None),
+                // MAPPS-1251: a visible placeholder carrying the id, not an
+                // empty name ("this is 's day").
                 None => {
-                    let _ = crate::utils::unresolved("work_day.viewing_user", "user", Some(id), "");
-                    String::new()
+                    let tooltip = crate::utils::unresolved(
+                        "work_day.viewing_user",
+                        "user",
+                        Some(id),
+                        UNKNOWN_PERSON,
+                    );
+                    (UNKNOWN_PERSON.to_string(), Some(tooltip))
                 }
             }
         }
-        None => String::new(),
+        None => (String::new(), None),
     };
+    let (viewing_name, viewing_name_title) = viewing_name;
     let disabled_title =
         (!can_mutate).then(|| "Can't change the day while the server is unreachable".to_string());
 
@@ -832,7 +853,9 @@ pub fn WorkDayStrip() -> Element {
 
                 if viewing_someone_else {
                     p { class: "text-sm text-muted",
-                        "Read-only: this is {viewing_name}'s day. Clocking in and out acts on your own."
+                        "Read-only: this is "
+                        span { title: viewing_name_title.clone().unwrap_or_default(), "{viewing_name}" }
+                        "'s day. Clocking in and out acts on your own."
                     }
                 }
 
@@ -1198,17 +1221,19 @@ pub fn WorkDayStrip() -> Element {
                                 open: true,
                                 title: "Remove this clock entry".to_string(),
                                 message: format!(
-                                    "The {label} entry is removed from this day and the day's clocked total drops by its length.                                      The removal is recorded. This cannot be undone; clocking in again starts a new entry."
+                                    "The {label} entry is removed from this day and the day's clocked total drops by its length. The removal is recorded. This cannot be undone; clocking in again starts a new entry."
                                 ),
                                 confirm_text: "Remove".to_string(),
                                 cancel_text: "Cancel".to_string(),
                                 destructive: true,
                                 error: action_error.read().clone(),
                                 loading: *busy.read(),
-                                // SPEC-9.9.7: both cleared before the delete fires.
+                                // SPEC-9.9.7: the correction form is cleared before the
+                                // delete fires; the confirmation stays open, busy, until
+                                // it settles (MAPPS-1251). `delete_segment` no-ops while
+                                // busy, so it cannot be sent twice.
                                 onconfirm: move |_| {
                                     correcting.set(None);
-                                    removing.set(None);
                                     delete_segment(id);
                                 },
                                 oncancel: move |_| {
@@ -1327,6 +1352,50 @@ fn ticket_label(t: &RemoteTicketLine) -> String {
         (Some(n), None) => n.to_string(),
         (None, Some(title)) => title.to_string(),
         (None, None) => "Ticket".to_string(),
+    }
+}
+
+/// MAPPS-1251: the removal message, the removal dialog's lifetime, and the
+/// unresolved owner's name.
+#[cfg(test)]
+mod mapps_1251_tests {
+    fn code() -> String {
+        let src = include_str!("work_day.rs");
+        src[..src.find("mod mapps_1251_tests").unwrap()].to_string()
+    }
+
+    fn flat() -> String {
+        code().split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn the_removal_message_has_one_space_between_sentences() {
+        let code = code();
+        assert!(code.contains("drops by its length. The removal is recorded."));
+        assert!(!code.contains("by its length.  "));
+    }
+
+    #[test]
+    fn the_removal_dialog_stays_open_until_the_delete_settles() {
+        let flat = flat();
+        let confirm =
+            flat.find("onconfirm: move |_| { correcting.set(None); delete_segment(id); },");
+        assert!(
+            confirm.is_some(),
+            "the confirm no longer closes the dialog itself"
+        );
+        assert!(flat.contains("Ok(()) => { removing.set(None); day_resource.restart(); }"));
+        assert!(flat.contains("removing work-day segment {id} failed: {e}"));
+    }
+
+    #[test]
+    fn an_unresolved_owner_shows_a_placeholder_with_the_id() {
+        let flat = flat();
+        assert!(flat.contains("(UNKNOWN_PERSON.to_string(), Some(tooltip))"));
+        assert!(flat.contains(
+            "span { title: viewing_name_title.clone().unwrap_or_default(), \"{viewing_name}\" }"
+        ));
+        assert!(!flat.contains("Some(id), \"\"); String::new()"));
     }
 }
 
