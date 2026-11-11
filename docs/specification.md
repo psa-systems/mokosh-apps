@@ -2095,10 +2095,8 @@ part of this section's subject matter.
 - **SPEC-9.5.7**: A failed approval decision must set a single
   page-level error message and must not remove the row from the list; a
   successful decision must show a success toast and refresh the list.
-  Because this error message is a single page-level field rather than
-  scoped per row, a later successful decision on a different row does
-  not clear an earlier row's still-visible failure message; this is
-  tracked as a defect, not a requirement of this section.
+  The page-level error must be cleared when the next decision attempt
+  starts, on any row, so it never outlives a later decision.
 - **SPEC-9.5.8**: An SLA primary-list load failure must render the shared
   unreachable-content state when the server is unreachable, and an inline
   error banner otherwise; each of the three SLA tabs (policies, business
@@ -2146,6 +2144,19 @@ part of this section's subject matter.
   id inline and must refuse any other unreadable picked id (priority,
   asset, contact, type, category, assignee) with a logged, visible error;
   no picked id may be dropped to `null`.
+- **SPEC-9.5.20**: `RequestFormPage` must log every load and submit
+  failure it handles as non-terminal, and a failed load (including the
+  reload behind "Add the next person") must clear the form so the
+  try-again state renders instead of the previous person's form.
+- **SPEC-9.5.21**: The SLA targets editor must show its "no priorities"
+  empty state only after a priority load that succeeded with no rows; a
+  failed load shows only its failure banner. A holiday calendar whose
+  holidays value is not a list must read "Unreadable holidays" in the
+  calendar list, not a count, and must be logged.
+- **SPEC-9.5.22**: `SendRequestLinkModal` must say in the modal when its
+  form or contact list failed to load, distinct from the "no active forms"
+  and "no contact with an email" hints, which follow only a successful
+  load.
 
 ### 9.6 Concurrency and ordering
 

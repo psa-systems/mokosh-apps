@@ -685,8 +685,11 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
                             TableHeader { "Actions" }
                         }
                     }
+                    // MAPPS-1250: the empty-state text only after a load that
+                    // succeeded; a failure is the banner above, not "none".
                     if loading {
                         TableLoading { columns: 5, rows: 4 }
+                    } else if load_failed {
                     } else if priority_rows.is_empty() {
                         TableEmpty {
                             columns: 5,
@@ -1471,13 +1474,13 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
                             {
                                 let key = cal.id.to_string();
                                 let cal_for_edit = cal.clone();
-                                let count = holiday_count(&cal.holidays);
+                                let count = holiday_count_label(&cal.id.to_string(), &cal.holidays);
                                 rsx! {
                                     TableRow { key: "{key}",
                                         TableCell {
                                             span { class: "font-medium text-content", "{cal.name}" }
                                         }
-                                        TableCell { class: "text-muted", "{count} dates" }
+                                        TableCell { class: "text-muted", "{count}" }
                                         TableCell {
                                             Button {
                                                 variant: ButtonVariant::Ghost,
@@ -1708,9 +1711,11 @@ fn optional_trim(value: &str) -> Option<String> {
     }
 }
 
-/// Parse an hours input into an optional `Decimal`. Empty or unparseable
-/// input becomes `None` (server treats a missing target hour as "no
-/// commitment for this dimension").
+/// Parse an hours input into an optional `Decimal`: `None` for empty or
+/// unparseable input. It does not decide what `None` means; the caller
+/// [`validate_hours`] does, treating an empty value as "no commitment" and
+/// rejecting an unparseable one with a message (MAPPS-1250: this doc said
+/// unparseable input was sent as "no commitment", which it never is).
 fn parse_hours(value: &str) -> Option<rust_decimal::Decimal> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1757,8 +1762,68 @@ fn pretty_json(value: &serde_json::Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
-/// Count entries in a holidays JSON blob for the list summary. Non-array
-/// shapes report 0 so a malformed value never panics the row.
-fn holiday_count(value: &serde_json::Value) -> usize {
-    value.as_array().map(|a| a.len()).unwrap_or(0)
+/// Count entries in a holidays JSON blob for the list summary, or `None` when
+/// the value is not an array. Never panics the row.
+fn holiday_count(value: &serde_json::Value) -> Option<usize> {
+    value.as_array().map(Vec::len)
+}
+
+/// The list cell for a calendar's holidays (MAPPS-1250). A malformed value
+/// used to read "0 dates", the same as an empty calendar; it now reads
+/// "Unreadable holidays" and is logged with the calendar id.
+fn holiday_count_label(calendar_id: &str, value: &serde_json::Value) -> String {
+    match holiday_count(value) {
+        Some(n) => format!("{n} dates"),
+        None => {
+            // Once per calendar per page load: this runs on every render.
+            thread_local! {
+                static WARNED: std::cell::RefCell<std::collections::HashSet<String>> =
+                    std::cell::RefCell::new(std::collections::HashSet::new());
+            }
+            if WARNED.with(|w| w.borrow_mut().insert(calendar_id.to_string())) {
+                tracing::warn!("holiday calendar {calendar_id} has a holidays value that is not a list: {value}");
+            }
+            "Unreadable holidays".to_string()
+        }
+    }
+}
+
+/// MAPPS-1250: a malformed calendar is not an empty one, a failed priority
+/// load is not "no priorities", and `parse_hours` says what it does.
+#[cfg(test)]
+mod mapps_1250_tests {
+    use super::{holiday_count, holiday_count_label, validate_hours};
+    use serde_json::json;
+
+    #[test]
+    fn a_malformed_holidays_value_reads_as_unreadable() {
+        assert_eq!(holiday_count(&json!([])), Some(0));
+        assert_eq!(holiday_count(&json!(["2026-12-25"])), Some(1));
+        assert_eq!(holiday_count(&json!({"a": 1})), None);
+        assert_eq!(holiday_count_label("c1", &json!([])), "0 dates");
+        assert_eq!(
+            holiday_count_label("c1", &json!("x")),
+            "Unreadable holidays"
+        );
+    }
+
+    #[test]
+    fn unparseable_hours_are_rejected_not_sent_as_no_commitment() {
+        assert_eq!(validate_hours(""), Ok(None));
+        assert!(validate_hours("soon").is_err());
+        let src = include_str!("sla.rs");
+        let code = &src[..src.find("mod mapps_1250_tests").unwrap()];
+        assert!(!code.contains(concat!(
+            "Empty or unparseable",
+            "\n/// input becomes `None` (server treats"
+        )));
+    }
+
+    #[test]
+    fn a_failed_priority_load_does_not_also_say_none_exist() {
+        let src = include_str!("sla.rs");
+        let code = &src[..src.find("mod mapps_1250_tests").unwrap()];
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("} else if load_failed { } else if priority_rows.is_empty() {"));
+    }
 }
