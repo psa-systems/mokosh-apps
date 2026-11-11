@@ -99,11 +99,19 @@ pub fn use_server_status_monitor() {
         if *crate::hooks::fetch::SERVER_REACHABLE.read() {
             return;
         }
+        // MAPPS-1239: the first failed probe of an outage is logged with its
+        // cause; the rest would repeat it every poll.
+        let mut failure_logged = false;
         loop {
             crate::platform::timer::sleep_ms(RECOVERY_POLL_SECS * 1000).await;
             // `probe` classifies its own result, so a recovered server
             // flips `SERVER_REACHABLE` back to `true` here.
-            let _ = crate::hooks::fetch::api::probe("/ready").await;
+            if let Err(e) = crate::hooks::fetch::api::probe("/ready").await {
+                if !failure_logged {
+                    tracing::warn!("server recovery probe of /ready failed: {e}");
+                    failure_logged = true;
+                }
+            }
             // `peek` (non-subscribing): the subscription above already
             // schedules the re-run; this just exits the loop promptly once
             // the server is back.
@@ -126,3 +134,19 @@ pub fn use_server_status_monitor() {
 /// without the `app` feature.
 #[cfg(not(feature = "app"))]
 pub fn use_server_status_monitor() {}
+
+/// MAPPS-1239: the recovery loop's probe failure is logged, once per outage.
+#[cfg(test)]
+mod probe_trace_tests {
+    #[test]
+    fn a_failed_recovery_probe_is_logged_once() {
+        let src = include_str!("server_status.rs");
+        let code = &src[..src.find("mod probe_trace_tests").expect("this module")];
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(!flat.contains(concat!(
+            "let _ = crate::hooks::fetch::api::probe(",
+            "\"/ready\")"
+        )));
+        assert!(flat.contains("if let Err(e) = crate::hooks::fetch::api::probe(\"/ready\").await { if !failure_logged {"), "{flat}");
+    }
+}
