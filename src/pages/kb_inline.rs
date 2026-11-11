@@ -94,9 +94,18 @@ pub fn place(text: &str, roots: &[KbComment]) -> (Vec<MarkSpec>, Vec<uuid::Uuid>
 /// as saved (`before`) and no longer resolve in the unsaved body (`after`).
 /// What the editor warns about on save. A root already orphaned before the
 /// edit is not this edit's doing and is left out.
-pub fn orphaned_by_edit(before: &str, after: &str, roots: &[KbComment]) -> Vec<String> {
-    let before_text = crate::utils::markdown::rendered_text(before);
-    let after_text = crate::utils::markdown::rendered_text(after);
+///
+/// `people` is the directory the article page renders mentions with, so the
+/// text compared here is the text the page's anchors were placed in
+/// (MAPPS-1241).
+pub fn orphaned_by_edit(
+    before: &str,
+    after: &str,
+    roots: &[KbComment],
+    people: &[crate::utils::mentions::Mention],
+) -> Vec<String> {
+    let before_text = crate::utils::markdown::rendered_text(before, people);
+    let after_text = crate::utils::markdown::rendered_text(after, people);
     roots
         .iter()
         .filter(|c| !c.deleted && c.parent_id.is_none())
@@ -392,13 +401,16 @@ Restart the router. Then call the customer back.
 Then call the customer back.
 ";
         assert_eq!(
-            orphaned_by_edit(before, after, &[kept, broken, already]),
+            orphaned_by_edit(before, after, &[kept, broken, already], &[]),
             vec!["Restart the router".to_string()]
         );
-        assert!(
-            orphaned_by_edit(before, before, &[root("Restart the router", "", "", false)])
-                .is_empty()
-        );
+        assert!(orphaned_by_edit(
+            before,
+            before,
+            &[root("Restart the router", "", "", false)],
+            &[]
+        )
+        .is_empty());
     }
 
     /// MAPPS-1226: an anchor that does not parse is skipped by `place`, so

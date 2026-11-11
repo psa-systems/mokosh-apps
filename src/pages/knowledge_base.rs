@@ -176,12 +176,13 @@ fn orphan_check(
     comments: Option<&Result<Vec<crate::modules::kb::KbComment>, String>>,
     saved: &str,
     current: &str,
+    people: &[crate::utils::mentions::Mention],
 ) -> OrphanCheck {
     match comments {
         None => OrphanCheck::Unavailable("the comments are still loading.".to_string()),
         Some(Err(why)) => OrphanCheck::Unavailable(why.clone()),
         Some(Ok(roots)) => {
-            let quotes = crate::pages::kb_inline::orphaned_by_edit(saved, current, roots);
+            let quotes = crate::pages::kb_inline::orphaned_by_edit(saved, current, roots, people);
             if quotes.is_empty() {
                 OrphanCheck::Clear
             } else {
@@ -3780,6 +3781,8 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 inline_comments.read_unchecked().as_ref(),
                 &saved_content,
                 &content_val,
+                // MAPPS-1241: the directory the article renders mentions with.
+                &crate::hooks::mention_people(&mention_people),
             ) {
                 OrphanCheck::Clear => {}
                 OrphanCheck::Orphans(quotes) => {
@@ -6600,15 +6603,15 @@ mod mapps1225_error_visibility_tests {
     #[test]
     fn an_orphan_check_that_cannot_run_says_so() {
         assert_eq!(
-            orphan_check(Some(&Err("Network error.".to_string())), "a", "b"),
+            orphan_check(Some(&Err("Network error.".to_string())), "a", "b", &[]),
             OrphanCheck::Unavailable("Network error.".to_string())
         );
         assert!(matches!(
-            orphan_check(None, "a", "b"),
+            orphan_check(None, "a", "b", &[]),
             OrphanCheck::Unavailable(_)
         ));
         assert_eq!(
-            orphan_check(Some(&Ok(Vec::new())), "a", "b"),
+            orphan_check(Some(&Ok(Vec::new())), "a", "b", &[]),
             OrphanCheck::Clear
         );
         let code = code();
