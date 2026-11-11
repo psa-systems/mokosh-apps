@@ -59,6 +59,13 @@ struct SearchHit {
     secondary: Option<String>,
 }
 
+/// Below the two-character minimum? Counted in characters (MAPPS-1244):
+/// `len()` counts bytes, so one CJK character, three bytes long, already
+/// sent a request and dismissed the "at least two characters" hint.
+fn too_short(q: &str) -> bool {
+    q.chars().count() < 2
+}
+
 #[component]
 pub fn GlobalSearch() -> Element {
     let mut query = use_signal(String::new);
@@ -96,7 +103,7 @@ pub fn GlobalSearch() -> Element {
     let results = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let q = query_debounced.read().trim().to_string();
-        if q.len() < 2 {
+        if too_short(&q) {
             // Two-char minimum keeps the dropdown out of "I just clicked the
             // field" noise. The server tolerates short queries but the SPA
             // doesn't benefit from showing dozens of matches on a single
@@ -258,7 +265,7 @@ pub fn GlobalSearch() -> Element {
                                 id: nav.panel_id(),
                                 role: "listbox",
                                 class: "dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-[32rem] overflow-y-auto",
-                                if query_text.trim().len() < 2 {
+                                if too_short(query_text.trim()) {
                                     div { class: "px-3 py-2 text-sm text-muted",
                                         "Type at least two characters to search."
                                     }
@@ -445,5 +452,21 @@ fn SearchSection(props: SearchSectionProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1244: the minimum is two characters, not two bytes.
+#[cfg(test)]
+mod min_length_tests {
+    use super::too_short;
+
+    #[test]
+    fn one_multi_byte_character_is_still_too_short() {
+        assert_eq!("東".len(), 3);
+        assert!(too_short("東"));
+        assert!(too_short("é"));
+        assert!(!too_short("東京"));
+        assert!(too_short("a"));
+        assert!(!too_short("ab"));
     }
 }

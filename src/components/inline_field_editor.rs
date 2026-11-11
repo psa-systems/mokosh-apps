@@ -46,13 +46,21 @@ fn sanitise_server_message(raw: &str, from_envelope: bool, field: &str) -> Strin
     }
 }
 
+/// The value an inline edit saves: invisible characters removed (and exotic
+/// spaces made plain), then trimmed.
+fn clean_draft(raw: &str) -> String {
+    crate::utils::text::strip_invisible(raw).trim().to_string()
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum InlineFieldKind {
-    /// Single-line text. Validation: trimmed, non-empty when `required`.
+    /// Single-line text. Validation: trimmed, non-empty unless the editor is
+    /// `optional`. MAPPS-1244: the `required` flag this variant carried was
+    /// never read, so required-ness had two sources that could disagree; the
+    /// `optional` prop is now the only one.
     Text {
         placeholder: String,
         maxlength: Option<i64>,
-        required: bool,
     },
     /// Multi-line text. No length cap at the client; the server rules
     /// the row size.
@@ -163,12 +171,18 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
         if saving() {
             return;
         }
+        // MAPPS-1244: raised HERE, synchronously, before the task is spawned.
+        // It used to be set inside the task, so Enter and the blur that
+        // follows it in the same tick both passed the guard above and sent
+        // two PATCHes.
+        saving.set(true);
         let path = path.clone();
         let patch_field = patch_field.clone();
         spawn(async move {
-            saving.set(true);
             err.set(String::new());
-            let trimmed = raw.trim().to_string();
+            // MAPPS-1244: invisible characters never reach the PATCH body,
+            // the rule every text-entry surface in `form.rs` applies.
+            let trimmed = clean_draft(&raw);
             if trimmed.is_empty() && !optional {
                 err.set("Required".to_string());
                 saving.set(false);
@@ -258,7 +272,7 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
                 div { class: "flex items-start gap-2",
                     div { class: "flex-1",
                         match kind {
-                            InlineFieldKind::Text { placeholder, maxlength, required: _ } => rsx! {
+                            InlineFieldKind::Text { placeholder, maxlength } => rsx! {
                                 input {
                                     r#type: "text",
                                     class: "block w-full rounded-md border border-line bg-surface text-content \
@@ -394,6 +408,53 @@ pub fn InlineFieldEditor(props: InlineFieldEditorProps) -> Element {
 /// signal with no handle exposed outside a full Dioxus render, and the real
 /// commit path is a network PATCH this test suite has no server to answer, so
 /// the guard that prevents the second call is checked where it lives instead.
+/// MAPPS-1244: one in-flight save, cleaned drafts, one source of
+/// required-ness.
+#[cfg(test)]
+mod mapps_1244_tests {
+    use super::clean_draft;
+
+    #[test]
+    fn invisible_characters_never_reach_the_patch() {
+        assert_eq!(clean_draft("  Acme\u{200B} Ltd\u{FEFF} "), "Acme Ltd");
+        assert_eq!(clean_draft("a\u{00A0}b"), "a b");
+        assert_eq!(
+            clean_draft("\u{200B}"),
+            "",
+            "an invisible-only value is empty, so `Required` applies"
+        );
+    }
+
+    fn code() -> String {
+        let src = include_str!("inline_field_editor.rs");
+        src[..src.find("mod mapps_1244_tests").unwrap()]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn the_in_flight_guard_is_raised_before_the_task_spawns() {
+        let code = code();
+        let guard = code.find("if saving() { return; }").expect("the guard");
+        let raise = code[guard..].find("saving.set(true);").expect("raised") + guard;
+        let spawn = code[guard..].find("spawn(async move {").expect("the task") + guard;
+        assert!(
+            raise < spawn,
+            "raised synchronously, so Enter + blur in one tick send one PATCH"
+        );
+        assert!(code.contains("let trimmed = clean_draft(&raw);"));
+    }
+
+    #[test]
+    fn text_kind_carries_no_second_required_flag() {
+        let src = include_str!("inline_field_editor.rs");
+        let start = src.find("pub enum InlineFieldKind {").unwrap();
+        let end = start + src[start..].find("\n}").unwrap();
+        assert!(!src[start..end].contains("required: bool"));
+    }
+}
+
 #[cfg(test)]
 mod mapps1054_commit_guard_tests {
     /// `needle` must end with the opening `{` of the block to capture, so the
@@ -495,7 +556,7 @@ mod mapps1054_commit_guard_tests {
         for (kind, needle) in [
             (
                 "Text",
-                "InlineFieldKind::Text { placeholder, maxlength, required: _ } => rsx! {",
+                "InlineFieldKind::Text { placeholder, maxlength } => rsx! {",
             ),
             (
                 "TextArea",
@@ -598,7 +659,6 @@ mod select_label_tests {
         let text = InlineFieldKind::Text {
             placeholder: "n/a".into(),
             maxlength: None,
-            required: false,
         };
         assert_eq!(select_label_for(&text, Some("in_stock")), None);
     }
