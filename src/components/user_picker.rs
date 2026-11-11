@@ -1,7 +1,8 @@
 //! Reusable User picker.
 //!
 //! Mirror of [`crate::components::AssetPicker`] / [`crate::components::ContactPicker`]:
-//! hits `GET /auth/users?q=...&per_page=20` on each keystroke, renders
+//! hits `GET /auth/users?q=...&per_page=20` once the query has been still
+//! for 300 ms (MAPPS-855), renders
 //! the matches in a click-to-select dropdown, and reports the selected
 //! user's UUID + display name back through callbacks.
 //!
@@ -18,30 +19,47 @@ use crate::components::{Button, ButtonSize, ButtonVariant, ErrorBanner, Input};
 use crate::hooks::use_dropdown_nav;
 use crate::utils::url::urlencoding_minimal;
 
+/// One row of `GET /auth/users`, mokosh-server's `UserResponse`.
+///
+/// MAPPS-1247: no `#[serde(default)]`. The server serialises all four name
+/// and email fields as plain (non-optional) strings, so a body missing one
+/// is a broken response; it now fails to decode and the search shows its
+/// failure banner, instead of becoming a row with an empty name.
 #[derive(Clone, Debug, Deserialize)]
 struct PickerUser {
     id: uuid::Uuid,
-    #[serde(default)]
     full_name: String,
-    #[serde(default)]
     first_name: String,
-    #[serde(default)]
     last_name: String,
-    #[serde(default)]
     email: String,
 }
 
 impl PickerUser {
+    /// The name to show: the full name, else first and last, else the email.
+    /// A user with none of those shows [`UNNAMED_USER`] and is logged once
+    /// with its id (MAPPS-1247), rather than rendering a blank row and chip.
     fn display_name(&self) -> String {
         let name = self.full_name.trim();
         if !name.is_empty() {
             return name.to_string();
         }
-        format!("{} {}", self.first_name, self.last_name)
-            .trim()
-            .to_string()
+        let parts = format!("{} {}", self.first_name.trim(), self.last_name.trim());
+        let parts = parts.trim();
+        if !parts.is_empty() {
+            return parts.to_string();
+        }
+        let email = self.email.trim();
+        if !email.is_empty() {
+            return email.to_string();
+        }
+        let _ =
+            crate::utils::unresolved("user_picker.row", "user name", Some(self.id), UNNAMED_USER);
+        UNNAMED_USER.to_string()
     }
 }
+
+/// Shown for a user with no name and no email (MAPPS-1247).
+const UNNAMED_USER: &str = "Unnamed user";
 
 #[derive(Clone, Debug, Deserialize)]
 struct PickerPage {
@@ -253,5 +271,41 @@ pub fn UserPicker(props: UserPickerProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1247: no blank names, and no silent defaults on the server's
+/// required fields.
+#[cfg(test)]
+mod mapps_1247_tests {
+    use super::{PickerUser, UNNAMED_USER};
+
+    fn user(full: &str, first: &str, last: &str, email: &str) -> PickerUser {
+        PickerUser {
+            id: uuid::Uuid::from_u128(3),
+            full_name: full.into(),
+            first_name: first.into(),
+            last_name: last.into(),
+            email: email.into(),
+        }
+    }
+
+    #[test]
+    fn the_name_falls_back_to_parts_then_email_then_a_placeholder() {
+        assert_eq!(user("Alex Ng", "", "", "").display_name(), "Alex Ng");
+        assert_eq!(user(" ", "Alex", "Ng", "").display_name(), "Alex Ng");
+        assert_eq!(
+            user("", "", "", "alex@example.com").display_name(),
+            "alex@example.com"
+        );
+        assert_eq!(user("", " ", "", "").display_name(), UNNAMED_USER);
+    }
+
+    #[test]
+    fn a_row_missing_a_required_field_fails_to_decode() {
+        let full = r#"{"id":"00000000-0000-0000-0000-000000000003","full_name":"A","first_name":"A","last_name":"","email":"a@example.com"}"#;
+        assert!(serde_json::from_str::<PickerUser>(full).is_ok());
+        let missing = r#"{"id":"00000000-0000-0000-0000-000000000003","first_name":"A","last_name":"","email":"a@example.com"}"#;
+        assert!(serde_json::from_str::<PickerUser>(missing).is_err());
     }
 }
