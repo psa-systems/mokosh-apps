@@ -288,6 +288,9 @@ pub fn ApprovalsPage() -> Element {
 
     let decide = move |id: Uuid, decision: &'static str| {
         spawn(async move {
+            // MAPPS-1250: a new attempt clears the last failure, so it cannot
+            // outlive later decisions and retries.
+            decision_error.set(String::new());
             // SPEC-9.8.1: this whole decision POST compiles to a no-op without the app feature.
             #[cfg(feature = "app")]
             {
@@ -314,10 +317,13 @@ pub fn ApprovalsPage() -> Element {
                         version += 1;
                         pending_resource.restart();
                     }
-                    // SPEC-9.5.7: single page-level error, row stays in the list; known gap, not
-                    // cleared by a later success on a different row (tracked as a defect, not fixed here).
-                    Err(e) => decision_error
-                        .set(format!("Could not record decision: {}", e.user_message())),
+                    // SPEC-9.5.7: single page-level error, row stays in the list.
+                    // MAPPS-1250: cleared when the next decision starts.
+                    Err(e) => {
+                        tracing::warn!("approval {id} {decision} failed: {e}");
+                        decision_error
+                            .set(format!("Could not record decision: {}", e.user_message()));
+                    }
                 }
             }
         });
@@ -551,6 +557,27 @@ pub fn ApprovalsPage() -> Element {
 }
 
 /// MAPPS-737: the queue serves a contact on the contact plane.
+/// MAPPS-1250: a decision failure does not outlive the next attempt.
+#[cfg(test)]
+mod decision_error_tests {
+    #[test]
+    fn a_new_decision_clears_the_last_failure() {
+        let src = include_str!("approvals.rs");
+        let code = &src[..src.find("mod decision_error_tests").unwrap()];
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        let decide = flat
+            .find("let decide = move |id: Uuid, decision: &'static str| {")
+            .unwrap();
+        let rest = &flat[decide..];
+        let clear = rest
+            .find("decision_error.set(String::new());")
+            .expect("cleared");
+        let post = rest.find("post_authed_any_typed").expect("the request");
+        assert!(clear < post, "cleared before the request");
+        assert!(rest.contains("tracing::warn!(\"approval {id} {decision} failed: {e}\");"));
+    }
+}
+
 #[cfg(test)]
 mod mapps737_contact_plane_tests {
     /// `use_capability` and the fetch helpers read session state the test

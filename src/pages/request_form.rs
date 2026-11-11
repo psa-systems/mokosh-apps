@@ -20,7 +20,10 @@
 //! - 400 -> expired, unknown or malformed; the server deliberately does not
 //!   distinguish these, so neither does this page
 //! - 422 -> per-field validation errors, routed to their inputs
-//! - 429 -> rate limited
+//! - 429 (and a network failure or a 5xx) -> not terminal: the visitor is
+//!   told to try again, and the error is logged (MAPPS-1250: this line said
+//!   429 had its own "rate limited" handling, which it never had; see
+//!   SPEC-9.4.14)
 //!
 //! The field set, its validation and the cross-field rules are all defined
 //! server-side (PMS-731); this page renders whatever it is handed rather than
@@ -131,7 +134,16 @@ async fn load_form(
             // rather than that their link is dead.
             // SPEC-9.4.14: no captcha/rate-limit tracking here; a 429 is just
             // another non-terminal case.
-            Err(_) => terminal.set(None),
+            //
+            // MAPPS-1250: logged, and the form cleared. On "Add the next
+            // person" the previous person's form was still in the signal, so
+            // a failed reload rendered it (with its stale person number)
+            // instead of the try-again state.
+            Err(e) => {
+                tracing::warn!("request form load failed: {e}");
+                form.set(None);
+                terminal.set(None);
+            }
         }
     }
     #[cfg(not(feature = "app"))]
@@ -258,7 +270,11 @@ pub fn RequestFormPage(token: String) -> Element {
                         Err(ApiError::Status { code: 400, .. }) => {
                             terminal.set(Some(Terminal::Unusable))
                         }
-                        Err(e) => form_error.set(e.user_message()),
+                        // MAPPS-1250: logged as well as shown.
+                        Err(e) => {
+                            tracing::warn!("request form submit failed: {e}");
+                            form_error.set(e.user_message());
+                        }
                     }
                 }
                 #[cfg(not(feature = "app"))]
@@ -961,5 +977,36 @@ mod tests {
             !rendered.contains("Person 1 of 1"),
             "a single-person link renders no person-number label at all; got: {rendered}"
         );
+    }
+}
+
+/// MAPPS-1250: load and submit failures are logged, and a failed reload never
+/// leaves the previous person's form on screen.
+#[cfg(test)]
+mod failure_tests {
+    fn code() -> String {
+        let src = include_str!("request_form.rs");
+        src[..src.find("mod failure_tests").unwrap()]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn a_failed_load_is_logged_and_clears_the_form() {
+        let code = code();
+        assert!(!code.contains("Err(_) => terminal.set(None),"));
+        assert!(code.contains("tracing::warn!(\"request form load failed: {e}\"); form.set(None); terminal.set(None);"));
+    }
+
+    #[test]
+    fn a_failed_submit_is_logged() {
+        assert!(code().contains("tracing::warn!(\"request form submit failed: {e}\"); form_error.set(e.user_message());"));
+    }
+
+    #[test]
+    fn the_header_does_not_promise_rate_limit_handling() {
+        let src = include_str!("request_form.rs");
+        assert!(!src.contains(concat!("//! - 429 -> rate", " limited")));
     }
 }
