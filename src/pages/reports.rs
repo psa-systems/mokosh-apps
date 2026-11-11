@@ -471,7 +471,7 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                     if !chart_data.is_empty() {
                         rsx! {
                             Card { title: "{view.breakdown_title}", class: "mt-6",
-                                BarChart { data: chart_data, one_decimal: false }
+                                BarChart { data: chart_data, one_decimal: false, title: view.breakdown_title.clone() }
                                 div { class: "mt-4",
                                     Table {
                                         TableBody {
@@ -515,7 +515,7 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                     if !summary_chart.is_empty() {
                         rsx! {
                             Card { title: "Summary chart".to_string(), class: "mt-6",
-                                BarChart { data: summary_chart, one_decimal: true }
+                                BarChart { data: summary_chart, one_decimal: true, title: "Summary chart".to_string() }
                             }
                         }
                     } else {

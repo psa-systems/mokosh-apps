@@ -186,6 +186,20 @@ impl PreviewTab {
 /// browser, or in the system's PDF viewer on the desktop.
 #[cfg(target_arch = "wasm32")]
 pub async fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
+    let window = tab.0;
+    let shown = fill_preview_tab(&window, bytes);
+    if shown.is_err() {
+        // MAPPS-1244: a tab that will never show the document is closed, as
+        // the fetch-failure path already does; this function owns the tab
+        // once it is called, so the caller has no way to.
+        let _ = window.close();
+    }
+    shown
+}
+
+/// Point `window` at a blob URL holding `bytes` as a PDF.
+#[cfg(target_arch = "wasm32")]
+fn fill_preview_tab(window: &web_sys::Window, bytes: &[u8]) -> Result<(), String> {
     use wasm_bindgen::{closure::Closure, JsCast};
 
     let array = js_sys::Uint8Array::from(bytes);
@@ -198,7 +212,6 @@ pub async fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), Stri
     let url = web_sys::Url::create_object_url_with_blob(&blob)
         .map_err(|_| "could not create the preview URL".to_string())?;
 
-    let window = tab.0;
     if window.location().set_href(&url).is_err() {
         // MAPPS-1236: the tab never navigates, so its `load` below would
         // never fire to revoke the URL; release it now.
