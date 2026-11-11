@@ -104,7 +104,11 @@ impl Listener {
         let listener = tokio::net::TcpListener::from_std(self.inner)
             .map_err(|e| format!("could not listen on 127.0.0.1:{}: {e}", self.port))?;
 
-        let (mut stream, _peer) = tokio::time::timeout(timeout, listener.accept())
+        // MAPPS-1237: one deadline for the accept AND the request read. The
+        // timeout used to wrap only `accept`, so a browser that connected and
+        // sent nothing (or half a line) held the read, and the port, forever.
+        let deadline = tokio::time::Instant::now() + timeout;
+        let (mut stream, _peer) = tokio::time::timeout_at(deadline, listener.accept())
             .await
             .map_err(|_| {
                 format!(
@@ -115,7 +119,15 @@ impl Listener {
             })?
             .map_err(|e| format!("the loopback connection failed: {e}"))?;
 
-        let line = read_request_line(&mut stream).await?;
+        let line = tokio::time::timeout_at(deadline, read_request_line(&mut stream))
+            .await
+            .map_err(|_| {
+                format!(
+                    "the browser connected to 127.0.0.1:{} but sent no complete request within {} seconds",
+                    self.port,
+                    timeout.as_secs()
+                )
+            })??;
         let query = request_query(&line)?;
         respond(&mut stream).await?;
         Ok(query)
@@ -298,6 +310,37 @@ mod tests {
         assert!(
             TcpStream::connect(("127.0.0.1", port)).is_err(),
             "port {port} is still accepting after the one request"
+        );
+    }
+
+    /// MAPPS-1237: a connection that never sends its request line is held to
+    /// the same timeout as one that never arrives, and the port is released.
+    /// The outer `timeout` turns the old behaviour (a read that never returns)
+    /// into a failure instead of a hung test.
+    #[test]
+    fn a_silent_connection_times_out_and_releases_the_port() {
+        let _guard = test_bind_lock();
+        let listener = bind().expect("bind a loopback listener");
+        let port = listener.port();
+        let rt = runtime();
+        let served = rt.spawn(async move { listener.serve_one(Duration::from_millis(200)).await });
+
+        // Connect, send half a request line, then say nothing more.
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to the listener");
+        stream
+            .write_all(b"GET /auth/cal")
+            .expect("send a partial line");
+
+        let err = rt
+            .block_on(async { tokio::time::timeout(Duration::from_secs(5), served).await })
+            .expect("serve_one must give up on a silent connection, not wait forever")
+            .expect("join")
+            .expect_err("a silent connection is not a redirect");
+        assert!(err.contains("sent no complete request"), "{err}");
+        drop(stream);
+        assert!(
+            TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "port {port} is still bound after the timeout"
         );
     }
 
