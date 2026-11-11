@@ -46,6 +46,13 @@ struct PickerContact {
 
 // SPEC-9.1.24: per-company table of sent links with a send action
 // disabled while the session cannot mutate.
+/// Shown when the send-link modal's form list did not load (MAPPS-1250).
+const PICKER_FORMS_FAILED: &str =
+    "The request forms could not be loaded. Close this and try again.";
+/// Shown when the send-link modal's contact list did not load (MAPPS-1250).
+const PICKER_CONTACTS_FAILED: &str =
+    "This company's contacts could not be loaded. Type an address below, or close this and try again.";
+
 #[component]
 pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Element {
     let links_company_id = company_id.clone();
@@ -396,6 +403,9 @@ pub(crate) fn SendRequestLinkModal(
         _ => Vec::new(),
     };
     let no_forms = matches!(&*forms.read_unchecked(), Some(Some(list)) if list.is_empty());
+    // MAPPS-1250: a failed load is said in the modal; it used to leave an
+    // empty picker indistinguishable from a tenant with no forms.
+    let forms_failed = matches!(&*forms.read_unchecked(), Some(None));
 
     let contacts_company = company_id.clone();
     let contacts = use_resource(move || {
@@ -460,6 +470,9 @@ pub(crate) fn SendRequestLinkModal(
     // list is just a list that has not arrived.
     let contacts_loaded = matches!(&*contacts.read_unchecked(), Some(Some(_)));
     let no_contacts = contacts_loaded && contact_options.is_empty();
+    // MAPPS-1250: likewise for the contacts, which the "no contacts" hint
+    // above only covers after a successful load.
+    let contacts_failed = matches!(&*contacts.read_unchecked(), Some(None));
     let add_contact_href = add_contact_href(&company_id, &company_name);
 
     let rows_for_pick = contact_rows.clone();
@@ -649,6 +662,9 @@ pub(crate) fn SendRequestLinkModal(
                     ErrorBanner { "{error()}" }
                 }
 
+                if forms_failed {
+                    ErrorBanner { "{PICKER_FORMS_FAILED}" }
+                }
                 if no_forms {
                     ErrorBanner {
                         "No active request forms exist yet. "
@@ -704,6 +720,11 @@ pub(crate) fn SendRequestLinkModal(
                 // PMS-747: named as a fact about this client, with the route to
                 // fix it, rather than left as an empty dropdown to interpret.
                 // Not an error: the send works fine on a typed address alone.
+                if contacts_failed {
+                    p { class: "-mt-2 text-xs text-red-600 dark:text-red-400", role: "alert",
+                        "{PICKER_CONTACTS_FAILED}"
+                    }
+                }
                 if no_contacts {
                     p { class: "-mt-2 text-xs text-muted",
                         "{company_name} has no contact with an email address yet. "
@@ -996,5 +1017,21 @@ mod tests {
             link(true, Duration::days(-1)).status(Utc::now()),
             RequestLinkStatus::Submitted
         );
+    }
+}
+
+/// MAPPS-1250: a failed picker load is said in the modal.
+#[cfg(test)]
+mod picker_failure_tests {
+    #[test]
+    fn both_picker_failures_are_shown() {
+        let src = include_str!("request_links.rs");
+        let code = &src[..src.find("mod picker_failure_tests").unwrap()];
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("let forms_failed = matches!(&*forms.read_unchecked(), Some(None));"));
+        assert!(flat
+            .contains("let contacts_failed = matches!(&*contacts.read_unchecked(), Some(None));"));
+        assert!(flat.contains("if forms_failed { ErrorBanner { \"{PICKER_FORMS_FAILED}\" } }"));
+        assert!(flat.contains("if contacts_failed {"));
     }
 }
