@@ -122,7 +122,7 @@ jobs:
         # `shared-key`, rust-cache falls back to per-ref keys and no PR
         # benefits from the main push's compile. Match the key name in
         # any future mokosh-apps cache-warm workflow.
-        uses: https://github.com/Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: check
           cache-on-failure: true
