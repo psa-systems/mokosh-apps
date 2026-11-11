@@ -1760,10 +1760,19 @@ fn parse_sort_order(raw: &str) -> Result<i32, String> {
     if trimmed.is_empty() {
         return Ok(0);
     }
-    trimmed.parse::<i32>().map_err(|e| {
-        tracing::warn!("sort order {trimmed:?} is not a 32-bit integer: {e}");
-        "Enter a whole number between 0 and 2147483647.".to_string()
-    })
+    // MAPPS-1233: the field is `min: 0` and the message says so, so a
+    // negative is refused like any other value outside the range.
+    match trimmed.parse::<i32>() {
+        Ok(n) if n >= 0 => Ok(n),
+        Ok(n) => {
+            tracing::warn!("sort order {n} is below 0");
+            Err("Enter a whole number between 0 and 2147483647.".to_string())
+        }
+        Err(e) => {
+            tracing::warn!("sort order {trimmed:?} is not a 32-bit integer: {e}");
+            Err("Enter a whole number between 0 and 2147483647.".to_string())
+        }
+    }
 }
 
 /// Parse a rate field into the `Decimal` `UpsertWorkTypeRequest` declares.
@@ -1912,6 +1921,11 @@ fn OrganizationSettingsBody() -> Element {
     // PMS-1280: only the deployment's operator owns the app name; any other
     // organisation's admin does not see the card at all.
     let app_name_owned = !matches!(*app_name_snap, Some(OperatorLoad::NotOperator));
+    // MAPPS-1232: the form only once the value has loaded. A failed load (or
+    // one still in flight) used to render an editable empty input, and Save
+    // would then send a blank that clears the stored override.
+    let app_name_failed = matches!(*app_name_snap, Some(OperatorLoad::Failed));
+    let app_name_loaded = matches!(*app_name_snap, Some(OperatorLoad::Loaded(_)));
     if !app_name_seeded() {
         if let Some(OperatorLoad::Loaded(view)) = &*app_name_snap {
             app_name_value.set(view.app_name.clone().unwrap_or_default());
@@ -2172,6 +2186,11 @@ fn OrganizationSettingsBody() -> Element {
             if app_name_owned {
             Card {
                 title: "App name".to_string(),
+                if app_name_failed {
+                    ErrorBanner { "Could not load the app name, so it cannot be edited here. Refresh the page to try again." }
+                } else if !app_name_loaded {
+                    crate::components::DetailSkeleton {}
+                } else {
                 div { class: "space-y-4 max-w-xl",
                     if !app_name_error().is_empty() {
                         ErrorBanner { "{app_name_error()}" }
@@ -2201,6 +2220,7 @@ fn OrganizationSettingsBody() -> Element {
                             "Save Changes"
                         }
                     }
+                }
                 }
             }
             }
@@ -2421,7 +2441,11 @@ fn OrganizationSettingsBody() -> Element {
                                                     logo_url.set(None);
                                                     logo_broken.set(false);
                                                 }
-                                                Err(e) => logo_error.set(format!("Could not remove the logo: {e}")),
+                                                Err(e) => {
+                                                    // MAPPS-1232: shown, and now logged.
+                                                    tracing::error!("logo removal failed: {e}");
+                                                    logo_error.set(format!("Could not remove the logo: {e}"));
+                                                }
                                             }
                                         }
                                         logo_busy.set(false);
@@ -2462,10 +2486,17 @@ fn OrganizationSettingsBody() -> Element {
                                                         logo_broken.set(false);
                                                         logo_url.set(t.branding.logo_url);
                                                     }
-                                                    Err(e) => logo_error.set(e.user_message()),
+                                                    Err(e) => {
+                                                        tracing::error!("logo upload failed for {file_name}: {e}");
+                                                        logo_error.set(e.user_message());
+                                                    }
                                                 }
                                             }
-                                            Err(_) => logo_error.set("Could not read the selected file.".to_string()),
+                                            // MAPPS-1232: the cause and the file, logged.
+                                            Err(e) => {
+                                                tracing::error!("logo file {file_name} could not be read: {e}");
+                                                logo_error.set("Could not read the selected file.".to_string());
+                                            }
                                         }
                                     }
                                     logo_busy.set(false);
@@ -2717,11 +2748,17 @@ fn ImportPanel(tenant_name: String) -> Element {
                         let Some(file) = evt.files().into_iter().next() else {
                             return;
                         };
-                        file_name.set(file.name());
+                        let name = file.name();
+                        file_name.set(name.clone());
+                        // MAPPS-1232: the previous file's text must not stay
+                        // behind the new name; import is disabled until this
+                        // file is read.
+                        file_text.set(None);
                         spawn(async move {
                             match file.read_string().await {
                                 Ok(text) => file_text.set(Some(text)),
-                                Err(_) => {
+                                Err(e) => {
+                                    tracing::error!("import file {name} could not be read: {e}");
                                     error.set("Could not read the selected file.".to_string())
                                 }
                             }
@@ -2945,6 +2982,19 @@ fn setting_u64(value: &serde_json::Value, path: &str, default: u64) -> u64 {
     })
 }
 
+/// MAPPS-1232: a stored setting outside the range the form accepts, clamped
+/// into it for the form and logged, because saving the form overwrites the
+/// stored value with the clamped one unseen.
+fn setting_in_range(value: u64, path: &str, min: u64, max: u64) -> u64 {
+    let clamped = value.clamp(min, max);
+    if clamped != value {
+        tracing::warn!(
+            "setting {path} holds {value}, outside {min}..={max}; the form shows {clamped}"
+        );
+    }
+    clamped
+}
+
 const DEFAULT_DUE_SETTING_PATH: &str = "/settings/scheduling/default_due_business_days";
 const MAX_DUE_BUSINESS_DAYS: u32 = 365;
 
@@ -2978,10 +3028,12 @@ fn SchedulingSettingsBody() -> Element {
             match crate::modules::tenant_settings::get("scheduling", "default_due_business_days")
                 .await
             {
-                Ok(Some(value)) => Some(
-                    setting_u64(&value, DEFAULT_DUE_SETTING_PATH, 0)
-                        .min(u64::from(MAX_DUE_BUSINESS_DAYS)) as u32,
-                ),
+                Ok(Some(value)) => Some(setting_in_range(
+                    setting_u64(&value, DEFAULT_DUE_SETTING_PATH, 0),
+                    DEFAULT_DUE_SETTING_PATH,
+                    0,
+                    u64::from(MAX_DUE_BUSINESS_DAYS),
+                ) as u32),
                 Ok(None) => Some(0u32),
                 Err(e) => {
                     tracing::error!("default due-date setting load failed: {e}");
@@ -3167,13 +3219,34 @@ impl ReminderSettings {
         };
         for row in rows {
             match row.key.as_str() {
-                "enabled" => s.enabled = row.value.as_bool().unwrap_or(false),
+                // MAPPS-1232: a malformed row is logged, as `setting_u64`
+                // does for `send_hour`, rather than read as off or dropped.
+                "enabled" => {
+                    s.enabled = row.value.as_bool().unwrap_or_else(|| {
+                        tracing::warn!(
+                            "reminder setting enabled holds {}, not a boolean; reading it as off",
+                            row.value
+                        );
+                        false
+                    })
+                }
                 "schedule" => {
-                    s.schedule = row
-                        .value
-                        .as_array()
-                        .map(|a| a.iter().filter_map(|d| d.as_u64()).collect())
-                        .unwrap_or_default()
+                    let Some(entries) = row.value.as_array() else {
+                        tracing::warn!(
+                            "reminder setting schedule holds {}, not a list; reading it as empty",
+                            row.value
+                        );
+                        continue;
+                    };
+                    s.schedule = entries
+                        .iter()
+                        .filter_map(|d| {
+                            d.as_u64().or_else(|| {
+                                tracing::warn!("reminder schedule entry {d} is not a whole number of days; skipped");
+                                None
+                            })
+                        })
+                        .collect();
                 }
                 "send_hour" => s.send_hour = setting_u64(&row.value, "send_hour", 8),
                 _ => {}
@@ -3255,7 +3328,10 @@ fn PaymentRemindersBody() -> Element {
                 Ok(rows) => Some(ReminderSettings::from_rows(&rows)),
                 // No row yet is the unconfigured state: the server's defaults.
                 Err(e) if e.status_code() == Some(404) => Some(ReminderSettings::from_rows(&[])),
-                Err(_) => None,
+                Err(e) => {
+                    tracing::error!("payment reminder settings load failed: {e}");
+                    None
+                }
             }
         }
         #[cfg(not(feature = "app"))]
@@ -3474,14 +3550,16 @@ fn MaxHoursPerDaySettingsBody() -> Element {
             // it as the full 24-hour default. A failed read is surfaced so the
             // form does not silently seed a wrong cap.
             match crate::modules::tenant_settings::get("time_tracking", "max_hours_per_day").await {
-                Ok(Some(value)) => Some(
+                Ok(Some(value)) => Some(setting_in_range(
                     setting_u64(
                         &value,
                         MAX_HOURS_PER_DAY_SETTING_PATH,
                         u64::from(DEFAULT_MAX_HOURS_PER_DAY),
-                    )
-                    .clamp(1, u64::from(MAX_HOURS_PER_DAY_CEILING)) as u32,
-                ),
+                    ),
+                    MAX_HOURS_PER_DAY_SETTING_PATH,
+                    1,
+                    u64::from(MAX_HOURS_PER_DAY_CEILING),
+                ) as u32),
                 Ok(None) => Some(DEFAULT_MAX_HOURS_PER_DAY),
                 Err(e) => {
                     tracing::error!("max-hours-per-day setting load failed: {e}");
@@ -4397,6 +4475,10 @@ struct AssetTypeRow {
     /// Optional so types created before PMS-456 still deserialise.
     #[serde(default)]
     itil_category: Option<String>,
+    /// MAPPS-1232: read so an edit can send it back. This editor does not
+    /// manage nesting, and the server's update writes the column as sent.
+    #[serde(default)]
+    parent_type_id: Option<Uuid>,
 }
 
 #[component]
@@ -4564,6 +4646,8 @@ struct AssetTypeFormState {
     is_active: bool,
     /// PMS-476: free-text ITIL category. Empty = unset on the wire.
     itil_category: String,
+    /// MAPPS-1232: carried, never edited here, and sent back unchanged.
+    parent_type_id: Option<Uuid>,
 }
 
 impl AssetTypeFormState {
@@ -4574,6 +4658,7 @@ impl AssetTypeFormState {
             icon: String::new(),
             is_active: true,
             itil_category: String::new(),
+            parent_type_id: None,
         }
     }
 
@@ -4584,6 +4669,7 @@ impl AssetTypeFormState {
             icon: r.icon.clone().unwrap_or_default(),
             is_active: r.is_active,
             itil_category: r.itil_category.clone().unwrap_or_default(),
+            parent_type_id: r.parent_type_id,
         }
     }
 }
@@ -4604,6 +4690,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
     let mut icon = use_signal(|| initial.icon.clone());
     let mut is_active = use_signal(|| initial.is_active);
     let mut itil_category = use_signal(|| initial.itil_category.clone());
+    let initial_parent = initial.parent_type_id;
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -4624,15 +4711,16 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         error.set(String::new());
         let icon_val = icon.read().trim().to_string();
         let itil_val = itil_category.read().trim().to_string();
-        // `parent_type_id` is always sent null: this v1 editor manages
-        // flat (top-level) asset types only. Nested types are a follow-up.
+        // MAPPS-1232: `parent_type_id` is sent back as loaded. This editor
+        // does not manage nesting, but the server's update writes the column
+        // as sent, so a hardcoded null cleared the parent of a nested type.
         // PMS-476: `itil_category` is free-text so the tenant can coin
         // a new value; the help text on the input surfaces the
         // standard ITIL classes as suggestions.
         let body = serde_json::json!({
             "name": name.read().trim(),
             "icon": opt_str(&icon_val),
-            "parent_type_id": serde_json::Value::Null,
+            "parent_type_id": initial_parent,
             "is_active": *is_active.read(),
             "itil_category": opt_str(&itil_val),
         });
@@ -5393,13 +5481,9 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct PaymentTermRow {
     id: Uuid,
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     is_default: bool,
-    #[serde(default)]
     is_active: bool,
-    #[serde(default)]
     sort_order: i64,
     /// MAPPS-662: what the term means in days (PMS-990). `None` for a term
     /// that names no count.
@@ -5793,15 +5877,10 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct TicketStatusRow {
     id: Uuid,
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     color: String,
-    #[serde(default)]
     is_closed: bool,
-    #[serde(default)]
     is_default: bool,
-    #[serde(default)]
     sort_order: i64,
 }
 
@@ -6160,17 +6239,12 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct TicketPriorityRow {
     id: Uuid,
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     color: String,
     #[serde(default)]
     icon: Option<String>,
-    #[serde(default)]
     sla_multiplier: f64,
-    #[serde(default)]
     is_default: bool,
-    #[serde(default)]
     sort_order: i64,
 }
 
@@ -6545,15 +6619,12 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct TicketTypeRow {
     id: Uuid,
-    #[serde(default)]
     name: String,
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
     icon: Option<String>,
-    #[serde(default)]
     is_active: bool,
-    #[serde(default)]
     sort_order: i64,
 }
 
@@ -6896,7 +6967,6 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct TicketQueueRow {
     id: Uuid,
-    #[serde(default)]
     name: String,
     #[serde(default)]
     description: Option<String>,
@@ -6904,9 +6974,7 @@ struct TicketQueueRow {
     color: Option<String>,
     #[serde(default)]
     icon: Option<String>,
-    #[serde(default)]
     is_default: bool,
-    #[serde(default)]
     sort_order: i64,
 }
 
@@ -7277,13 +7345,10 @@ struct TicketCategoryRow {
     // (MAPPS-1039).
     #[serde(default)]
     parent_name: Option<String>,
-    #[serde(default)]
     name: String,
     #[serde(default)]
     description: Option<String>,
-    #[serde(default)]
     is_active: bool,
-    #[serde(default)]
     sort_order: i64,
 }
 
@@ -7353,13 +7418,12 @@ fn TicketCategoriesSettingsBody() -> Element {
         // subscribe so it also repopulates on reconnect. It still degrades to
         // an empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
+        // MAPPS-1233: the failure is kept, so the editor can say its parent
+        // list is incomplete instead of offering only "None (top level)".
         crate::hooks::fetch::api::get_all_authed::<TicketCategoryRow>("/tickets/categories")
             .await
-            .unwrap_or_else(|e| {
-                // Best-effort: the primary resource drives the outage view.
-                tracing::warn!("category parent lookup failed: {e}");
-                Vec::new()
-            })
+            .inspect_err(|e| tracing::warn!("category parent lookup failed: {e}"))
+            .ok()
     });
 
     let snap = resource.read_unchecked();
@@ -7385,9 +7449,10 @@ fn TicketCategoriesSettingsBody() -> Element {
     // Resolve parent names for the table, and feed the parent picker,
     // from the full set rather than just the current page.
     let all_snap = all_resource.read_unchecked();
+    let parents_failed = matches!(&*all_snap, Some(None));
     let all_cats: Vec<TicketCategoryRow> = match &*all_snap {
-        Some(list) => list.clone(),
-        None => Vec::new(),
+        Some(Some(list)) => list.clone(),
+        _ => Vec::new(),
     };
     rsx! {
         PageHeader {
@@ -7492,6 +7557,7 @@ fn TicketCategoriesSettingsBody() -> Element {
             TicketCategoryFormModal {
                 state,
                 all: all_cats.clone(),
+                parents_failed,
                 onclose: move |_| editing.set(None),
                 onsaved: move |_| {
                     editing.set(None);
@@ -7541,6 +7607,9 @@ impl TicketCategoryFormState {
 struct TicketCategoryFormModalProps {
     state: TicketCategoryFormState,
     all: Vec<TicketCategoryRow>,
+    /// MAPPS-1233: the full category list did not load.
+    #[props(default)]
+    parents_failed: bool,
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
 }
@@ -7679,6 +7748,9 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
                 value: description.read().clone(),
                 oninput: move |e: FormEvent| description.set(e.value()),
             }
+            if props.parents_failed {
+                ErrorBanner { "Could not load every category, so the parent list below may be incomplete." }
+            }
             Select {
                 name: "ticket_category_parent",
                 label: "Parent category",
@@ -7804,17 +7876,11 @@ fn RmmStatusBadge(status: String) -> Element {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RmmConnectionRow {
     id: Uuid,
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     provider: String,
-    #[serde(default)]
     api_url: String,
-    #[serde(default)]
     is_active: bool,
-    #[serde(default)]
     sync_interval_minutes: i64,
-    #[serde(default)]
     sync_status: String,
     #[serde(default)]
     last_error: Option<String>,
@@ -8031,15 +8097,49 @@ const DEFAULT_RMM_SYNC_INTERVAL_MINUTES: i32 = 60;
 /// seeded with and what an untouched form has always sent. Anything else that
 /// is not an `i32` is reported on the field and logged: it used to become 60
 /// silently, so a typo changed the sync cadence and said nothing (MAPPS-700).
+/// MAPPS-1233: what the delete dialog calls a device mapping: its name, or
+/// its device id when the name is blank.
+fn mapping_delete_label(device_name: Option<&str>, device_id: &str) -> String {
+    match device_name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => name.to_string(),
+        None => format!("device {device_id}"),
+    }
+}
+
+/// MAPPS-1233: the connection test's answer as `(reachable, message)`, or the
+/// name of the field it lacked. A missing field used to read as an ordinary
+/// "Not reachable: not reachable" or "Reachable (HTTP 0).".
+fn describe_test_result(v: &serde_json::Value) -> Result<(bool, String), &'static str> {
+    let reachable = v
+        .get("reachable")
+        .and_then(|b| b.as_bool())
+        .ok_or("`reachable`")?;
+    if reachable {
+        let status = v.get("status").and_then(|s| s.as_u64()).ok_or("`status`")?;
+        Ok((true, format!("Reachable (HTTP {status}).")))
+    } else {
+        let err = v.get("error").and_then(|e| e.as_str()).ok_or("`error`")?;
+        Ok((false, format!("Not reachable: {err}")))
+    }
+}
+
 fn parse_sync_interval(raw: &str) -> Result<i32, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(DEFAULT_RMM_SYNC_INTERVAL_MINUTES);
     }
-    trimmed.parse::<i32>().map_err(|e| {
-        tracing::warn!("sync interval {trimmed:?} is not a 32-bit integer: {e}");
-        "Enter a whole number of minutes, such as 60.".to_string()
-    })
+    // MAPPS-1233: the input is `min: "1"`; 0 and negatives are refused too.
+    match trimmed.parse::<i32>() {
+        Ok(n) if n >= 1 => Ok(n),
+        Ok(n) => {
+            tracing::warn!("sync interval {n} is below 1 minute");
+            Err("Enter a whole number of minutes, 1 or more, such as 60.".to_string())
+        }
+        Err(e) => {
+            tracing::warn!("sync interval {trimmed:?} is not a 32-bit integer: {e}");
+            Err("Enter a whole number of minutes, 1 or more, such as 60.".to_string())
+        }
+    }
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -8211,23 +8311,18 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                 )
                 .await
                 {
-                    Ok(v) => {
-                        let reachable = v
-                            .get("reachable")
-                            .and_then(|b| b.as_bool())
-                            .unwrap_or(false);
-                        let msg = if reachable {
-                            let status = v.get("status").and_then(|s| s.as_u64()).unwrap_or(0);
-                            format!("Reachable (HTTP {status}).")
-                        } else {
-                            let err = v
-                                .get("error")
-                                .and_then(|e| e.as_str())
-                                .unwrap_or("not reachable");
-                            format!("Not reachable: {err}")
-                        };
-                        test_result.set(Some((reachable, msg)));
-                    }
+                    Ok(v) => match describe_test_result(&v) {
+                        Ok(result) => test_result.set(Some(result)),
+                        Err(missing) => {
+                            tracing::error!(
+                                "rmm connection {id} test response has no {missing}: {v}"
+                            );
+                            test_result.set(Some((
+                                false,
+                                format!("Test failed: the server's answer had no {missing}."),
+                            )));
+                        }
+                    },
                     Err(err) => test_result.set(Some((false, format!("Test failed: {err}")))),
                 }
             }
@@ -8368,11 +8463,9 @@ struct RmmDeviceMappingRow {
     // connections list to label itself (MAPPS-1039).
     #[serde(default)]
     rmm_connection_name: Option<String>,
-    #[serde(default)]
     rmm_device_id: String,
     #[serde(default)]
     device_name: Option<String>,
-    #[serde(default)]
     sync_status: String,
 }
 
@@ -8421,6 +8514,9 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
             }
         }
     });
+    // MAPPS-1233: a failed load is not "no connections"; it is said, and the
+    // "add a connection first" prompt is only for a real empty set.
+    let conns_failed = matches!(*conns_resource.read_unchecked(), Some(None));
     let connections: Vec<RmmConnectionRow> = conns_resource
         .read_unchecked()
         .clone()
@@ -8459,7 +8555,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         };
     }
 
-    let no_connections = connections.is_empty();
+    let no_connections = connections.is_empty() && !conns_failed;
     let pending = pending_delete.read().clone();
 
     rsx! {
@@ -8473,7 +8569,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                 Button {
                     variant: ButtonVariant::Primary,
                     // MAPPS-357: also block creates while the server is unreachable.
-                    disabled: no_connections || !can_mutate,
+                    disabled: no_connections || conns_failed || !can_mutate,
                     title: if !can_mutate {
                         Some("Can't do this while the server is unreachable".to_string())
                     } else {
@@ -8492,6 +8588,9 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                 class: "mb-3 text-sm text-content bg-surface-2 border border-line rounded-md px-3 py-2",
                 "Add an RMM connection first, then map its devices here."
             }
+        }
+        if conns_failed {
+            ErrorBanner { class: "mb-3", "Could not load the RMM connections, so new items cannot be created here. Refresh the page to try again." }
         }
         if fetch_failed {
             LoadError { what: "RMM device mappings" }
@@ -8528,7 +8627,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                             Button {
                                 variant: ButtonVariant::Primary,
                                 // MAPPS-357: same guards as the header button.
-                                disabled: no_connections || !can_mutate,
+                                disabled: no_connections || conns_failed || !can_mutate,
                                 title: if !can_mutate {
                                     Some("Can't do this while the server is unreachable".to_string())
                                 } else {
@@ -8554,6 +8653,9 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                                     device
                                 };
                                 let device_id = row.rmm_device_id.clone();
+                                // MAPPS-1233: the dialog names the device id when
+                                // there is no name, not "-".
+                                let delete_label = mapping_delete_label(row.device_name.as_deref(), &device_id);
                                 let (connection, connection_title) = rmm_connection_label(
                                     row.rmm_connection_id,
                                     row.rmm_connection_name.as_deref(),
@@ -8581,7 +8683,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                                                 disabled: !can_mutate,
                                                 title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                                                 onclick: {
-                                                    let label = device_display.clone();
+                                                    let label = delete_label.clone();
                                                     move |_| {
                                                         if deleting_id.read().is_some() {
                                                             return;
@@ -8831,13 +8933,10 @@ struct RmmAlertRuleRow {
     // PMS-1479: server-resolved connection name (MAPPS-1039).
     #[serde(default)]
     rmm_connection_name: Option<String>,
-    #[serde(default)]
     name: String,
     #[serde(default)]
     alert_type: Option<String>,
-    #[serde(default)]
     auto_create_ticket: bool,
-    #[serde(default)]
     is_active: bool,
 }
 
@@ -8886,6 +8985,9 @@ fn RmmAlertRulesSettingsBody() -> Element {
             }
         }
     });
+    // MAPPS-1233: a failed load is not "no connections"; it is said, and the
+    // "add a connection first" prompt is only for a real empty set.
+    let conns_failed = matches!(*conns_resource.read_unchecked(), Some(None));
     let connections: Vec<RmmConnectionRow> = conns_resource
         .read_unchecked()
         .clone()
@@ -8924,7 +9026,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
         };
     }
 
-    let no_connections = connections.is_empty();
+    let no_connections = connections.is_empty() && !conns_failed;
     let pending = pending_delete.read().clone();
 
     rsx! {
@@ -8938,7 +9040,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                 Button {
                     variant: ButtonVariant::Primary,
                     // MAPPS-357: also block creates while the server is unreachable.
-                    disabled: no_connections || !can_mutate,
+                    disabled: no_connections || conns_failed || !can_mutate,
                     title: if !can_mutate {
                         Some("Can't do this while the server is unreachable".to_string())
                     } else {
@@ -8957,6 +9059,9 @@ fn RmmAlertRulesSettingsBody() -> Element {
                 class: "mb-3 text-sm text-content bg-surface-2 border border-line rounded-md px-3 py-2",
                 "Add an RMM connection first, then define alert rules for it."
             }
+        }
+        if conns_failed {
+            ErrorBanner { class: "mb-3", "Could not load the RMM connections, so new items cannot be created here. Refresh the page to try again." }
         }
         if fetch_failed {
             LoadError { what: "RMM alert rules" }
@@ -8993,7 +9098,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                             Button {
                                 variant: ButtonVariant::Primary,
                                 // MAPPS-357: same guards as the header button.
-                                disabled: no_connections || !can_mutate,
+                                disabled: no_connections || conns_failed || !can_mutate,
                                 title: if !can_mutate {
                                     Some("Can't do this while the server is unreachable".to_string())
                                 } else {
@@ -9553,7 +9658,10 @@ mod tests {
         assert_eq!(parse_sort_order(""), Ok(0));
         assert_eq!(parse_sort_order("  "), Ok(0));
         assert_eq!(parse_sort_order(" 12 "), Ok(12));
-        assert_eq!(parse_sort_order("-3"), Ok(-3));
+        assert!(
+            parse_sort_order("-3").is_err(),
+            "the field is min 0 (MAPPS-1233)"
+        );
         assert!(parse_sort_order("2147483648").is_err());
         assert!(parse_sort_order("1.5").is_err());
         assert!(parse_sort_order("first").is_err());
@@ -10287,6 +10395,124 @@ mod mapps979_per_group_advanced_tests {
 
 /// MAPPS-1120: the Integrations group reads as labelled sections, and no tile
 /// carries its own group's name.
+/// MAPPS-1233: the lookup-editor and RMM findings from the specification pass.
+#[cfg(test)]
+mod mapps1233_tests {
+    use super::{
+        describe_test_result, mapping_delete_label, parse_sort_order, parse_sync_interval,
+        PaymentTermRow, RmmConnectionRow,
+    };
+
+    fn code() -> String {
+        let src = include_str!("settings.rs");
+        src[..src.find("mod mapps1233_tests").expect("this module")]
+            .lines()
+            .map(|l| l.find("//").map_or(l, |i| &l[..i]))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Finding 1: "-3" was accepted under a "between 0 and ..." message.
+    #[test]
+    fn a_negative_sort_order_is_refused() {
+        assert_eq!(parse_sort_order(""), Ok(0));
+        assert_eq!(parse_sort_order(" 0 "), Ok(0));
+        assert_eq!(
+            parse_sort_order("-3"),
+            Err("Enter a whole number between 0 and 2147483647.".to_string())
+        );
+    }
+
+    /// Finding 2: 0 and negative minutes were sent.
+    #[test]
+    fn a_sync_interval_below_one_is_refused() {
+        assert_eq!(parse_sync_interval("15"), Ok(15));
+        assert!(parse_sync_interval("0").is_err());
+        assert!(parse_sync_interval("-5").is_err());
+    }
+
+    /// Finding 3: Save and Delete stayed live while the server was unreachable.
+    #[test]
+    fn the_shared_modal_blocks_writes_while_unreachable() {
+        let modal = include_str!("../components/setting_form_modal.rs");
+        assert!(modal.contains("let can_mutate = crate::hooks::use_can_mutate();"));
+        assert_eq!(
+            modal.matches("disabled: !can_mutate,").count(),
+            2,
+            "Save and Delete"
+        );
+    }
+
+    /// Finding 4: a malformed test answer read as an ordinary result.
+    #[test]
+    fn a_malformed_test_answer_names_the_missing_field() {
+        let ok = |v: serde_json::Value| describe_test_result(&v);
+        assert_eq!(
+            ok(serde_json::json!({"reachable": true, "status": 200})),
+            Ok((true, "Reachable (HTTP 200).".to_string()))
+        );
+        assert_eq!(
+            ok(serde_json::json!({"reachable": false, "error": "timeout"})),
+            Ok((false, "Not reachable: timeout".to_string()))
+        );
+        assert_eq!(ok(serde_json::json!({})), Err("`reachable`"));
+        assert_eq!(ok(serde_json::json!({"reachable": true})), Err("`status`"));
+        assert_eq!(ok(serde_json::json!({"reachable": false})), Err("`error`"));
+    }
+
+    /// Finding 5: a failed full-category load silently emptied the parent picker.
+    #[test]
+    fn a_failed_parent_list_is_said_in_the_editor() {
+        let code = code();
+        assert!(code.contains("let parents_failed = matches!(&*all_snap, Some(None));"));
+        assert!(code.contains("if props.parents_failed { ErrorBanner {"));
+    }
+
+    /// Finding 6: a failed connections load read as "add a connection first".
+    #[test]
+    fn a_failed_connections_load_is_not_an_empty_set() {
+        let code = code();
+        assert_eq!(
+            code.matches("let no_connections = connections.is_empty() && !conns_failed;")
+                .count(),
+            2
+        );
+        assert_eq!(
+            code.matches("Could not load the RMM connections").count(),
+            2
+        );
+    }
+
+    /// Finding 7: a missing required field decoded as "" or false.
+    #[test]
+    fn a_missing_required_field_fails_the_decode() {
+        let id = uuid::Uuid::new_v4();
+        assert!(serde_json::from_value::<PaymentTermRow>(serde_json::json!({ "id": id })).is_err());
+        assert!(serde_json::from_value::<RmmConnectionRow>(
+            serde_json::json!({ "id": id, "name": "Tactical" })
+        )
+        .is_err());
+        let full = serde_json::json!({
+            "id": id, "name": "Net 30", "is_default": false, "is_active": true, "sort_order": 1
+        });
+        assert!(
+            serde_json::from_value::<PaymentTermRow>(full).is_ok(),
+            "net_days is optional"
+        );
+    }
+
+    /// Finding 8: a blank device name was confirmed as "-".
+    #[test]
+    fn the_delete_dialog_names_the_device() {
+        assert_eq!(mapping_delete_label(Some("Server 1"), "dev-9"), "Server 1");
+        assert_eq!(mapping_delete_label(Some("  "), "dev-9"), "device dev-9");
+        assert_eq!(mapping_delete_label(None, "dev-9"), "device dev-9");
+    }
+}
+
 #[cfg(test)]
 mod mapps1120_settings_section_tests {
     use super::{
@@ -10577,5 +10803,129 @@ mod pms1350_personal_vs_administrative_tests {
                 surface.group, surface.title
             );
         }
+    }
+}
+
+/// MAPPS-1232: the hub, organization, import and scheduling findings from
+/// the specification pass.
+#[cfg(test)]
+mod mapps1232_tests {
+    use super::{setting_in_range, AssetTypeFormState, AssetTypeRow, ReminderSettings, SettingRow};
+
+    fn code() -> String {
+        let src = include_str!("settings.rs");
+        src[..src.find("mod mapps1232_tests").expect("this module")]
+            .lines()
+            .map(|l| l.find("//").map_or(l, |i| &l[..i]))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Finding 1: a failed app-name load rendered an editable, empty card.
+    #[test]
+    fn the_app_name_form_needs_a_loaded_value() {
+        let code = code();
+        assert!(code.contains(
+            "let app_name_failed = matches!(*app_name_snap, Some(OperatorLoad::Failed));"
+        ));
+        let card = &code[code
+            .find(r#"title: "App name".to_string(),"#)
+            .expect("the card")..];
+        let failed = card
+            .find("if app_name_failed {")
+            .expect("the failure branch");
+        let loading = card
+            .find("} else if !app_name_loaded {")
+            .expect("the loading branch");
+        let input = card.find(r#"name: "app_name","#).expect("the input");
+        assert!(
+            failed < loading && loading < input,
+            "no input until the value loaded"
+        );
+    }
+
+    /// Findings 2 and 3: logo failures were shown but never logged.
+    #[test]
+    fn logo_failures_are_logged() {
+        let code = code();
+        assert!(code.contains(r#"tracing::error!("logo removal failed: {e}");"#));
+        assert!(code.contains(r#"tracing::error!("logo upload failed for {file_name}: {e}");"#));
+        assert!(
+            code.contains(r#"tracing::error!("logo file {file_name} could not be read: {e}");"#)
+        );
+    }
+
+    /// Finding 4: a failed read kept the previous file's text behind the new name.
+    #[test]
+    fn a_new_import_file_drops_the_previous_text() {
+        let code = code();
+        let pick = &code[code
+            .find("let name = file.name(); file_name.set(name.clone());")
+            .expect("the pick")..];
+        let cleared = pick.find("file_text.set(None);").expect("cleared");
+        let read = pick.find("file.read_string().await").expect("the read");
+        assert!(cleared < read, "cleared before the read can fail");
+        assert!(pick.contains(r#"tracing::error!("import file {name} could not be read: {e}");"#));
+    }
+
+    /// Finding 5: out-of-range stored values were clamped in silence.
+    #[test]
+    fn an_out_of_range_setting_is_clamped_and_reported() {
+        assert_eq!(setting_in_range(30, "/x", 0, 365), 30);
+        assert_eq!(setting_in_range(400, "/x", 0, 365), 365);
+        assert_eq!(setting_in_range(0, "/x", 1, 24), 1);
+        let code = code();
+        assert!(!code.contains(".min(u64::from(MAX_DUE_BUSINESS_DAYS))"));
+        assert!(!code.contains(".clamp(1, u64::from(MAX_HOURS_PER_DAY_CEILING))"));
+    }
+
+    /// Finding 6: malformed reminder rows were read as off, or dropped, silently.
+    #[test]
+    fn malformed_reminder_rows_still_read_and_are_logged() {
+        let row = |key: &str, value: serde_json::Value| SettingRow {
+            key: key.to_string(),
+            value,
+        };
+        let s = ReminderSettings::from_rows(&[
+            row("enabled", serde_json::json!("yes")),
+            row("schedule", serde_json::json!([1, "x", 3])),
+        ]);
+        assert!(!s.enabled);
+        assert_eq!(s.schedule, vec![1, 3]);
+        let s = ReminderSettings::from_rows(&[row("schedule", serde_json::json!("weekly"))]);
+        assert!(s.schedule.is_empty());
+        let code = code();
+        assert!(code.contains("not a boolean; reading it as off"));
+        assert!(code.contains("is not a whole number of days; skipped"));
+    }
+
+    /// Finding 7: the reminders load error was discarded.
+    #[test]
+    fn a_failed_reminders_load_is_logged() {
+        assert!(
+            code().contains(r#"tracing::error!("payment reminder settings load failed: {e}");"#)
+        );
+    }
+
+    /// Finding 8: an edit always sent `parent_type_id: null`, clearing it.
+    #[test]
+    fn an_asset_type_edit_keeps_its_parent() {
+        let parent = uuid::Uuid::new_v4();
+        let row: AssetTypeRow = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(),
+            "name": "Laptops",
+            "parent_type_id": parent,
+        }))
+        .expect("an asset type row");
+        assert_eq!(
+            AssetTypeFormState::from_existing(&row).parent_type_id,
+            Some(parent)
+        );
+        let code = code();
+        assert!(code.contains(r#""parent_type_id": initial_parent,"#));
+        assert!(!code.contains(r#""parent_type_id": serde_json::Value::Null,"#));
     }
 }

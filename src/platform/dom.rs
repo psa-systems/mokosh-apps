@@ -119,10 +119,17 @@ pub fn set_root_css_vars(vars: &[(&str, &str)]) {
 /// Used by the auth heartbeat to skip a poll nobody is waiting on.
 #[cfg(target_arch = "wasm32")]
 pub fn window_hidden() -> bool {
-    web_sys::window()
-        .and_then(|w| w.document())
-        .map(|d| d.visibility_state() == web_sys::VisibilityState::Hidden)
-        .unwrap_or(false)
+    match web_sys::window().and_then(|w| w.document()) {
+        Some(d) => d.visibility_state() == web_sys::VisibilityState::Hidden,
+        // MAPPS-1236: answering "visible" is the safe side (the heartbeat
+        // keeps polling), but the reason belongs in the console.
+        None => {
+            tracing::warn!(
+                "no document to read the visibility state from; treating the app as visible"
+            );
+            false
+        }
+    }
 }
 
 // --- coming back to the foreground (MAPPS-645) ---------------------------
@@ -264,10 +271,19 @@ pub fn watch_visibility() {}
 /// Does the operating system ask for a dark UI right now?
 #[cfg(target_arch = "wasm32")]
 pub fn system_prefers_dark() -> bool {
-    web_sys::window()
+    match web_sys::window()
         .and_then(|w| w.match_media("(prefers-color-scheme: dark)").ok().flatten())
-        .map(|m| m.matches())
-        .unwrap_or(false)
+    {
+        Some(m) => m.matches(),
+        // MAPPS-1236: a "system" theme then renders light, which looks like
+        // the setting being ignored; say why in the console.
+        None => {
+            tracing::warn!(
+                "could not query prefers-color-scheme; the system theme falls back to light"
+            );
+            false
+        }
+    }
 }
 
 /// Move keyboard focus to the element with this id. No-op when the
@@ -378,7 +394,7 @@ impl FocusToken {
 const FOCUS_STASH: &str = "__mokoshFocusStash";
 
 /// MAPPS-579: the selection on a `<textarea>`, in UTF-16 code units, or the
-/// end of `fallback_len` when the element cannot be reached.
+/// end of `fallback_end` when the element cannot be reached.
 ///
 /// UTF-16 because that is what `selectionStart` counts. The caller converts;
 /// see `crate::utils::md_edit`, which documents why mixing those up with byte
@@ -843,13 +859,6 @@ pub fn set_textarea_selection(id: &str, start: u32, end: u32) {
     ));
 }
 
-/// MAPPS-511, and the caret MAPPS-699 added: the desktop half of the
-/// behaviours that used to be inert here, pinned in source.
-///
-/// A source scan, deliberately: every one of them needs a webview to
-/// evaluate JavaScript in, so no host test can drive them. What can
-/// regress is the wiring, and each of these went missing once already
-/// as a stub that answered "nothing to do" and said nothing about it.
 /// MAPPS-741: the headings a table of contents follows, inside the article
 /// body. Only headings carry an id in rendered Markdown (`utils::markdown`),
 /// so `[id]` is the whole filter.
@@ -1006,6 +1015,13 @@ pub fn watch_active_heading(container_id: &str, on_active: dioxus::prelude::Even
     });
 }
 
+/// MAPPS-511, and the caret MAPPS-699 added: the desktop half of the
+/// behaviours that used to be inert here, pinned in source.
+///
+/// A source scan, deliberately: every one of them needs a webview to
+/// evaluate JavaScript in, so no host test can drive them. What can
+/// regress is the wiring, and each of these went missing once already
+/// as a stub that answered "nothing to do" and said nothing about it.
 #[cfg(test)]
 mod desktop_wiring_tests {
     const SRC: &str = include_str!("dom.rs");
@@ -1019,6 +1035,49 @@ mod desktop_wiring_tests {
             .find("mod desktop_wiring_tests")
             .expect("this module is part of this file");
         SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// MAPPS-1236: this module's own doc paragraph sat above
+    /// `HEADING_SELECTOR`, where rustdoc glued it onto the constant.
+    #[test]
+    fn the_wiring_paragraph_documents_this_module_not_the_heading_selector() {
+        let para = "said nothing about it.\n";
+        let at = SRC.find(para).expect("the paragraph is still here");
+        let after = SRC[at + para.len()..].trim_start();
+        assert!(
+            after.starts_with("#[cfg(test)]\nmod desktop_wiring_tests"),
+            "the paragraph is followed by: {}",
+            &after[..after.len().min(80)]
+        );
+    }
+
+    /// MAPPS-1236: the two browser reads that used to fall back silently.
+    #[test]
+    fn browser_reads_say_why_they_fell_back() {
+        let code = code_only();
+        for (read, warn) in [
+            (
+                "pub fn window_hidden() -> bool {",
+                "treating the app as visible",
+            ),
+            (
+                "pub fn system_prefers_dark() -> bool {",
+                "the system theme falls back to light",
+            ),
+        ] {
+            let at = code.find(read).unwrap_or_else(|| panic!("{read} is gone"));
+            let body = &code[at..at + 600.min(code.len() - at)];
+            assert!(
+                body.contains("tracing::warn!"),
+                "{read} falls back silently"
+            );
+            assert!(body.contains(warn), "{read}: {body}");
+        }
+    }
+
+    #[test]
+    fn the_textarea_selection_doc_names_its_real_parameter() {
+        assert!(!SRC.contains(concat!("fallback", "_len")));
     }
 
     /// Both hosts answer the read, and neither answers it with `None`
