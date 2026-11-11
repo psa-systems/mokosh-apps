@@ -1,8 +1,9 @@
 //! Compile-time OIDC configuration.
 //!
 //! Values are baked in via `option_env!` so a deployment can be locked to
-//! a specific issuer at build time. For dev convenience there are
-//! reasonable defaults pointing at a local mokosh-server.
+//! a specific issuer at build time. Without one the issuer is empty, which
+//! means standalone (local username/password) sign-in, and the hub defaults
+//! to `http://localhost:4400` for development.
 
 #[derive(Debug, Clone)]
 pub struct OidcConfig {
@@ -17,7 +18,7 @@ pub struct OidcConfig {
     /// If `None`, the runtime default is `<origin>/auth/callback`.
     pub redirect_uri: Option<&'static str>,
     pub scopes: &'static str,
-    /// Origin of the Bunyip hub (e.g. `https://a contributor-bunyip.a8n.run`).
+    /// Origin of the Bunyip hub (e.g. `https://hub.example.com`).
     /// Used by the legacy `/login`, `/forgot-password`,
     /// `/reset-password/:token`, `/invite/:token`, and signup redirect
     /// stubs so existing bookmarks land on the hub instead of a 404. No
@@ -191,7 +192,7 @@ impl OidcConfig {
                  elsewhere (including the desktop build), set \
                  `window.__MOKOSH_CONFIG__.docs_base_url` at deploy time (via \
                  `MOKOSH_DOCS_BASE_URL` on the mokosh-apps container, per \
-                 `oci-build/entrypoint.sh`) or `MOKOSH_DOCS_URL` at build \
+                 `oci-build/entrypoint.sh`) or `MOKOSH_DOCS_BASE_URL` at build \
                  time to point at the docs site."
             );
         }
@@ -388,5 +389,26 @@ mod tests {
             resolved,
             format!("http://127.0.0.1:{}/auth/callback", listener.port())
         );
+    }
+}
+
+/// MAPPS-1235: the docs warning and the module doc name what the code reads.
+#[cfg(test)]
+mod mapps1235_config_tests {
+    #[test]
+    fn the_docs_warning_names_the_variable_that_is_read() {
+        let src = include_str!("config.rs");
+        let head = &src[..src.find("mod mapps1235_config_tests").expect("this module")];
+        assert!(head.contains("or `MOKOSH_DOCS_BASE_URL` at build"));
+        assert!(!head.contains("or `MOKOSH_DOCS_URL` at build"));
+    }
+
+    #[test]
+    fn the_module_doc_matches_the_defaults() {
+        let src = include_str!("config.rs");
+        let head = &src[..src.find("mod mapps1235_config_tests").expect("this module")];
+        assert!(!head.contains("pointing at a local mokosh-server"));
+        assert!(head.contains("(e.g. `https://hub.example.com`)"));
+        assert!(!head.contains("a contributor-bunyip"));
     }
 }

@@ -31,22 +31,24 @@ pub fn get(field: &str) -> Option<String> {
     crate::platform::config::get(field)
 }
 
-/// MAPPS-329: read a boolean feature-flag field off `window.__MOKOSH_CONFIG__`.
-/// Returns true ONLY when the field is present AND the string parses as
-/// truthy (`"true"` case-insensitive, or `"1"`). Anything else - including
-/// the field being unset entirely - returns false so flags are locked-off
-/// by default and need an explicit operator opt-in to enable.
-pub fn flag_enabled(field: &str) -> bool {
-    get(field).is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
-}
-
 /// MAPPS-880: the server's KB attachment size cap
 /// (`KB_ATTACHMENT_MAX_BYTES`), operator-tunable independently of the
 /// client build. Returns `None` when the field is absent, empty, or not
 /// a valid byte count, so the caller falls back to its own compile-time
 /// default rather than a bogus limit.
 pub fn kb_attachment_max_bytes() -> Option<usize> {
-    get("kb_attachment_max_bytes")?.parse().ok()
+    parse_byte_count("kb_attachment_max_bytes", &get("kb_attachment_max_bytes")?)
+}
+
+/// MAPPS-1235: an operator who set the value meant it, so a typo is logged
+/// with the value before the compile-time default takes over.
+fn parse_byte_count(field: &str, raw: &str) -> Option<usize> {
+    raw.trim()
+        .parse()
+        .inspect_err(|e| {
+            tracing::warn!("{field} is {raw:?}, not a byte count ({e}); using the built-in limit")
+        })
+        .ok()
 }
 
 /// MAPPS-649: resolve the single portal host (typically
@@ -99,4 +101,32 @@ pub fn portal_root_url() -> Option<String> {
         "https"
     };
     Some(format!("{scheme}://{host}"))
+}
+
+/// MAPPS-1235: an operator typo is logged; one flag vocabulary.
+#[cfg(test)]
+mod mapps1235_runtime_config_tests {
+    use super::parse_byte_count;
+
+    #[test]
+    fn a_byte_count_typo_falls_back_and_is_logged() {
+        assert_eq!(
+            parse_byte_count("kb_attachment_max_bytes", " 1048576 "),
+            Some(1_048_576)
+        );
+        assert_eq!(parse_byte_count("kb_attachment_max_bytes", "10MB"), None);
+        let src = include_str!("runtime_config.rs");
+        assert!(src.contains("not a byte count ({e}); using the built-in limit"));
+    }
+
+    /// `flag_enabled` had no caller and its own idea of "true"; the
+    /// vocabulary is `feature_flags::is_truthy`'s alone.
+    #[test]
+    fn the_unused_flag_parser_is_gone() {
+        let src = include_str!("runtime_config.rs");
+        let head = &src[..src
+            .find("mod mapps1235_runtime_config_tests")
+            .expect("this module")];
+        assert!(!head.contains("pub fn flag_enabled("));
+    }
 }
