@@ -1,17 +1,18 @@
 //! Where the app thinks it is, and how it leaves (MAPPS-504).
 //!
-//! A desktop window has no URL bar, so every reader here answers `None`
-//! on the native build and each caller falls back to what it already
-//! falls back to when the browser refuses (configured values, the hub
-//! URL, or "not on that route"). That is a real difference, not a
-//! stub pretending to be a browser: the callers were already written
-//! for a `None`, because `web_sys::window()` is itself an `Option`.
+//! A desktop window has no URL bar, so the readers that ask about one
+//! (`search`, `origin`, `host`) answer `None` on the native build and each
+//! caller falls back to what it already falls back to when the browser
+//! refuses (configured values, the hub URL, or "not on that route"). That
+//! is a real difference, not a stub pretending to be a browser: the
+//! callers were already written for a `None`, because `web_sys::window()`
+//! is itself an `Option`.
 //!
-//! [`current_query`] is the exception, and MAPPS-683 is why. A reader
-//! that wants the query the app was NAVIGATED with is not asking about
-//! the URL bar at all: a `Link` pushes its target verbatim into the
-//! router's history on both hosts, so the router can answer it on the
-//! desktop too.
+//! [`current_query`] (MAPPS-683) and `pathname` (MAPPS-697) are the
+//! exceptions. A reader that wants the path or query the app was
+//! NAVIGATED to is not asking about the URL bar at all: a `Link` pushes its
+//! target verbatim into the router's history on both hosts, so the router
+//! answers them on the desktop too.
 
 /// Path component of the current URL, e.g. `/onboarding/profile`.
 #[cfg(target_arch = "wasm32")]
@@ -121,8 +122,16 @@ fn path_of(route: &str) -> String {
 /// (MAPPS-336, MAPPS-919). Browser-only: a desktop window has no URL bar.
 #[cfg(target_arch = "wasm32")]
 pub fn replace_state(url: &str) {
-    if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
-        let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(url));
+    // MAPPS-1236: a failure here leaves a credential in the address bar and
+    // in history, so it is logged. Only the path: the query is what is
+    // being scrubbed.
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    let Some(history) = web_sys::window().and_then(|w| w.history().ok()) else {
+        tracing::error!("no history to rewrite the address bar to {path}");
+        return;
+    };
+    if let Err(e) = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(url)) {
+        tracing::error!("could not rewrite the address bar to {path}: {e:?}");
     }
 }
 
@@ -281,6 +290,50 @@ pub fn open_external(url: &str) -> Result<(), String> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn reload() -> bool {
     false
+}
+
+/// MAPPS-1236: the module doc and the browser `replace_state`, pinned in
+/// source (the latter needs a browser to drive).
+#[cfg(test)]
+mod mapps_1236_tests {
+    const SRC: &str = include_str!("location.rs");
+
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod mapps_1236_tests")
+            .expect("this module is in this file");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn the_module_doc_names_both_router_backed_readers() {
+        let doc: String = SRC
+            .lines()
+            .take_while(|l| l.starts_with("//!"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(!doc.contains("every reader here answers `None`"), "{doc}");
+        assert!(doc.contains("`pathname` (MAPPS-697)"), "{doc}");
+        assert!(doc.contains("[`current_query`] (MAPPS-683)"), "{doc}");
+    }
+
+    #[test]
+    fn a_failed_address_bar_rewrite_is_logged_without_its_query() {
+        let code = code_only();
+        let at = code
+            .find("pub fn replace_state(url: &str) {")
+            .expect("the browser replace_state");
+        let body = &code[at..at + 700.min(code.len() - at)];
+        assert!(
+            !body.contains("let _ = history.replace_state_with_url"),
+            "{body}"
+        );
+        assert!(
+            body.contains("could not rewrite the address bar to {path}"),
+            "{body}"
+        );
+        assert!(body.contains("split(['?', '#'])"), "{body}");
+    }
 }
 
 #[cfg(test)]

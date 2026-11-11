@@ -192,10 +192,13 @@ fn task_status_badge_prefer(
     id: &Option<uuid::Uuid>,
     sent_name: Option<&str>,
 ) -> (BadgeVariant, String) {
-    let (variant, cached_name) = task_status_badge(statuses, id);
-    match sent_name.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(name) => (variant, name.to_string()),
-        None => (variant, cached_name),
+    let cached = id.and_then(|sid| statuses.iter().find(|s| s.id == sid));
+    match (sent_name.map(str::trim).filter(|s| !s.is_empty()), cached) {
+        (Some(name), Some(s)) if s.is_completed => (BadgeVariant::Green, name.to_string()),
+        // MAPPS-1227: the server named the status, so it is not unresolved;
+        // `task_status_badge` would log it as one and draw a Gray "Unknown".
+        (Some(name), _) => (BadgeVariant::Blue, name.to_string()),
+        (None, _) => task_status_badge(statuses, id),
     }
 }
 
@@ -414,6 +417,19 @@ fn insert_opt_uuid(body: &mut serde_json::Map<String, serde_json::Value>, key: &
 }
 
 /// One-decimal hours, or "-" when absent.
+/// MAPPS-1227: hours left on the budget, or `None` with no budget to subtract
+/// from. `budget_hours.unwrap_or(0.0) - logged` showed a negative Remaining
+/// beside an Estimated of "-".
+fn remaining_hours(budget_hours: Option<f64>, logged: f64) -> Option<f64> {
+    budget_hours.map(|b| b - logged)
+}
+
+/// MAPPS-1227: whether the list is narrowed by a search or a status, which is
+/// what decides between "no projects yet" and "nothing matches".
+fn filters_active(search: &str, status: &str) -> bool {
+    !search.trim().is_empty() || !status.is_empty()
+}
+
 fn fmt_hours(v: Option<f64>) -> String {
     match v {
         Some(n) => format!("{n:.1}"),
@@ -513,6 +529,11 @@ pub fn ProjectListPage() -> Element {
     // fires one full-page refetch per pause in typing rather than one per
     // keystroke.
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
+    // MAPPS-1227: `use_remote_resource` folds a failure while the server is
+    // reachable into an empty page (its documented contract), which this list
+    // then called "No projects yet". The fetcher records the failure here so
+    // the page can say it could not load instead.
+    let mut list_error = use_signal(String::new);
     let projects_resource = crate::hooks::use_remote_resource(move || {
         let q = search_debounced.read().trim().to_string();
         let status = status_filter.read().clone();
@@ -534,7 +555,16 @@ pub fn ProjectListPage() -> Element {
             }
             // MAPPS-604: contact-first bearer selection so a signed-in
             // contact sees only their Company's projects.
-            crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteProject>>(&path).await
+            let result =
+                crate::hooks::fetch::api::get_authed_any::<Paginated<RemoteProject>>(&path).await;
+            match &result {
+                Ok(_) => list_error.set(String::new()),
+                Err(e) => {
+                    tracing::error!("project list load failed: {e}");
+                    list_error.set(e.clone());
+                }
+            }
+            result
         }
     });
     // MAPPS-546: the stat cards are tenant-wide totals, so they come from the
@@ -562,11 +592,11 @@ pub fn ProjectListPage() -> Element {
 
     // MAPPS-546: tenant-wide totals from `/projects/summary`, not from the rows
     // on screen. Counting the fetched page reported one page as the tenant.
-    let summary = summary_resource
-        .read_unchecked()
-        .clone()
-        .flatten()
-        .unwrap_or_default();
+    let summary_snapshot = summary_resource.read_unchecked().clone();
+    // MAPPS-1227: a failed summary shows "-" on every card, not 0 and $0.00,
+    // which read as a tenant with no projects.
+    let summary_failed = matches!(summary_snapshot, Some(None));
+    let summary = summary_snapshot.flatten().unwrap_or_default();
     let count_of = |status: &str| {
         summary
             .counts_by_status
@@ -588,10 +618,15 @@ pub fn ProjectListPage() -> Element {
     // PMS-365: route through the shared formatter so the stat matches the
     // project card / budget panel ($1,234.00) instead of a bare $1234.
     let total_value_label = format_money_f64(Some(total_value));
-
-    // MAPPS-546: the search and status filter are the server's now, so these
-    // rows ARE the matches for this page.
-    let filtered: Vec<&RemoteProject> = projects.iter().collect();
+    let stat = |value: String| {
+        if summary_failed {
+            "-".to_string()
+        } else {
+            value
+        }
+    };
+    let list_failed = !list_error.read().is_empty();
+    let narrowed = filters_active(&search.read(), &status_filter.read());
 
     rsx! {
         PageHeader {
@@ -616,10 +651,10 @@ pub fn ProjectListPage() -> Element {
 
         // Stats
         div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-6",
-            StatCard { label: "Active Projects", value: "{active}" }
-            StatCard { label: "On Hold", value: "{on_hold}" }
-            StatCard { label: "Completed", value: "{completed}" }
-            StatCard { label: "Total Budget", value: "{total_value_label}" }
+            StatCard { label: "Active Projects", value: stat(active.to_string()) }
+            StatCard { label: "On Hold", value: stat(on_hold.to_string()) }
+            StatCard { label: "Completed", value: stat(completed.to_string()) }
+            StatCard { label: "Total Budget", value: stat(total_value_label) }
         }
 
         // MAPPS-388: de-boxed. Search + type controls sit directly on the
@@ -654,8 +689,10 @@ pub fn ProjectListPage() -> Element {
                 // PMS-353: card-grid skeleton matching the populated layout,
                 // instead of a bare "Loading projects…" line.
                 crate::components::CardGridSkeleton {}
-            } else if filtered.is_empty() {
-                if projects.is_empty() {
+            } else if list_failed {
+                ErrorBanner { "Could not load projects." }
+            } else if projects.is_empty() {
+                if !narrowed {
                     crate::components::EmptyState {
                         title: "No projects yet".to_string(),
                         description: "Create your first project to plan and track work.".to_string(),
@@ -681,6 +718,7 @@ pub fn ProjectListPage() -> Element {
                                 onclick: move |_| {
                                     search.set(String::new());
                                     status_filter.set(String::new());
+                                    page.set(1);
                                 },
                                 "Clear filters"
                             }
@@ -690,7 +728,7 @@ pub fn ProjectListPage() -> Element {
             } else {
                 // Project cards
                 div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6",
-                    for p in filtered.iter() {
+                    for p in projects.iter() {
                         {
                             let (variant, label) = status_badge(&p.status);
                             let company = project_company(p);
@@ -1188,13 +1226,12 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         let id = id_for_tasks.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::list_or_empty(
-                "project task",
-                crate::hooks::fetch::api::get_all_authed::<RemoteTask>(&format!(
-                    "/projects/{id}/tasks"
-                ))
-                .await,
-            )
+            // MAPPS-1227: keep a failure apart from an empty list, so the
+            // table says "Could not load tasks." instead of "No tasks yet."
+            crate::hooks::fetch::api::get_all_authed::<RemoteTask>(&format!("/projects/{id}/tasks"))
+                .await
+                .inspect_err(|e| tracing::error!("project task load failed for {id}: {e}"))
+                .ok()
         }
     });
     // MAPPS-940: shared task-statuses cache, not a per-page fetch.
@@ -1231,13 +1268,12 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         let id = id_for_proj_history.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::list_or_empty(
-                "project change history entry",
-                crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
-                    "/audit-log/entity/projects/{id}"
-                ))
-                .await,
-            )
+            crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
+                "/audit-log/entity/projects/{id}"
+            ))
+            .await
+            .inspect_err(|e| tracing::error!("project change history load failed for {id}: {e}"))
+            .ok()
         }
     });
 
@@ -1254,16 +1290,18 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         .as_ref()
         .map(|p| p.status == "cancelled")
         .unwrap_or(false);
-    let tasks = tasks_resource.read_unchecked().clone().unwrap_or_default();
+    let tasks_snapshot = tasks_resource.read_unchecked().clone();
+    let tasks_loading = tasks_snapshot.is_none();
+    let tasks_failed = matches!(tasks_snapshot, Some(None));
+    let tasks = tasks_snapshot.flatten().unwrap_or_default();
     let statuses = statuses_resource
         .read_unchecked()
         .clone()
         .unwrap_or_default();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
-    let project_history = project_history_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
+    let project_history_snapshot = project_history_resource.read_unchecked().clone();
+    let project_history_failed = matches!(project_history_snapshot, Some(None));
+    let project_history = project_history_snapshot.flatten().unwrap_or_default();
     // "Edited" marker for the project Overview: most recent recorded edit.
     let project_edited = project_history
         .iter()
@@ -1556,7 +1594,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     0
                 };
                 let logged_h = p.actual_hours.unwrap_or(0.0);
-                let remaining_h = p.budget_hours.unwrap_or(0.0) - logged_h;
+                let remaining_h = remaining_hours(p.budget_hours, logged_h);
                 let description = p.description.clone().filter(|d| !d.trim().is_empty());
                 rsx! {
                     div { class: "grid grid-cols-1 @5xl:grid-cols-3 gap-6",
@@ -1631,6 +1669,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     tasks: tasks.clone(),
                                     statuses: statuses.clone(),
                                     users: users.clone(),
+                                    is_loading: tasks_loading,
+                                    load_failed: tasks_failed,
                                     onselect: move |t| selected_task.set(Some(t)),
                                 }
                             }
@@ -1711,13 +1751,15 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     }
                                     div { class: "flex justify-between",
                                         span { class: "text-sm text-muted", "Remaining" }
-                                        span { class: "font-medium", "{remaining_h:.1} h" }
+                                        span { class: "font-medium", "{fmt_hours(remaining_h)} h" }
                                     }
                                 }
                             }
                             // PMS-205: the project's own change history.
                             Card { title: "Change History",
-                                if project_history.is_empty() {
+                                if project_history_failed {
+                                    p { class: "text-sm text-red-600 dark:text-red-400", "Could not load the change history." }
+                                } else if project_history.is_empty() {
                                     p { class: "text-sm text-subtle italic", "No edits yet." }
                                 } else {
                                     div { class: "space-y-3 text-sm",
@@ -2492,18 +2534,16 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
 
     let history_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::list_or_empty(
-            "task change history entry",
-            crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
-                "/audit-log/entity/tasks/{tid}"
-            ))
-            .await,
-        )
+        crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
+            "/audit-log/entity/tasks/{tid}"
+        ))
+        .await
+        .inspect_err(|e| tracing::error!("task change history load failed for {tid}: {e}"))
+        .ok()
     });
-    let task_history = history_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
+    let task_history_snapshot = history_resource.read_unchecked().clone();
+    let task_history_failed = matches!(task_history_snapshot, Some(None));
+    let task_history = task_history_snapshot.flatten().unwrap_or_default();
     let task_edited = task_history.iter().find(|e| e.action == "update").map(|e| {
         let who = history_actor(&users, e);
         let when = crate::utils::datetime::fmt_user_dt_in(
@@ -2753,7 +2793,9 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                 // Change history for this task.
                 div { class: "border-t border-line pt-3",
                     p { class: "text-sm font-medium text-content mb-2", "Change History" }
-                    if task_history.is_empty() {
+                    if task_history_failed {
+                        p { class: "text-sm text-red-600 dark:text-red-400", "Could not load the change history." }
+                    } else if task_history.is_empty() {
                         p { class: "text-sm text-subtle italic", "No edits yet." }
                     } else {
                         div { class: "space-y-2 text-sm max-h-48 overflow-y-auto",
@@ -3064,5 +3106,122 @@ mod mapps1038_company_tests {
         let company = project_company(&p);
         assert_eq!(company.text(NO_COMPANY), "No company");
         assert!(company.tooltip().is_none());
+    }
+}
+
+/// MAPPS-1227: the seven findings from the projects specification pass. The
+/// pure decisions are tested directly; the wiring inside resources and `rsx!`
+/// only runs under `app` with a DOM, so it is pinned as source.
+#[cfg(test)]
+mod mapps1227_tests {
+    use super::{filters_active, remaining_hours, task_status_badge_prefer, RemoteTaskStatus};
+    use crate::components::BadgeVariant;
+
+    fn code() -> String {
+        let src = include_str!("projects.rs");
+        src[..src.find("mod mapps1227_tests").expect("this module")]
+            .lines()
+            .map(|l| l.find("//").map_or(l, |i| &l[..i]))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Finding 1: a failed list load said "No projects yet" and logged nothing.
+    #[test]
+    fn a_failed_project_list_is_logged_and_said() {
+        let code = code();
+        assert!(code.contains(
+            r#"tracing::error!("project list load failed: {e}"); list_error.set(e.clone());"#
+        ));
+        let failed = code
+            .find("} else if list_failed {")
+            .expect("the failure branch");
+        let empty = code
+            .find("title: \"No projects yet\"")
+            .expect("the empty state");
+        assert!(
+            failed < empty,
+            "the failure is decided before the empty state"
+        );
+        assert!(code.contains(r#"ErrorBanner { "Could not load projects." }"#));
+    }
+
+    /// Finding 2: a failed summary drew 0 and $0.00 on the stat cards.
+    #[test]
+    fn a_failed_summary_shows_no_figures() {
+        let code = code();
+        assert!(code.contains("let summary_failed = matches!(summary_snapshot, Some(None));"));
+        assert!(code.contains(r#"if summary_failed { "-".to_string() } else { value }"#));
+        assert_eq!(code.matches("value: stat(").count(), 4, "all four cards");
+    }
+
+    /// Finding 3: `filtered` was a copy of `projects`, so a search with no
+    /// match said "No projects yet" and offered New Project.
+    #[test]
+    fn a_search_with_no_match_offers_to_clear_the_filters() {
+        assert!(!filters_active("", ""));
+        assert!(!filters_active("   ", ""));
+        assert!(filters_active("acme", ""));
+        assert!(filters_active("", "on_hold"));
+        let code = code();
+        assert!(
+            !code.contains("let filtered"),
+            "no copy standing in for a filter"
+        );
+        assert!(code.contains("} else if projects.is_empty() { if !narrowed {"));
+    }
+
+    /// Finding 4: a server-named status the cache lacks drew a Gray "Unknown"
+    /// and logged an unresolved reference.
+    #[test]
+    fn a_status_the_server_named_is_not_unknown() {
+        let id = uuid::Uuid::new_v4();
+        assert_eq!(
+            task_status_badge_prefer(&[], &Some(id), Some("Waiting on client")),
+            (BadgeVariant::Blue, "Waiting on client".to_string())
+        );
+        let done = RemoteTaskStatus {
+            id,
+            name: "Done".into(),
+            is_completed: true,
+        };
+        assert_eq!(
+            task_status_badge_prefer(std::slice::from_ref(&done), &Some(id), Some("Finished")),
+            (BadgeVariant::Green, "Finished".to_string()),
+            "the server's name, the cache's completed flag"
+        );
+        assert_eq!(
+            task_status_badge_prefer(&[done], &Some(id), None),
+            (BadgeVariant::Green, "Done".to_string())
+        );
+    }
+
+    /// Finding 5: no budget showed a negative Remaining beside an Estimated of "-".
+    #[test]
+    fn no_budget_has_no_remaining() {
+        assert_eq!(remaining_hours(None, 3.5), None);
+        assert_eq!(remaining_hours(Some(10.0), 3.5), Some(6.5));
+        assert!(code().contains("let remaining_h = remaining_hours(p.budget_hours, logged_h);"));
+    }
+
+    /// Finding 6: a failed task or history load read "No tasks yet." / "No
+    /// edits yet."
+    #[test]
+    fn failed_task_and_history_loads_say_so() {
+        let code = code();
+        assert!(code.contains("is_loading: tasks_loading, load_failed: tasks_failed,"));
+        assert_eq!(
+            code.matches(r#""Could not load the change history.""#)
+                .count(),
+            2,
+            "the project's history and a task's"
+        );
+        assert!(
+            !code.contains("list_or_empty("),
+            "no failure folds into an empty list here"
+        );
     }
 }
