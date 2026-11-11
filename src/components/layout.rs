@@ -128,10 +128,13 @@ pub fn AppShell() -> Element {
                 #[serde(default)]
                 branding: crate::hooks::branding::EffectiveBranding,
             }
-            if let Ok(t) =
-                crate::hooks::fetch::api::get_authed::<TenantSnippet>("/tenants/current").await
-            {
-                crate::hooks::branding::set_effective_branding(t.branding);
+            match crate::hooks::fetch::api::get_authed::<TenantSnippet>("/tenants/current").await {
+                Ok(t) => crate::hooks::branding::set_effective_branding(t.branding),
+                // MAPPS-1245: the shell keeps the default branding, and now
+                // says why.
+                Err(e) => {
+                    tracing::warn!("could not load the tenant branding; using the default: {e}")
+                }
             }
         });
     });
@@ -1328,6 +1331,16 @@ pub fn TopBar(props: TopBarProps) -> Element {
     }
 }
 
+/// How many rows the user menu renders: four, plus "Create new team" when
+/// the organizations flag is on (MAPPS-1245).
+fn user_menu_rows(organizations_enabled: bool) -> usize {
+    if organizations_enabled {
+        5
+    } else {
+        4
+    }
+}
+
 /// Avatar-button + dropdown for the top-bar user menu. P3-26 from the
 /// audit: previously the avatar was a plain button with no dropdown,
 /// leaving users hunting for Logout / Profile.
@@ -1337,9 +1350,11 @@ fn UserMenu() -> Element {
     // mode - Escape closes, Up/Down move the internal highlight, Tab and
     // Enter fall through to the browser.
     let mut nav = crate::hooks::dropdown_nav::use_dropdown_nav("user-menu").menu();
-    // Five menu rows: Profile, Account Settings, System Status, Create
-    // new team, Logout. Keep in step with the rsx! block below.
-    const USER_MENU_ROWS: usize = 5;
+    // The rows rendered below: Profile, Account Settings, System Status,
+    // Create new team (only with the organizations flag), Logout.
+    // MAPPS-1245: this was a constant 5, so with the flag off (the default)
+    // the highlight could move onto a fifth row that does not exist.
+    let user_menu_rows = user_menu_rows(crate::modules::feature_flags::organizations_enabled());
     // MAPPS-384: dismiss the dropdown on navigation. UserMenu lives in the
     // persistent AppShell (MAPPS-366), so a route change re-renders the routed
     // subtree WITHOUT re-mounting this component; without this the menu would
@@ -1396,11 +1411,16 @@ fn UserMenu() -> Element {
                 // client-side.
                 spawn(async move {
                     let body = serde_json::json!({ "refresh_token": rt });
-                    let _ = crate::hooks::fetch::api::post_typed_no_content(
+                    // MAPPS-1245: a failed revoke leaves the session row live
+                    // until its TTL; that is now on record.
+                    if let Err(e) = crate::hooks::fetch::api::post_typed_no_content(
                         "/contact/auth/logout",
                         &body,
                     )
-                    .await;
+                    .await
+                    {
+                        tracing::warn!("contact logout could not revoke the session server-side; it expires on its TTL: {e}");
+                    }
                 });
             }
             // Route back to a contact-flavoured login page. Prefer the
@@ -1468,7 +1488,7 @@ fn UserMenu() -> Element {
             },
             onclose: move |_| nav.close(),
             onkeydown: move |e: KeyboardEvent| {
-                nav.keydown_menu(&e, USER_MENU_ROWS);
+                nav.keydown_menu(&e, user_menu_rows);
             },
             {
                 rsx! {
@@ -2121,6 +2141,36 @@ pub fn EmptyState(props: EmptyStateProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1245: the user menu's row count follows what it renders, and the
+/// shell's silent failures are logged.
+#[cfg(test)]
+mod mapps_1245_tests {
+    use super::user_menu_rows;
+
+    #[test]
+    fn the_row_count_matches_the_rendered_rows() {
+        assert_eq!(
+            user_menu_rows(false),
+            4,
+            "Profile, Account Settings, System Status, Logout"
+        );
+        assert_eq!(user_menu_rows(true), 5, "plus Create new team");
+    }
+
+    #[test]
+    fn the_contact_revoke_and_the_branding_load_say_when_they_fail() {
+        let src = include_str!("layout.rs");
+        let code = &src[..src.find("mod mapps_1245_tests").unwrap()];
+        assert!(!code.contains("const USER_MENU_ROWS"));
+        assert!(code.contains("contact logout could not revoke the session server-side"));
+        assert!(code.contains("could not load the tenant branding; using the default: {e}"));
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(!flat.contains(
+            "let _ = crate::hooks::fetch::api::post_typed_no_content( \"/contact/auth/logout\""
+        ));
     }
 }
 
