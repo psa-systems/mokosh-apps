@@ -52,11 +52,13 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
     // MAPPS-653: deliberately WITHOUT `enter_takes_first_match`. This field's
     // value is whatever was typed and a suggestion is optional, so Enter taking
     // an unhighlighted suggestion would overwrite the user's own text.
+    // SPEC-5.60.9: no first-match Enter; only a highlighted row is taken.
     let mut nav = use_dropdown_nav("suggest-input");
     // Mirror the current text for the server fetch. Read INSIDE the resource
     // closure so Dioxus subscribes the resource to keystrokes (CompanyPicker
     // PMS-371). Unused in the curated-list path, harmless there.
     let mut query = use_signal(|| props.value.clone());
+    // SPEC-5.60.2: a non-empty curated list wins over the server source.
     let static_mode = !props.suggestions.is_empty();
     let field = props.field.clone();
     // MAPPS-855: debounce the resource's dependency so a burst of keystrokes
@@ -70,6 +72,7 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
             if static_mode || field.is_empty() {
                 return Ok(Vec::new());
             }
+            // SPEC-5.60.3: debounced, tenant-scoped server lookup.
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let q = query_debounced.read().trim().to_string();
             let path = format!(
@@ -82,6 +85,7 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
             // with nothing logged.
             crate::hooks::fetch::api::get_authed::<Vec<String>>(&path)
                 .await
+                // SPEC-5.60.6: logged here, shown as a panel state below.
                 .inspect_err(|e| tracing::warn!("suggestion lookup failed: {e}"))
         }
     });
@@ -94,6 +98,7 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
     // "this field has no suggestions".
     let failed = !static_mode && matches!(&*snap, Some(Err(_)));
     let suggestions: Vec<String> = if static_mode {
+        // SPEC-5.60.4: substring filter, exact-equal entry dropped, capped at 20.
         // Curated list, filtered client-side by case-insensitive substring.
         let needle = current.to_lowercase();
         props
@@ -106,6 +111,7 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
             .collect()
     } else {
         match &*snap {
+            // SPEC-5.60.5: server values minus the one equal to the current text.
             Some(Ok(values)) => values.iter().filter(|s| *s != &current).cloned().collect(),
             _ => Vec::new(),
         }
@@ -119,6 +125,7 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
             // rather than on the shared `Input` (MAPPS-347), where keydown
             // from the focused input bubbles up to them.
             div {
+                // SPEC-5.60.8: combobox wrapper opening on focus, click and input.
                 role: "combobox",
                 aria_expanded: nav.expanded(),
                 aria_controls: nav.panel_id(),
@@ -128,12 +135,14 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
                 onkeydown: move |e: KeyboardEvent| {
                     let suggestions = suggestions_for_keys.clone();
                     nav.keydown(&e, nav_len, move |index| {
+                        // SPEC-5.60.9: a keyboard pick sets the text and reports it.
                         if let Some(value) = suggestions.get(index) {
                             query.set(value.clone());
                             oninput.call(value.clone());
                         }
                     });
                 },
+                // SPEC-5.60.11: field props pass through; SPEC-5.60.1: typing reports every change.
                 Input {
                     name: props.name.clone(),
                     label: props.label.clone(),
@@ -149,6 +158,7 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
                     },
                 }
             }
+            // SPEC-5.60.7: the panel shows only with rows or a failure.
             if nav.is_open() && (!suggestions.is_empty() || failed) {
                 // Transparent backdrop: a click anywhere outside dismisses the
                 // list. Below the dropdown (z-10 vs z-20) so rows stay clickable.
@@ -185,6 +195,7 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
                                                 // MAPPS-503: out of the tab order, so Tab
                                                 // commits and moves to the next field
                                                 // instead of walking into the list.
+                                                // SPEC-5.60.10: rows stay out of the tab order.
                                                 tabindex: "-1",
                                                 class: nav.row_class(index, "w-full text-left px-3 py-2 text-sm hover:bg-surface-2"),
                                                 onclick: move |_| {

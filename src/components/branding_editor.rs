@@ -42,6 +42,7 @@ pub enum BrandingPlane {
 }
 
 impl BrandingPlane {
+    // SPEC-5.6.1
     fn asset_url(&self, asset: &str) -> String {
         match self {
             BrandingPlane::StaffTenant => format!("/tenants/current/branding/{asset}"),
@@ -60,6 +61,7 @@ impl BrandingPlane {
 /// signal the chosen brand color needs adjustment. Returns `None`
 /// for a bogus hex string so the caller can silently skip the
 /// warning rather than block save on a parse error.
+// SPEC-5.7.13, SPEC-5.7.14
 fn best_contrast_against_bw(hex: &str) -> Option<f32> {
     fn parse(hex: &str) -> Option<(u8, u8, u8)> {
         let s = hex.trim().trim_start_matches('#');
@@ -99,6 +101,7 @@ const WCAG_AA_NORMAL: f32 = 4.5;
 /// `<input type="color">` has no empty state, so an explicit reset
 /// affordance is the only way to unwind an override without a full
 /// re-save.
+// SPEC-5.7.11: one null-valued key per plane's own endpoint.
 async fn reset_field(plane: BrandingPlane, field: &str) -> Result<(), String> {
     let patch = serde_json::json!({ field: serde_json::Value::Null });
     match plane {
@@ -173,6 +176,7 @@ pub struct BrandingEditorProps {
 /// One editor each, then: the organisation owns the tenant-level values, and the
 /// per-Company and contact planes keep their fields because those genuinely are
 /// overrides, resolved over the tenant's values by `effective_branding`.
+// SPEC-5.7.6
 pub(crate) fn edits_support_contact(plane: &BrandingPlane) -> bool {
     !matches!(plane, BrandingPlane::StaffTenant)
 }
@@ -181,6 +185,7 @@ pub(crate) fn edits_support_contact(plane: &BrandingPlane) -> bool {
 /// plane's read-only block. Empty fields are left out rather than rendered as
 /// gaps, and a record with nothing in it says so, because "Support contact:" on
 /// its own reads as a bug rather than as an empty record.
+// SPEC-5.7.7
 pub(crate) fn support_contact_summary(name: &str, email: &str, phone: &str) -> String {
     let parts: Vec<&str> = [name, email, phone]
         .into_iter()
@@ -197,6 +202,7 @@ pub(crate) fn support_contact_summary(name: &str, email: &str, phone: &str) -> S
 /// Render the hint line under each field. Company/Contact scopes
 /// point at the tenant default (or "no default set"); Tenant scope
 /// only has the coded fallback, so the hint reads that instead.
+// SPEC-5.7.4
 fn hint(plane: &BrandingPlane, default: Option<&str>) -> String {
     match plane {
         BrandingPlane::StaffTenant => "Blank falls back to the platform default.".to_string(),
@@ -215,6 +221,7 @@ async fn upload_asset(
     asset: &str,
     file: web_sys::File,
 ) -> Result<(), String> {
+    // SPEC-5.6.3
     let form = web_sys::FormData::new().map_err(|e| format!("{e:?}"))?;
     form.append_with_blob_and_filename("file", file.as_ref(), &file.name())
         .map_err(|e| format!("{e:?}"))?;
@@ -235,6 +242,7 @@ async fn upload_asset(
     }
 }
 
+// SPEC-5.6.7
 async fn delete_asset(plane: BrandingPlane, asset: &str) -> Result<(), String> {
     let url = plane.asset_url(asset);
     match &plane {
@@ -274,6 +282,7 @@ fn ColorField(
     let field_for_reset = field.clone();
     let plane_for_reset = plane.clone();
     let on_reset = move |_| {
+        // SPEC-5.7.12
         if saving() {
             return;
         }
@@ -289,6 +298,7 @@ fn ColorField(
                     value.set(String::new());
                     on_reset_saved.call(());
                 }
+                // SPEC-5.7.12
                 Err(e) => {
                     // MAPPS-1243: the message the user sees is generic, so the
                     // cause goes to the log.
@@ -318,6 +328,7 @@ fn ColorField(
                 },
             }
             p { class: "text-xs text-muted", "{hint}" }
+            // SPEC-5.7.10
             if override_present {
                 button {
                     r#type: "button",
@@ -362,6 +373,7 @@ fn AssetUploadRow(
                 .and_then(|w| w.document())
                 .and_then(|d| d.get_element_by_id(&format!("brand_upload_{}", asset_for_upload)))
             else {
+                // SPEC-5.6.4
                 error.set("Could not read the picked file.".to_string());
                 return;
             };
@@ -372,6 +384,7 @@ fn AssetUploadRow(
             let Some(file_list) = input.files() else {
                 return;
             };
+            // SPEC-5.6.4: no selected file is a no-op.
             let Some(file) = file_list.item(0) else {
                 return;
             };
@@ -381,6 +394,7 @@ fn AssetUploadRow(
             let plane = plane_for_upload.clone();
             spawn(async move {
                 match upload_asset(plane, &asset, file).await {
+                    // SPEC-5.6.5
                     Ok(_) => on_saved.call(()),
                     Err(e) => error.set(format!("Upload failed: {e}")),
                 }
@@ -402,6 +416,7 @@ fn AssetUploadRow(
     let asset_for_remove = asset.clone();
     let plane_for_remove = plane.clone();
     let on_remove = move |_| {
+        // SPEC-5.6.6
         if saving() {
             return;
         }
@@ -411,6 +426,7 @@ fn AssetUploadRow(
         let plane = plane_for_remove.clone();
         spawn(async move {
             match delete_asset(plane, &asset).await {
+                // SPEC-5.6.5
                 Ok(_) => on_saved.call(()),
                 Err(e) => error.set(format!("Remove failed: {e}")),
             }
@@ -421,6 +437,7 @@ fn AssetUploadRow(
         div { class: "space-y-2",
             label { class: "block text-sm font-medium text-content", "{label}" }
             div { class: "flex items-center gap-4",
+                // SPEC-5.6.8
                 if let Some(url) = current_url.as_ref() {
                     img {
                         src: "{url}",
@@ -435,11 +452,14 @@ fn AssetUploadRow(
                 }
                 div { class: "flex-1 space-y-2",
                     crate::components::FileField {
+                        // SPEC-5.6.2
                         name: format!("brand_upload_{asset}"),
                         accept: "image/png,image/jpeg,image/webp,image/gif".to_string(),
+                        // SPEC-5.6.9
                         disabled: disabled || saving(),
                         onchange,
                     }
+                    // SPEC-5.6.7
                     if current_url.is_some() {
                         button {
                             r#type: "button",
@@ -463,6 +483,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
     // Local editable state initialised from the incoming override
     // block. On Save we hand the full state back through the
     // `on_save` callback; on Reset we clear a single field.
+    // SPEC-5.7.1
     let mut display_name = use_signal(|| props.current.display_name.clone().unwrap_or_default());
     // MAPPS-1024: the invoice-identity block. `company_name`,
     // `legal_name`, `postal_address` and `tax_id` are shown on every
@@ -501,6 +522,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
         // omits them, letting the server's `||` JSONB merge leave
         // whatever the uploads set alone. Explicit-clear for these
         // fields flows through the row's Remove button.
+        // SPEC-5.7.8, SPEC-5.7.9: empty string becomes absent; asset fields stay absent.
         let block = CompanyBranding {
             display_name: Some(display_name.read().clone()).filter(|s| !s.is_empty()),
             company_name: Some(company_name.read().clone()).filter(|s| !s.is_empty()),
@@ -520,6 +542,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
         on_save.call(block);
     };
 
+    // SPEC-5.7.2
     let intro_copy = match &props.plane {
         BrandingPlane::StaffTenant => {
             "MSP-wide defaults. Every Company under your tenant inherits these values unless it overrides them at Company scope. What contacts see on the login shell and inside the portal reads back through the tenant → Company merge."
@@ -541,6 +564,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                 // multipart PUTs directly against the branding
                 // routes; on success the parent refetches via
                 // `on_asset_saved`.
+                // SPEC-5.6.2
                 div { class: "space-y-4 pb-4 border-b border-line",
                     AssetUploadRow {
                         label: "Logo".to_string(),
@@ -590,6 +614,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                     }
                 }
                 // Display name
+                // SPEC-5.7.3
                 div { class: "space-y-1",
                     label {
                         r#for: "brand_display_name",
@@ -687,9 +712,11 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                             oninput: move |e: FormEvent| postal_address.set(e.value()),
                         }
                         p { class: "text-xs text-muted",
+                            // SPEC-5.7.5: the six-line limit is advice here, not enforced.
                             "One line per address line. Up to six lines. {hint(&props.plane, defaults.postal_address.as_deref())}"
                         }
                     }
+                    // SPEC-5.7.3: tenant plane only.
                     if matches!(props.plane, BrandingPlane::StaffTenant) {
                         div { class: "space-y-1",
                             label {
@@ -774,6 +801,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                 // draws over the brand primary / background) is
                 // flagged. Advisory only - not a save blocker; the
                 // MSP might have their reasons.
+                // SPEC-5.7.13
                 {
                     let mut low = Vec::new();
                     for (label, sig) in [
@@ -803,6 +831,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                 // Support contact block. PMS-1338: on the tenant plane these
                 // three keys are the organisation record, so the editor shows
                 // them and sends the operator to the one place that writes them.
+                // SPEC-5.7.7
                 if !edits_support_contact(&props.plane) {
                     div { class: "space-y-1 rounded-md border border-line bg-surface-2 p-4",
                         p { class: "text-sm font-medium text-content", "Support contact" }
@@ -827,6 +856,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                         }
                     }
                 }
+                // SPEC-5.7.6
                 if edits_support_contact(&props.plane) {
                 div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                     div { class: "space-y-1",
@@ -883,6 +913,7 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                 }
                 }
                 // Save row
+                // SPEC-5.7.8
                 div { class: "flex items-center justify-end gap-3 pt-4 border-t border-line",
                     Button {
                         variant: ButtonVariant::Primary,

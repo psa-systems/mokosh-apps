@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// One line on a quote.
+// SPEC-3.16.1: money decodes from JSON strings into decimals.
+// SPEC-3.16.2: id, quantity, unit_price and total are required.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct QuoteLineResponse {
     pub id: Uuid,
@@ -25,6 +27,7 @@ pub struct QuoteLineResponse {
     pub sort_order: i32,
 }
 
+// SPEC-3.16.3: required totals and timestamps; `lines` is None on list rollups.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct QuoteResponse {
     pub id: Uuid,
@@ -69,6 +72,7 @@ pub struct QuoteResponse {
 /// A line as sent to the server. `quantity` / `unit_price` are strings
 /// because the server takes `Decimal` and a JSON number would lose
 /// precision on the way through.
+// SPEC-3.16.4: quantity and unit_price are strings so no precision is lost.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct QuoteLineRequest {
     pub line_type: String,
@@ -78,6 +82,7 @@ pub struct QuoteLineRequest {
     pub sort_order: i32,
 }
 
+// SPEC-3.16.4: optional keys are omitted when None.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CreateQuoteRequest {
     pub company_id: Uuid,
@@ -97,6 +102,7 @@ pub struct CreateQuoteRequest {
 
 /// Header update. Omitted fields keep their current value server-side,
 /// and `lines`, when present, replaces the whole set.
+// SPEC-3.16.5: all-None default; `lines`, when present, replaces the whole set.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct UpdateQuoteRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -121,6 +127,7 @@ pub struct UpdateQuoteRequest {
 
 /// Body of `POST /quotes/{id}/convert`. Every field is optional, so a
 /// conversion with no scheduling detail is a bare POST.
+// SPEC-3.16.6: all-None default, so a bare conversion is an empty object.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ConvertQuoteRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -134,6 +141,7 @@ pub struct ConvertQuoteRequest {
 }
 
 /// Body of the portal accept / decline routes.
+// SPEC-3.16.6: notes is omitted when None.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct PortalQuoteDecisionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -150,6 +158,7 @@ pub struct PortalQuoteDecisionRequest {
 pub mod status {
     /// Human label for a status tag.
     pub fn label(status: &str) -> &'static str {
+        // SPEC-3.16.7: ten known tags; anything else reads "Unknown".
         match status {
             "draft" => "Draft",
             "submitted" => "Submitted",
@@ -167,6 +176,7 @@ pub mod status {
 
     /// Content (title, scope, lines, money) may still be edited.
     /// Mirrors `QuoteStatus::allows_content_edit`.
+    // SPEC-3.16.8, SPEC-3.16.9: the predicates below gate which actions the UI offers.
     pub fn allows_content_edit(status: &str) -> bool {
         matches!(status, "draft" | "rejected")
     }

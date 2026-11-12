@@ -180,7 +180,7 @@ build_config_fields() {
     # without users having to Ctrl+Shift+R. Emitted even when other
     # config fields are empty (operator-overridable fields stay opt-in,
     # but the version field is always-on).
-    # MAPPS-813: truncated to 12 characters to match build.rs:29's
+    # MAPPS-813, SPEC-4.47.6: truncated to 12 characters to match build.rs:29's
     # `.take(12)`, which is what the desktop build bakes as its baseline.
     # `fetch_live_build_sha` compares this value against that baseline
     # directly, so the two sides must carry the same-length sha or the

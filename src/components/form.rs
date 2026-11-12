@@ -47,6 +47,7 @@ impl HasFileData for SanitizedFormData {
 /// and behaves bit-identically to before. `Event::map` is what rebuilds the
 /// event, so the new one shares the original's propagation and
 /// `prevent_default` state rather than resetting it.
+// SPEC-5.26.8: untouched event when clean, value-only rewrite otherwise.
 fn sanitized(e: FormEvent) -> FormEvent {
     let raw = e.value();
     if !crate::utils::text::has_invisible(&raw) {
@@ -65,6 +66,7 @@ fn sanitized(e: FormEvent) -> FormEvent {
 /// character, and silently rewriting one turns a correct credential into a
 /// failed login with no diagnosis anywhere. Every password, secret and API-key
 /// field in the app sets `type="password"`, so this one check exempts them all.
+// SPEC-5.26.7: only password is exempt.
 fn sanitizes(field_type: &str) -> bool {
     field_type != "password"
 }
@@ -77,6 +79,7 @@ fn sanitizes(field_type: &str) -> bool {
 /// The clear lives at the call site, not inside [`Input`], because only the
 /// parent knows a submit happened and can re-raise the same message when the
 /// corrected value still fails.
+// SPEC-5.26.11
 pub fn clear_on_edit(
     mut value: Signal<String>,
     mut error: Signal<String>,
@@ -98,6 +101,7 @@ pub fn clear_on_edit(
 /// wants.
 pub fn submit_on_enter(mut action: impl FnMut() + 'static) -> impl FnMut(KeyboardEvent) + 'static {
     move |e: KeyboardEvent| {
+        // SPEC-5.26.12: Enter only; every other key keeps its default.
         if e.key() == Key::Named(NamedKey::Enter) {
             e.prevent_default();
             action();
@@ -205,6 +209,7 @@ pub fn Input(props: InputProps) -> Element {
     // clears as the value is corrected. An explicit `error` prop (server field
     // error) always wins over the rule-based message.
     let mut touched = use_signal(|| false);
+    // SPEC-5.26.3: explicit error, else rule message once touched.
     let shown_error = if !props.error.is_empty() {
         props.error.clone()
     } else if touched() {
@@ -231,6 +236,7 @@ pub fn Input(props: InputProps) -> Element {
 
     rsx! {
         div { class: "space-y-1",
+            // SPEC-5.26.1, SPEC-5.26.2: label bound to the id, asterisk when required.
             if !props.label.is_empty() {
                 label {
                     r#for: "{props.name}",
@@ -241,6 +247,7 @@ pub fn Input(props: InputProps) -> Element {
                     }
                 }
             }
+            // SPEC-5.26.2, SPEC-5.26.6: attribute passthrough; no HTML `required`.
             // MAPPS-277: stop attaching the HTML5 `required` attribute, which
             // surfaces the browser-native "Please fill out this field" tooltip
             // on submit. Forms now route every required-field check through
@@ -272,6 +279,7 @@ pub fn Input(props: InputProps) -> Element {
                 // gets. Same mechanism the modal panel uses to take focus on
                 // mount (`modal.rs`), so the field wins the race by mounting
                 // after the panel that would otherwise keep it.
+                // SPEC-5.26.10: focus on mount, logged when it fails.
                 onmounted: move |e: MountedEvent| {
                     if !autofocus {
                         return;
@@ -283,14 +291,17 @@ pub fn Input(props: InputProps) -> Element {
                         }
                     });
                 },
+                // SPEC-5.26.7: sanitize everything except password.
                 oninput: move |e: FormEvent| {
                     props.oninput.call(if sanitize { sanitized(e) } else { e })
                 },
+                // SPEC-5.26.9
                 onblur: move |e| {
                     touched.set(true);
                     props.onblur.call(e);
                 },
             }
+            // SPEC-5.26.4, SPEC-5.26.5: error paragraph wins over help.
             if !shown_error.is_empty() {
                 p {
                     id: "{props.name}-error",
@@ -357,6 +368,7 @@ pub struct DateFieldProps {
 /// screen's date selection looks and behaves the same.
 #[component]
 pub fn DateField(props: DateFieldProps) -> Element {
+    // SPEC-5.27.1
     rsx! {
         Input {
             name: props.name,
@@ -434,6 +446,7 @@ pub struct TextareaProps {
 #[component]
 pub fn Textarea(props: TextareaProps) -> Element {
     // PMS-516: component-owned validation (see `Input`). `error` overrides.
+    // SPEC-5.27.5: same error precedence and styling as Input.
     let mut touched = use_signal(|| false);
     let shown_error = if !props.error.is_empty() {
         props.error.clone()
@@ -455,6 +468,7 @@ pub fn Textarea(props: TextareaProps) -> Element {
 
     rsx! {
         div { class: "{wrapper}",
+            // SPEC-5.27.3: label_hidden drops only the rendered label.
             if !props.label.is_empty() && !props.label_hidden {
                 label {
                     r#for: "{props.name}",
@@ -498,10 +512,12 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 // choke point, and dioxus maps the `value` attribute onto the
                 // `.value` PROPERTY, which is what a dirty element reads.
                 value: "{props.value}",
+                // SPEC-5.27.2, SPEC-5.27.4: value attribute, sanitized input, key handler, touch on blur.
                 oninput: move |e: FormEvent| props.oninput.call(sanitized(e)),
                 onkeydown: move |e| props.onkeydown.call(e),
                 onblur: move |_| touched.set(true),
             }
+            // SPEC-5.27.5
             if !shown_error.is_empty() {
                 p {
                     id: "{props.name}-error",
@@ -527,6 +543,7 @@ pub struct SelectOption {
 }
 
 impl SelectOption {
+    // SPEC-5.27.8: constructed options are enabled.
     pub fn new(value: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             value: value.into(),
@@ -568,6 +585,7 @@ pub struct SelectProps {
 #[component]
 pub fn Select(props: SelectProps) -> Element {
     // PMS-516: component-owned validation (see `Input`). `error` overrides.
+    // SPEC-5.27.5: same error precedence and styling as Input.
     let mut touched = use_signal(|| false);
     let shown_error = if !props.error.is_empty() {
         props.error.clone()
@@ -598,6 +616,7 @@ pub fn Select(props: SelectProps) -> Element {
                     }
                 }
             }
+            // SPEC-5.27.6, SPEC-5.27.8: element-level value binding; change and blur wiring.
             // MAPPS-270: bind the saved value to the `<select>` element
             // itself (not just per-option `selected` attributes) so the
             // displayed choice follows the controlled `props.value` after
@@ -625,6 +644,7 @@ pub fn Select(props: SelectProps) -> Element {
                 value: "{props.value}",
                 onchange: move |e| props.onchange.call(e),
                 onblur: move |_| touched.set(true),
+                // SPEC-5.27.7
                 if !props.placeholder.is_empty() {
                     option { value: "", disabled: true, selected: props.value.is_empty(),
                         "{props.placeholder}"
@@ -676,6 +696,7 @@ pub struct CheckboxProps {
 }
 
 #[component]
+// SPEC-5.28.1, SPEC-5.28.2, SPEC-5.28.3: id/name, error and help slots; caller owns re-sync.
 pub fn Checkbox(props: CheckboxProps) -> Element {
     // `bg-surface` styles the unchecked box to match the theme. The
     // @tailwindcss/forms base layer paints the :checked state as a white
@@ -771,6 +792,7 @@ pub struct FileFieldProps {
 /// label + help + error structure and owns the `file:` class recipe.
 #[component]
 pub fn FileField(props: FileFieldProps) -> Element {
+    // SPEC-5.28.6: hidden mode renders only the raw input.
     if props.hidden {
         return rsx! {
             input {
@@ -793,6 +815,7 @@ pub fn FileField(props: FileFieldProps) -> Element {
                     "{props.label}"
                 }
             }
+            // SPEC-5.28.4: preview sits between label and input.
             if let Some(preview) = props.preview {
                 {preview}
             }
@@ -807,6 +830,7 @@ pub fn FileField(props: FileFieldProps) -> Element {
                 aria_describedby: if props.error.is_empty() { None } else { Some(format!("{}-error", props.name)) },
                 onchange: move |e| props.onchange.call(e),
             }
+            // SPEC-5.28.5: status, then error, then help.
             if !props.status.is_empty() {
                 p { class: "text-xs text-muted", "{props.status}" }
             } else if !props.error.is_empty() {
@@ -866,6 +890,7 @@ pub fn SearchInput(props: SearchInputProps) -> Element {
                 // MAPPS-582: a query carrying an invisible character matches
                 // nothing and reads as "the record is gone".
                 oninput: move |e: FormEvent| props.oninput.call(sanitized(e)),
+                // SPEC-5.28.7
             }
         }
     }

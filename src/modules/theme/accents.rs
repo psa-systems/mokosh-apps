@@ -36,9 +36,11 @@ pub struct Accent {
 }
 
 /// Default accent id (Teal). Matches the CSS default in `input.css`.
+// SPEC-3.22.5
 pub const DEFAULT_ACCENT_ID: &str = "teal";
 
 /// The curated set, ordered roughly around the wheel.
+// SPEC-3.22.1, SPEC-3.22.2, SPEC-3.22.3
 pub const ACCENTS: &[Accent] = &[
     Accent {
         id: "red",
@@ -267,18 +269,21 @@ pub const ACCENTS: &[Accent] = &[
 ];
 
 /// Look up an accent by id.
+// SPEC-3.22.6
 pub fn by_id(id: &str) -> Option<&'static Accent> {
     ACCENTS.iter().find(|a| a.id == id)
 }
 
 /// The default accent (Teal). Falls back to the first entry if the
 /// default id is ever removed, so this never panics in a release build.
+// SPEC-3.22.5
 pub fn default_accent() -> &'static Accent {
     by_id(DEFAULT_ACCENT_ID).unwrap_or(&ACCENTS[0])
 }
 
 /// Resolve an accent id to an accent, falling back to the default for an
 /// unknown or removed id (matches the spec's error handling).
+// SPEC-3.22.7
 ///
 /// MAPPS-1236: the substitution is logged at warn, so a stored preference
 /// that no longer exists does not revert to the default without a trace.
@@ -298,6 +303,7 @@ mod tests {
     use super::super::contrast::passes_aa;
     use super::*;
 
+    // SPEC-3.22.4
     /// MAPPS-1236: the fallback stays (spec 3.25.7), and now says so.
     /// Pinned in source: the crate has no tracing subscriber under test.
     #[test]
@@ -335,6 +341,7 @@ mod tests {
         }
     }
 
+    // SPEC-3.22.1
     #[test]
     fn ids_are_unique() {
         for (i, a) in ACCENTS.iter().enumerate() {
@@ -356,6 +363,7 @@ mod tests {
         assert_eq!(resolve("blue").id, "blue");
     }
 
+    // SPEC-3.22.2
     #[test]
     fn ramps_are_well_formed_hex() {
         use super::super::contrast::parse_hex;

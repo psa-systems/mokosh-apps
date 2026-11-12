@@ -60,11 +60,13 @@ pub struct PopoverProps {
 /// plus one shared offset, z-index and padding for the panel itself.
 #[component]
 pub fn Popover(props: PopoverProps) -> Element {
+    // SPEC-5.52.2: tooltip falls back to the accessible label.
     let title = props.title.clone().unwrap_or_else(|| props.label.clone());
     let onkeydown = props.onkeydown;
     rsx! {
         div {
             class: "relative",
+            // SPEC-5.52.3: forwards bubbled keydown only when the caller opted in.
             // MAPPS-508: keydown bubbles up from the focused row (or the
             // trigger) to this wrapper, and the caller's `keydown_menu`
             // sees Escape / Up / Down. Emitted only when a caller opts in.
@@ -73,6 +75,7 @@ pub fn Popover(props: PopoverProps) -> Element {
                     h.call(e);
                 }
             },
+            // SPEC-5.52.1: controlled; SPEC-5.52.2: the ARIA triad lives on this trigger.
             button {
                 r#type: "button",
                 class: "{props.trigger_class}",
@@ -83,6 +86,7 @@ pub fn Popover(props: PopoverProps) -> Element {
                 onclick: move |e| props.ontoggle.call(e),
                 {props.trigger}
             }
+            // SPEC-5.52.4: backdrop and panel exist only while open.
             if props.open {
                 // Full-viewport click-catcher behind the panel, same z-index
                 // pair every call site used before consolidation: closes the

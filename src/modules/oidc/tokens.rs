@@ -25,6 +25,7 @@ pub struct Tokens {
 /// bunyip-as-OP does not emit usable `mokosh_role` / `mokosh_active_tenant`
 /// claims, and `/api/v1/auth/me` is the source of truth for both (PMS-158).
 #[derive(Clone, Debug, serde::Deserialize)]
+// SPEC-3.10.7: sub, exp and iat are required; role and tenant are not read from the token.
 pub struct IdTokenClaims {
     pub sub: String,
     #[serde(default)]
@@ -53,6 +54,7 @@ impl IdTokenClaims {
     /// arrived over TLS in the response body of a request to the
     /// trusted issuer; treating it as authoritative is correct for the
     /// SPA pattern. (Server-side relying parties verify it normally.)
+    // SPEC-3.10.8: unverified decode with distinct error texts per failure.
     pub fn parse_unverified(jwt: &str) -> Result<Self, String> {
         let mut parts = jwt.split('.');
         let _header = parts.next().ok_or("malformed jwt: missing header")?;
@@ -69,6 +71,7 @@ impl Tokens {
         IdTokenClaims::parse_unverified(&self.id_token)
     }
 
+    // SPEC-3.10.6: expired at or after the expiry instant.
     pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
         self.expires_at <= now
     }

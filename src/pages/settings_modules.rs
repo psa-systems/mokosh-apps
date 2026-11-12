@@ -23,6 +23,7 @@ use crate::Route;
 #[component]
 pub fn ModulesSettingsPage() -> Element {
     use_page_title("Modules");
+    // SPEC-11.39.1
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Modules" } };
     }
@@ -31,6 +32,7 @@ pub fn ModulesSettingsPage() -> Element {
 
 #[component]
 fn ModulesSettingsBody() -> Element {
+    // SPEC-11.39.2, SPEC-11.39.3: generation tag reloads on tenant switch.
     let mut rows = use_resource(|| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
@@ -59,6 +61,7 @@ fn ModulesSettingsBody() -> Element {
             }
             match snap {
                 None => rsx! { crate::components::DetailSkeleton {} },
+                // SPEC-11.39.3
                 Some(None) => rsx! {
                     Card {
                         ErrorBanner { "Could not load the module settings." }
@@ -67,9 +70,11 @@ fn ModulesSettingsBody() -> Element {
                 Some(Some(configs)) => rsx! {
                     Card {
                         ul { class: "divide-y divide-line",
+                            // SPEC-11.39.4: one row per gated module, table order.
                             for module in GATED_MODULES.iter() {
                                 {
                                     let name = module.name;
+                                    // SPEC-11.39.5: no row reads as off.
                                     let on = enabled_in(&configs, name);
                                     let saving = busy() == Some(name);
                                     rsx! {
@@ -80,6 +85,7 @@ fn ModulesSettingsBody() -> Element {
                                             }
                                             Checkbox {
                                                 name: "module_{name}",
+                                                // SPEC-11.39.6, SPEC-11.39.7
                                                 label: if on { "On".to_string() } else { "Off".to_string() },
                                                 checked: on,
                                                 disabled: saving || !can_mutate,
@@ -90,18 +96,22 @@ fn ModulesSettingsBody() -> Element {
                                                     spawn(async move {
                                                         #[cfg(feature = "app")]
                                                         {
+                                                            // SPEC-11.39.8
                                                             let path = format!("/settings/modules/{name}");
                                                             let body = serde_json::json!({ "is_enabled": next, "config": {} });
                                                             match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
                                                                 Ok(_) => {
+                                                                    // SPEC-11.39.9: list first, then shared flags.
                                                                     rows.restart();
                                                                     refresh_module_flags();
                                                                 }
+                                                                // SPEC-11.39.10
                                                                 Err(e) => error.set(format!("Could not change {}: {e}", module.label)),
                                                             }
                                                         }
                                                         #[cfg(not(feature = "app"))]
                                                         let _ = next;
+                                                        // SPEC-11.39.11
                                                         busy.set(None);
                                                     });
                                                 },

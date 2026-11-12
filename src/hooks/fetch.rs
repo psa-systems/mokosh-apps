@@ -17,6 +17,7 @@ use dioxus::prelude::*;
 /// changes. WASM is single-threaded, so a `GlobalSignal` is the right
 /// primitive here (same rationale as the toast surface).
 #[cfg(feature = "app")]
+// SPEC-4.27.1
 pub static TENANT_GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
 
 /// Read the active-tenant generation counter. Call this INSIDE a
@@ -32,6 +33,7 @@ pub fn active_tenant_generation() -> u64 {
 /// Non-web stub so the same call site compiles under `cargo check`
 /// without the `app` feature.
 #[cfg(not(feature = "app"))]
+// SPEC-4.27.1
 pub fn active_tenant_generation() -> u64 {
     0
 }
@@ -45,6 +47,7 @@ pub fn active_tenant_generation() -> u64 {
 /// via `use_resource` with no dep on the write path, so nothing
 /// forced a refetch.
 #[cfg(feature = "web")]
+// SPEC-4.27.4
 pub static PORTAL_ROLES_GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
 
 /// Read the portal-roles generation counter. Same shape as
@@ -59,6 +62,7 @@ pub fn active_portal_roles_generation() -> u64 {
 /// successful role-write handler (grant + role-edit + revoke).
 #[cfg(feature = "web")]
 pub fn bump_portal_roles_generation() {
+    // SPEC-4.27.4
     *PORTAL_ROLES_GENERATION.write() += 1;
 }
 
@@ -84,11 +88,13 @@ pub fn list_or_empty<T, E: std::fmt::Display>(what: &str, result: Result<Vec<T>,
     match result {
         Ok(rows) => {
             if rows.is_empty() {
+                // SPEC-4.36.7
                 tracing::info!("{what} load succeeded and this tenant has none");
             }
             rows
         }
         Err(e) => {
+            // SPEC-4.36.8
             tracing::error!("{what} load failed, falling back to an empty list: {e}");
             Vec::new()
         }
@@ -108,6 +114,7 @@ pub fn list_or_empty<T, E: std::fmt::Display>(what: &str, result: Result<Vec<T>,
 /// [`crate::hooks::use_server_reachable`] and the recovery poll lives in
 /// [`crate::hooks::server_status`].
 #[cfg(feature = "app")]
+// SPEC-4.26.1
 pub static SERVER_REACHABLE: GlobalSignal<bool> = Signal::global(|| true);
 
 /// MAPPS-348: sticky "the current user's bunyip account was deleted" flag.
@@ -127,6 +134,7 @@ pub static SERVER_REACHABLE: GlobalSignal<bool> = Signal::global(|| true);
 /// is: the `api` helpers are plain async fns and can't reach a
 /// context-provided signal.
 #[cfg(feature = "app")]
+// SPEC-4.27.5
 pub static ACCOUNT_DELETED: GlobalSignal<bool> = Signal::global(|| false);
 
 /// Flip [`ACCOUNT_DELETED`] to `true`. Idempotent (called from every
@@ -135,6 +143,7 @@ pub static ACCOUNT_DELETED: GlobalSignal<bool> = Signal::global(|| false);
 /// concurrent 410s does not wake readers repeatedly.
 #[cfg(feature = "app")]
 pub(crate) fn note_account_deleted() {
+    // SPEC-4.27.6
     if !*ACCOUNT_DELETED.peek() {
         *ACCOUNT_DELETED.write() = true;
     }
@@ -148,6 +157,7 @@ pub(crate) fn note_account_deleted() {
 /// reload after replacing all their data (the import panel in
 /// `pages::settings`) drives the refetch directly.
 #[cfg(feature = "app")]
+// SPEC-4.27.3
 pub fn bump_tenant_generation() {
     *TENANT_GENERATION.write() += 1;
 }
@@ -165,6 +175,7 @@ pub fn bump_tenant_generation() {
 /// `api` helpers are plain async fns and cannot reach a
 /// context-provided signal.
 #[cfg(feature = "app")]
+// SPEC-4.27.7
 pub static SESSION_ENDED: GlobalSignal<bool> = Signal::global(|| false);
 
 /// Raise [`SESSION_ENDED`]. Idempotent, so a burst of 401s on the way
@@ -182,6 +193,7 @@ pub(crate) fn note_session_ended() {
 /// responding normally and loses signal. Only after this many consecutive
 /// failures do we classify the server as down.
 #[cfg(feature = "app")]
+// SPEC-4.26.5
 const CONSECUTIVE_FAILURES_FOR_DOWN: u32 = 2;
 
 /// PMS-1330: how many back-to-back failures we have observed since the
@@ -202,6 +214,7 @@ static CONSECUTIVE_FAILURES: GlobalSignal<u32> = Signal::global(|| 0);
 /// surfacing through the normal per-call paths.
 #[cfg(feature = "app")]
 pub(crate) fn note_response_status(status: u16) {
+    // SPEC-4.26.2, SPEC-4.26.3, SPEC-4.26.4
     if (500..600).contains(&status) {
         record_failure();
     } else {
@@ -214,6 +227,7 @@ pub(crate) fn note_response_status(status: u16) {
     // later. Debounced to one in-flight probe inside the callee. Hooked
     // here, at the single point that already classifies every response,
     // so no per-page code changes are needed.
+    // SPEC-4.26.10
     if crate::hooks::update_check::is_version_skew_status(status) {
         crate::hooks::update_check::note_possible_version_skew();
     }
@@ -227,6 +241,7 @@ pub(crate) fn note_response_status(status: u16) {
 /// (Mokosh App sets no CSP of its own, so there is no CSP-block case to
 /// distinguish from a genuine outage here.)
 #[cfg(feature = "app")]
+// SPEC-4.26.9
 pub(crate) fn note_transport_error() {
     record_failure();
 }
@@ -243,6 +258,7 @@ fn record_failure() {
 
 #[cfg(feature = "app")]
 fn record_success() {
+    // SPEC-4.26.7
     if *CONSECUTIVE_FAILURES.peek() != 0 {
         *CONSECUTIVE_FAILURES.write() = 0;
     }
@@ -253,6 +269,7 @@ fn record_success() {
 /// threshold, return the next count and whether the "down" transition
 /// should fire now. Lets the signal-free logic be unit-tested without a
 /// Dioxus runtime (PMS-1330).
+// SPEC-4.26.6
 pub(crate) fn classify_failure(current: u32, threshold: u32) -> (u32, bool) {
     let next = current.saturating_add(1);
     (next, next >= threshold)
@@ -262,6 +279,7 @@ pub(crate) fn classify_failure(current: u32, threshold: u32) -> (u32, bool) {
 /// successful request does not wake every reader on each call.
 #[cfg(feature = "app")]
 fn set_server_reachable(reachable: bool) {
+    // SPEC-4.26.8
     if *SERVER_REACHABLE.peek() != reachable {
         *SERVER_REACHABLE.write() = reachable;
     }
@@ -294,8 +312,10 @@ pub mod api {
     ///      host that doesn't match the cases above) so the Dioxus dev
     ///      server can proxy to a local backend.
     #[cfg(feature = "app")]
+    // SPEC-4.34.1
     pub fn api_base() -> String {
         static RESOLVED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        // SPEC-4.28.1
         RESOLVED.get_or_init(resolve_api_base).clone()
     }
 
@@ -313,6 +333,7 @@ pub mod api {
     fn resolve_api_base() -> String {
         #[cfg(test)]
         RESOLVE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // SPEC-4.28.2
         if let Some(injected) = crate::modules::runtime_config::get("api_base") {
             return normalize_api_base(&injected);
         }
@@ -320,12 +341,12 @@ pub mod api {
             if let Some(portal_host) = crate::modules::runtime_config::portal_host() {
                 let host_no_port = host.split(':').next().unwrap_or(&host);
                 if host_no_port.eq_ignore_ascii_case(&portal_host) {
-                    // Dev's `portal.localhost` collapses to same-origin.
+                    // SPEC-4.28.3: dev's `portal.localhost` collapses to same-origin.
                     let portal_lower = portal_host.to_ascii_lowercase();
                     if portal_lower.ends_with(".localhost") || portal_lower == "localhost" {
                         return "/api/v1".to_string();
                     }
-                    // Prod: strip the leading label to get the apex.
+                    // SPEC-4.28.4: prod strips the leading label to get the apex.
                     if let Some((_leading, apex)) = portal_lower.split_once('.') {
                         if !apex.is_empty() {
                             return format!("https://api.{apex}/api/v1");
@@ -333,6 +354,7 @@ pub mod api {
                     }
                 }
             }
+            // SPEC-4.28.5
             if let Some(rest) = host.strip_prefix("msp.") {
                 return format!("https://api.msp.{rest}/api/v1");
             }
@@ -346,6 +368,7 @@ pub mod api {
     /// dev-server proxy and Caddy both serve.
     #[cfg(all(feature = "app", target_arch = "wasm32"))]
     fn default_api_base() -> String {
+        // SPEC-4.28.6
         "/api/v1".to_string()
     }
 
@@ -357,6 +380,7 @@ pub mod api {
     /// `api_base` in its `config.json` (see `crate::platform::config`).
     #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
     fn default_api_base() -> String {
+        // SPEC-4.28.7
         match option_env!("MOKOSH_API_BASE") {
             Some(base) if !base.is_empty() => normalize_api_base(base),
             _ => "http://localhost:8080/api/v1".to_string(),
@@ -376,12 +400,14 @@ pub mod api {
     /// origin-relative path is already correct there.
     #[cfg(feature = "app")]
     pub fn api_origin() -> String {
+        // SPEC-4.28.9
         strip_api_version(&api_base())
     }
 
     /// The pure half of [`api_origin`], so the rule is testable without a
     /// browser. A base that does not end in the version prefix is left alone
     /// rather than truncated on a guess.
+    // SPEC-4.28.9
     pub fn strip_api_version(base: &str) -> String {
         base.strip_suffix("/api/v1").unwrap_or(base).to_string()
     }
@@ -398,6 +424,7 @@ pub mod api {
     ///
     /// Fixed here rather than at the 19 join sites, so a base configured with a
     /// slash cannot reintroduce it through whichever one is added next.
+    // SPEC-4.28.8
     pub fn normalize_api_base(base: &str) -> String {
         base.trim_end_matches('/').to_string()
     }
@@ -421,10 +448,12 @@ pub mod api {
     /// is omitted there and the desktop request goes out plain (no dev
     /// reverse proxy sits in front of a native binary).
     #[cfg(feature = "app")]
+    // SPEC-4.28.10: used by the unauthenticated typed helpers only.
     fn current_forwarded_host() -> Option<String> {
         crate::platform::location::host().filter(|s| !s.is_empty())
     }
 
+    // SPEC-4.29.1
     // Single-threaded global access-token holder. WASM is strictly
     // single-threaded so a `RefCell` is safe; we don't need a mutex.
     // The token lives only in memory: it is wiped on logout and never
@@ -450,6 +479,7 @@ pub mod api {
     /// mount (MAPPS-187).
     #[cfg(feature = "app")]
     pub fn set_access_token(token: Option<String>) {
+        // SPEC-4.27.2
         let changed = ACCESS_TOKEN.with(|t| {
             let mut slot = t.borrow_mut();
             if *slot == token {
@@ -497,6 +527,7 @@ pub mod api {
     /// Seconds before expiry at which the held access token is treated as
     /// spent. Same window the auth loops use.
     #[cfg(feature = "app")]
+    // SPEC-4.30.1
     const REFRESH_WINDOW_SECS: i64 = 60;
 
     /// How long a completed renewal answers for the 401s that were already in
@@ -504,6 +535,7 @@ pub mod api {
     /// grant, rejected audience) would spend a refresh token per request and
     /// re-drive every mounted resource on each one, forever.
     #[cfg(feature = "app")]
+    // SPEC-4.31.2
     const RENEWAL_DEBOUNCE_SECS: i64 = 30;
 
     #[cfg(feature = "app")]
@@ -536,6 +568,7 @@ pub mod api {
     /// `crate::hooks::auth`, which asks the same question of the same two
     /// stores and must not answer it a second, drifting way.
     #[cfg(feature = "app")]
+    // SPEC-4.30.2
     pub fn persisted_expiry() -> Option<chrono::DateTime<chrono::Utc>> {
         if let Some(t) = crate::modules::oidc::storage::load_auth() {
             return Some(t.expires_at);
@@ -546,6 +579,7 @@ pub mod api {
     /// Whether the held bearer is inside its refresh window or already past
     /// expiry.
     #[cfg(feature = "app")]
+    // SPEC-4.30.1
     fn access_token_is_stale() -> bool {
         if current_access_token().is_none() {
             return false;
@@ -572,6 +606,7 @@ pub mod api {
     /// this SPA holds, so it is renewed when spent and its 401 is a session
     /// event; anything else is passed through untouched.
     #[cfg(feature = "app")]
+    // SPEC-4.30.12, SPEC-4.30.13
     async fn agent_lane_bearer(token: &str) -> (bool, String) {
         if !is_agent_bearer(token) {
             return (false, token.to_string());
@@ -593,10 +628,12 @@ pub mod api {
     /// does not sign the user out: the request still goes out, and the 401 it
     /// earns runs [`note_agent_unauthorized`], which owns that decision.
     #[cfg(feature = "app")]
+    // SPEC-4.30.3
     pub async fn ensure_fresh_access_token() {
         if !access_token_is_stale() {
             return;
         }
+        // SPEC-4.30.4
         if let Err(e) = renew_access_token().await {
             tracing::warn!("access-token renewal before a request failed: {e}");
         }
@@ -609,6 +646,7 @@ pub mod api {
     /// a request-time renewal that coincide spend one refresh token between
     /// them instead of racing each other into a reuse detection.
     #[cfg(feature = "app")]
+    // SPEC-4.30.5
     pub async fn renew_access_token() -> Result<(), String> {
         let (flight, shared) = RENEWAL.with(|slot| {
             if let Some((flight, existing)) = slot.borrow().as_ref() {
@@ -629,6 +667,7 @@ pub mod api {
         // Clear only OUR flight. A renewal started after this one finished is
         // a different flight, and clearing it would have every caller joining
         // it start yet another.
+        // SPEC-4.30.6
         let cleared = RENEWAL.with(|slot| {
             let mut held = slot.borrow_mut();
             if held
@@ -658,6 +697,7 @@ pub mod api {
             let refresh = stored
                 .refresh_token
                 .clone()
+                // SPEC-4.30.7
                 .ok_or_else(|| "the stored OIDC session carries no refresh token".to_string())?;
             let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
             let fresh = crate::modules::oidc::refresh_tokens(&cfg, &refresh, &stored.id_token)
@@ -670,13 +710,14 @@ pub mod api {
                 expires_at: fresh.expires_at,
                 scope: fresh.scope,
             });
-            // Last, because the generation bump re-drives every mounted
+            // SPEC-4.30.8: last, because the generation bump re-drives every mounted
             // resource: the new token must already be persisted when they go.
             set_access_token(Some(fresh.access_token));
             return Ok(());
         }
 
         if let Some(session) = storage::load_standalone() {
+            // SPEC-4.30.9
             let refresh = session.refresh_token.clone().ok_or_else(|| {
                 "the stored standalone session carries no refresh token".to_string()
             })?;
@@ -692,7 +733,7 @@ pub mod api {
                 expires_at: chrono::DateTime<chrono::Utc>,
             }
 
-            // `post_typed` sends no bearer, so this cannot recurse back into
+            // SPEC-4.30.10: `post_typed` sends no bearer, so this cannot recurse back into
             // the renewal path through a 401.
             let resp = post_typed::<RefreshResp, _>(
                 "/auth/refresh",
@@ -712,6 +753,7 @@ pub mod api {
             return Ok(());
         }
 
+        // SPEC-4.30.11
         Err("no persisted session to renew".to_string())
     }
 
@@ -728,14 +770,17 @@ pub mod api {
     /// 401 belongs to a separate identity and a `POST /auth/login` 401 means
     /// wrong password; neither may sign an agent out.
     #[cfg(feature = "app")]
+    // SPEC-4.31.1, SPEC-4.31.8
     async fn note_agent_unauthorized() {
         match recent_renewal() {
             // A renewal landed moments ago, so this 401 was answered against
             // the token it replaced; the resources it re-drove carry the new
             // one. Renewing again would spend a refresh token per stale reply.
+            // SPEC-4.31.2
             Some(Ok(())) => return,
             // The renewal that just failed is why this 401 happened. Do not
             // try again, and do not leave the screen sitting on the error.
+            // SPEC-4.31.3
             Some(Err(e)) => {
                 tracing::warn!("agent bearer rejected and the last renewal failed: {e}");
                 end_agent_session();
@@ -743,6 +788,7 @@ pub mod api {
             }
             None => {}
         }
+        // SPEC-4.31.4
         if let Err(e) = renew_access_token().await {
             tracing::warn!("agent bearer rejected and could not be renewed: {e}");
             end_agent_session();
@@ -766,6 +812,7 @@ pub mod api {
     /// what drops the cleared state onto the login screen - the same reason
     /// `use_token_refresh` redirects this way.
     #[cfg(feature = "app")]
+    // SPEC-4.31.5
     fn end_agent_session() {
         set_access_token(None);
         // Clears the standalone session too (see `storage::clear_auth`).
@@ -778,10 +825,12 @@ pub mod api {
         // Either way the user ends up on the login screen; what must not
         // happen is the session ending with nothing on screen changing.
         // MAPPS-518 URL swap: tenant login lives at /client/login now.
+        // SPEC-4.31.6
         #[cfg(target_arch = "wasm32")]
         if let Err(e) = crate::platform::location::set_href("/client/login") {
             tracing::warn!("could not redirect to /client/login after signing out: {e}");
         }
+        // SPEC-4.31.7
         #[cfg(not(target_arch = "wasm32"))]
         super::note_session_ended();
     }
@@ -811,6 +860,7 @@ pub mod api {
     /// the agent-side "active tenant changed" signal, and the portal pages
     /// mount fresh after the post-login navigation anyway.
     #[cfg(feature = "app")]
+    // SPEC-4.29.2
     pub fn set_portal_access_token(token: Option<String>) {
         PORTAL_ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
     }
@@ -829,6 +879,7 @@ pub mod api {
     /// Whether a portal session is held. The predicate `PortalGuard` gates
     /// `/portal/*` on, without handing the token out.
     #[cfg(feature = "app")]
+    // SPEC-4.29.3
     pub fn has_portal_session() -> bool {
         PORTAL_ACCESS_TOKEN.with(|t| t.borrow().is_some())
     }
@@ -840,6 +891,7 @@ pub mod api {
     /// now either resumes through the cookie or lands at the sign-in
     /// page; the latter was already MAPPS-917's accepted trade-off.
     #[cfg(feature = "app")]
+    // SPEC-4.29.2
     pub fn set_portal_refresh_token(token: Option<String>) {
         PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token);
     }
@@ -919,6 +971,7 @@ pub mod api {
     /// has its own tenant scope and the pages it mounts fresh after
     /// login navigation anyway.
     #[cfg(feature = "app")]
+    // SPEC-4.29.2
     pub fn set_contact_access_token(token: Option<String>) {
         CONTACT_ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
     }
@@ -932,6 +985,7 @@ pub mod api {
     /// Whether a contact session is held. Cheap predicate for gates
     /// (AuthGuard) that don't need to touch the token itself.
     #[cfg(feature = "app")]
+    // SPEC-4.29.3
     pub fn has_contact_session() -> bool {
         CONTACT_ACCESS_TOKEN.with(|t| t.borrow().is_some())
     }
@@ -941,6 +995,7 @@ pub mod api {
     /// mirror now (MAPPS-920). `None` clears the in-memory slot; the
     /// cookie is cleared by the logout path's response.
     #[cfg(feature = "app")]
+    // SPEC-4.29.2
     pub fn set_contact_refresh_token(token: Option<String>) {
         CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token);
     }
@@ -966,6 +1021,7 @@ pub mod api {
     /// AuthGuard bounce on expired sessions to route the visitor back
     /// to the same portal they came from.
     #[cfg(feature = "app")]
+    // SPEC-4.37.1
     pub fn set_contact_last_slug(slug: &str) {
         #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
@@ -984,6 +1040,7 @@ pub mod api {
     /// Read the last-known slug the browser signed in on. `None` when
     /// no contact login has ever happened on this browser.
     #[cfg(feature = "app")]
+    // SPEC-4.37.2
     pub fn current_contact_last_slug() -> Option<String> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -1008,6 +1065,7 @@ pub mod api {
     /// receives a numeric Portal ID; preferred by the AuthGuard
     /// cold-load bootstrap over the legacy slug key.
     #[cfg(feature = "app")]
+    // SPEC-4.37.1
     pub fn set_contact_last_portal_id(value: &str) {
         #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
@@ -1030,6 +1088,7 @@ pub mod api {
     /// from `ContactLoginByPortalIdPage`'s "Choose a different portal"
     /// button.
     #[cfg(feature = "app")]
+    // SPEC-4.37.3
     pub fn clear_contact_last_portal_id() {
         #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
@@ -1048,6 +1107,7 @@ pub mod api {
     /// Portal ID has happened yet (the legacy slug-only flow leaves
     /// this key unset).
     #[cfg(feature = "app")]
+    // SPEC-4.37.2
     pub fn current_contact_last_portal_id() -> Option<String> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -1070,6 +1130,7 @@ pub mod api {
     /// MAPPS-604: overwrite the Company UUID this contact session is
     /// scoped to. `None` clears it (called on logout / session drop).
     #[cfg(feature = "app")]
+    // SPEC-4.29.4
     pub fn set_contact_company_id(id: Option<uuid::Uuid>) {
         CONTACT_COMPANY_ID.with(|slot| *slot.borrow_mut() = id);
     }
@@ -1080,6 +1141,7 @@ pub mod api {
     /// contact signed in against an older mokosh sees `None` and
     /// callers fall back to whatever URL-derived id they have).
     #[cfg(feature = "app")]
+    // SPEC-4.29.4
     pub fn current_contact_company_id() -> Option<uuid::Uuid> {
         CONTACT_COMPANY_ID.with(|slot| *slot.borrow())
     }
@@ -1087,6 +1149,7 @@ pub mod api {
     /// MAPPS-609: overwrite the contact UUID this session belongs to.
     /// `None` clears it (called on logout / session drop).
     #[cfg(feature = "app")]
+    // SPEC-4.29.4
     pub fn set_contact_id(id: Option<uuid::Uuid>) {
         CONTACT_ID.with(|slot| *slot.borrow_mut() = id);
     }
@@ -1097,6 +1160,7 @@ pub mod api {
     /// signed in against an older mokosh sees `None`; callers that need
     /// ownership must treat that as "unknown" and fall closed).
     #[cfg(feature = "app")]
+    // SPEC-4.29.4
     pub fn current_contact_id() -> Option<uuid::Uuid> {
         CONTACT_ID.with(|slot| *slot.borrow())
     }
@@ -1106,6 +1170,7 @@ pub mod api {
     /// keys are wiped so a follow-up cold-load starts blank rather
     /// than latching onto a stale hint.
     #[cfg(feature = "app")]
+    // SPEC-4.29.5
     pub fn clear_contact_session() {
         set_contact_access_token(None);
         set_contact_refresh_token(None);
@@ -1135,6 +1200,7 @@ pub mod api {
     /// stored bundles in sessionStorage, and the platform-admin
     /// bearer that sits alongside them.
     #[cfg(feature = "app")]
+    // SPEC-4.29.6
     pub fn clear_staff_session_for_plane_switch() {
         set_access_token(None);
         crate::modules::oidc::storage::clear_auth();
@@ -1157,6 +1223,7 @@ pub mod api {
     /// success, OIDC callback exchange, platform-login success). No
     /// return value; the effect is entirely in the token holders.
     #[cfg(feature = "app")]
+    // SPEC-4.29.7
     pub fn on_staff_signin_clear_contact_side() {
         clear_contact_session();
         crate::hooks::capabilities::clear_contact_capabilities();
@@ -1168,6 +1235,7 @@ pub mod api {
     /// login success, magic-link redeem success, contact set-password
     /// -then-auto-login).
     #[cfg(feature = "app")]
+    // SPEC-4.29.8
     pub fn on_contact_signin_clear_staff_side() {
         clear_staff_session_for_plane_switch();
         crate::hooks::branding::clear_effective_branding();
@@ -1181,6 +1249,7 @@ pub mod api {
     /// Used only at `.send()` sites - serialization (`.json()`) failures
     /// keep the plain mapping since they are not connectivity problems.
     #[cfg(feature = "app")]
+    // SPEC-4.32.9
     fn transport_err(e: impl std::fmt::Display) -> String {
         super::note_transport_error();
         e.to_string()
@@ -1197,6 +1266,7 @@ pub mod api {
 
     /// Get request
     #[cfg(feature = "app")]
+    // SPEC-4.34.5, SPEC-4.34.8
     pub async fn get<T: DeserializeOwned>(path: &str) -> Result<T, String> {
         let url = format!("{}{}", api_base(), path);
 
@@ -1218,6 +1288,7 @@ pub mod api {
     /// when a dependency is down. A transport-level failure (server
     /// unreachable, DNS, CORS) is still an `Err`.
     #[cfg(feature = "app")]
+    // SPEC-4.35.1
     pub async fn probe(path: &str) -> Result<(u16, String), String> {
         let url = format!("{}{}", api_base(), path);
 
@@ -1240,6 +1311,7 @@ pub mod api {
     /// is the flat-string sibling for the many existing callers. Falls back
     /// to the status line when the body is not a recognised envelope.
     #[cfg(feature = "app")]
+    // SPEC-4.32.1
     async fn status_error(response: crate::platform::http::Response) -> String {
         let status = response.status();
         // MAPPS-1239: NOT classified here. Every caller classifies the
@@ -1254,9 +1326,11 @@ pub mod api {
         // a string `error` rather than the canonical `{code,message}` object, so
         // it never parses as `ErrorResponse` below. Read the wait here, once,
         // before that parse is attempted.
+        // SPEC-4.32.2
         if status == 429 {
             return rate_limited_message(&body);
         }
+        // SPEC-4.32.6: an unparseable body takes the status-class fallback below.
         match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
             Ok(env) => {
                 // MAPPS-348: 410 Gone with `ACCOUNT_DELETED` is the terminal
@@ -1265,10 +1339,12 @@ pub mod api {
                 // so AppLayout renders the terminal modal; the returned
                 // message is still surfaced to any caller that inspects it,
                 // but the overlay will normally block further UI.
+                // SPEC-4.27.5
                 if status == 410 && env.error.code == "ACCOUNT_DELETED" {
                     super::note_account_deleted();
                 }
                 let fields = env.error.errors.unwrap_or_default();
+                // SPEC-4.32.3
                 if status == 422 && !fields.is_empty() {
                     fields
                         .iter()
@@ -1287,6 +1363,7 @@ pub mod api {
                     // plane-aware permission message so the copy
                     // matches what actually happened.
                     permission_message()
+                // SPEC-4.32.5
                 } else if !env.error.message.is_empty() {
                     env.error.message
                 } else {
@@ -1303,6 +1380,7 @@ pub mod api {
     /// is not active" for a suspended tenant, MFA-required copy)
     /// stays verbatim so users still see the specific reason.
     #[cfg(feature = "app")]
+    // SPEC-4.32.4
     fn is_generic_auth_message(status: u16, msg: &str) -> bool {
         if !(status == 401 || status == 403) {
             return false;
@@ -1318,6 +1396,7 @@ pub mod api {
         )
     }
 
+    // SPEC-4.32.7
     #[cfg(target_arch = "wasm32")]
     fn permission_message() -> String {
         let has_any_session =
@@ -1331,6 +1410,7 @@ pub mod api {
 
     /// Non-web fallback so callers compile under `cargo check` without
     /// pulling in the plane-aware permission logic.
+    // SPEC-4.32.7
     #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
     fn permission_message() -> String {
         "You don't have permission to perform this action.".into()
@@ -1356,6 +1436,7 @@ pub mod api {
     ///
     /// MAPPS-1239: this doc sat fused onto `is_generic_auth_message`.
     #[cfg(feature = "app")]
+    // SPEC-4.32.8
     fn user_friendly_status(status: u16) -> String {
         match status {
             400 => "The request was rejected. Please check the form and try again.".into(),
@@ -1375,6 +1456,7 @@ pub mod api {
     /// ([`handle_response`]). Falls back to the generic phrasing when the
     /// body carries no usable `retry_after_seconds`.
     #[cfg(feature = "app")]
+    // SPEC-4.32.2
     fn rate_limited_message(body: &str) -> String {
         match crate::utils::rate_limit::retry_after_phrase(body) {
             Some(wait) => format!("Too many requests. Try again {wait}."),
@@ -1436,6 +1518,7 @@ pub mod api {
 
     /// Get request with auth token
     #[cfg(feature = "app")]
+    // SPEC-4.34.2
     pub async fn get_with_auth<T: DeserializeOwned>(path: &str, token: &str) -> Result<T, String> {
         let url = format!("{}{}", api_base(), path);
         let (agent_lane, token) = agent_lane_bearer(token).await;
@@ -1470,6 +1553,7 @@ pub mod api {
     /// The server's `per_page` ceiling. Mirrors
     /// `PaginationParams::MAX_PER_PAGE`, which is itself the client's copy
     /// of the server's constant.
+    // SPEC-4.36.1
     pub const MAX_PER_PAGE: u32 = crate::utils::PaginationParams::MAX_PER_PAGE;
 
     /// Page ceiling for the `get_all_*` helpers: 100 pages at the cap is
@@ -1477,11 +1561,13 @@ pub mod api {
     /// endpoint that ignores `page`, so the helper fails loudly rather than
     /// handing back a list that is short for a reason nobody can see.
     #[cfg(feature = "app")]
+    // SPEC-4.36.5
     const MAX_PAGES: u32 = 100;
 
     /// Append the paging query the `get_all_*` helpers drive, preserving any
     /// filters the caller already put on `path`.
     #[cfg(feature = "app")]
+    // SPEC-4.36.2, SPEC-4.36.3
     pub(crate) fn paged_path(path: &str, page: u32) -> String {
         let sep = if path.contains('?') { '&' } else { '?' };
         format!("{path}{sep}page={page}&per_page={MAX_PER_PAGE}")
@@ -1496,6 +1582,7 @@ pub mod api {
         path: &str,
         token: &str,
     ) -> Result<Vec<T>, String> {
+        // SPEC-4.36.4, SPEC-4.36.6: the `?` returns the page error and drops earlier rows.
         let mut rows: Vec<T> = Vec::new();
         for page in 1..=MAX_PAGES {
             let resp: crate::utils::Paginated<T> =
@@ -1506,6 +1593,7 @@ pub mod api {
                 return Ok(rows);
             }
         }
+        // SPEC-4.36.5
         Err(format!(
             "{path} returned more than {MAX_PAGES} full pages of {MAX_PER_PAGE} rows; \
              refusing to render a list that is silently short"
@@ -1514,6 +1602,7 @@ pub mod api {
 
     /// Post request
     #[cfg(feature = "app")]
+    // SPEC-4.34.5, SPEC-4.34.7
     pub async fn post<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1633,6 +1722,7 @@ pub mod api {
 
     /// Delete request with auth token
     #[cfg(feature = "app")]
+    // SPEC-4.35.2
     pub async fn delete_with_auth(path: &str, token: &str) -> Result<(), String> {
         let url = format!("{}{}", api_base(), path);
         let (agent_lane, token) = agent_lane_bearer(token).await;
@@ -1661,6 +1751,7 @@ pub mod api {
     /// the empty payload, so this variant only checks the status, like
     /// `delete_with_auth`. No request body is sent.
     #[cfg(feature = "app")]
+    // SPEC-4.35.2
     pub async fn post_no_content_with_auth(path: &str, token: &str) -> Result<(), String> {
         let url = format!("{}{}", api_base(), path);
         let (agent_lane, token) = agent_lane_bearer(token).await;
@@ -1696,6 +1787,7 @@ pub mod api {
     /// ALONE. Setting it manually omits the boundary parameter, and the server
     /// then rejects a body it cannot split.
     #[cfg(feature = "app")]
+    // SPEC-4.35.4
     pub async fn put_file_authed<T: DeserializeOwned>(
         path: &str,
         file_name: &str,
@@ -1730,6 +1822,7 @@ pub mod api {
     /// the same reason - setting it by hand omits the boundary parameter and
     /// the server cannot split the body.
     #[cfg(feature = "app")]
+    // SPEC-4.35.4
     pub async fn post_file_authed<T: DeserializeOwned>(
         path: &str,
         file_name: &str,
@@ -1768,6 +1861,7 @@ pub mod api {
     // page code that resolves its own bearer arrives.
 
     #[cfg(feature = "app")]
+    // SPEC-4.34.3, SPEC-4.29.14
     pub async fn get_authed<T: DeserializeOwned>(path: &str) -> Result<T, String> {
         ensure_fresh_access_token().await;
         match current_access_token() {
@@ -1779,6 +1873,7 @@ pub mod api {
     /// Auto-authed sibling of [`get_all_with_auth`]: reads a whole list,
     /// paging until a short page (MAPPS-528).
     #[cfg(feature = "app")]
+    // SPEC-4.34.3, SPEC-4.29.13, SPEC-4.36.4
     pub async fn get_all_authed<T: DeserializeOwned>(path: &str) -> Result<Vec<T>, String> {
         ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
@@ -1786,6 +1881,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.34.3, SPEC-4.29.14
     pub async fn post_authed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1798,6 +1894,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.34.3, SPEC-4.29.13
     pub async fn put_authed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1808,6 +1905,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.34.3, SPEC-4.29.13
     pub async fn delete_authed(path: &str) -> Result<(), String> {
         ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
@@ -1815,6 +1913,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.34.3, SPEC-4.29.13
     pub async fn patch_authed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -1832,6 +1931,7 @@ pub mod api {
     /// sibling of `put_portal_authed_json_no_content`, which exists for
     /// the same reason on the contact plane.
     #[cfg(feature = "app")]
+    // SPEC-4.34.3, SPEC-4.29.13, SPEC-4.35.2
     pub async fn put_authed_json_no_content<B: Serialize>(
         path: &str,
         body: &B,
@@ -1862,6 +1962,7 @@ pub mod api {
     /// Auto-authed POST for empty-body endpoints (see
     /// `post_no_content_with_auth`).
     #[cfg(feature = "app")]
+    // SPEC-4.34.3, SPEC-4.29.13
     pub async fn post_authed_no_content(path: &str) -> Result<(), String> {
         ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
@@ -1882,6 +1983,7 @@ pub mod api {
     /// Error for a `/portal/*` call made with no portal session. Surfaced
     /// through the same `Result<_, String>` channel the pages already render.
     #[cfg(feature = "app")]
+    // SPEC-4.29.10, SPEC-4.29.9
     fn portal_not_signed_in() -> String {
         "not signed in to the portal".to_string()
     }
@@ -1916,6 +2018,7 @@ pub mod api {
         path: &str,
         body: &B,
     ) -> Result<T, ApiError> {
+        // SPEC-4.29.10
         let t = current_portal_access_token().ok_or_else(|| ApiError::Status {
             code: 401,
             message: String::new(),
@@ -1941,6 +2044,7 @@ pub mod api {
     /// omits it - overriding it here would strip the boundary and the
     /// server would 400.
     #[cfg(target_arch = "wasm32")]
+    // SPEC-4.35.5, SPEC-4.29.10
     pub async fn post_portal_authed_multipart<T: DeserializeOwned>(
         path: &str,
         form: &web_sys::FormData,
@@ -1969,6 +2073,7 @@ pub mod api {
     /// `Content-Type` header - the browser sets it (with the
     /// `boundary=...` parameter) from the `FormData` body itself.
     #[cfg(target_arch = "wasm32")]
+    // SPEC-4.35.5, SPEC-4.29.13
     pub async fn put_authed_multipart<T: DeserializeOwned>(
         path: &str,
         form: &web_sys::FormData,
@@ -1996,6 +2101,7 @@ pub mod api {
     /// (`PUT /api/v1/contact/companies/self/{asset}`), gated on the
     /// caller holding `settings:manage_company_branding`.
     #[cfg(target_arch = "wasm32")]
+    // SPEC-4.35.5, SPEC-4.29.11
     pub async fn put_contact_authed_multipart<T: DeserializeOwned>(
         path: &str,
         form: &web_sys::FormData,
@@ -2017,6 +2123,7 @@ pub mod api {
     /// specific status codes (401 = current password wrong, 400 = new
     /// password fails policy) with typed `.message` for the server text.
     #[cfg(feature = "app")]
+    // SPEC-4.35.2, SPEC-4.35.3, SPEC-4.35.8
     pub async fn put_portal_authed_json_no_content<B: Serialize>(
         path: &str,
         body: &B,
@@ -2054,6 +2161,7 @@ pub mod api {
     /// [`put_portal_authed_json_no_content`] for the profile self-edit
     /// path (`PATCH /portal/auth/me`).
     #[cfg(feature = "app")]
+    // SPEC-4.35.2, SPEC-4.35.3, SPEC-4.35.8
     pub async fn patch_portal_authed_json_no_content<B: Serialize>(
         path: &str,
         body: &B,
@@ -2090,6 +2198,7 @@ pub mod api {
     /// {id}/resend-invite`, ...). Surfaces `ApiError` so the caller
     /// can branch on the envelope code without a second parse.
     #[cfg(feature = "app")]
+    // SPEC-4.35.2, SPEC-4.35.3, SPEC-4.35.8
     pub async fn post_portal_authed_no_content(path: &str) -> Result<(), ApiError> {
         let t = current_portal_access_token().ok_or_else(|| ApiError::Status {
             code: 401,
@@ -2122,6 +2231,7 @@ pub mod api {
     /// Only checks the status; a 4xx surfaces through the standard
     /// `status_error` string.
     #[cfg(feature = "app")]
+    // SPEC-4.35.2, SPEC-4.35.8
     pub async fn put_portal_authed_no_content(path: &str) -> Result<(), String> {
         let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
         let url = format!("{}{}", api_base(), path);
@@ -2146,6 +2256,7 @@ pub mod api {
     /// (`DELETE /portal/company/delegations/{id}` responds 204). Only
     /// checks the status; a 4xx surfaces through `status_error`.
     #[cfg(feature = "app")]
+    // SPEC-4.35.2, SPEC-4.35.8
     pub async fn delete_portal_authed_no_content(path: &str) -> Result<(), String> {
         let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
         let url = format!("{}{}", api_base(), path);
@@ -2171,6 +2282,7 @@ pub mod api {
     /// be reached via a plain `<a href>`; this helper is what the
     /// `PortalAttachmentLink` handler pipes into a Blob URL.
     #[cfg(feature = "app")]
+    // SPEC-4.35.6, SPEC-4.35.8
     pub async fn get_portal_authed_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), String> {
         let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
         let url = format!("{}{}", api_base(), path);
@@ -2206,6 +2318,7 @@ pub mod api {
     // request.
 
     #[cfg(feature = "app")]
+    // SPEC-4.29.11
     fn contact_not_signed_in_api() -> ApiError {
         ApiError::Status {
             code: 401,
@@ -2246,6 +2359,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.35.2, SPEC-4.35.3, SPEC-4.35.8
     pub async fn post_contact_authed_no_content(path: &str) -> Result<(), ApiError> {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
@@ -2271,6 +2385,7 @@ pub mod api {
     /// server flips the picked row to default and returns 204, so there
     /// is nothing to deserialise either way.
     #[cfg(feature = "app")]
+    // SPEC-4.35.2, SPEC-4.35.3, SPEC-4.35.8
     pub async fn put_contact_authed_no_content(path: &str) -> Result<(), ApiError> {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
@@ -2331,6 +2446,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.35.2, SPEC-4.35.3, SPEC-4.35.8
     pub async fn delete_contact_authed_no_content(path: &str) -> Result<(), ApiError> {
         let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
@@ -2368,6 +2484,7 @@ pub mod api {
     /// session on a URL that ALSO renders for staff routes through the
     /// contact identity and lands on the contact-scoped filter path.
     #[cfg(feature = "app")]
+    // SPEC-4.34.4
     pub async fn get_authed_any<T: DeserializeOwned>(path: &str) -> Result<T, String> {
         if let Some(t) = current_contact_access_token() {
             return get_with_auth(path, &t).await;
@@ -2391,6 +2508,7 @@ pub mod api {
     /// `path` carries the endpoint's own filters and must NOT spell
     /// `page` or `per_page`; both are appended per request.
     #[cfg(feature = "app")]
+    // SPEC-4.34.4, SPEC-4.36.4
     pub async fn get_all_authed_any<T: DeserializeOwned>(path: &str) -> Result<Vec<T>, String> {
         if let Some(t) = current_contact_access_token() {
             return get_all_with_auth(path, &t).await;
@@ -2422,6 +2540,7 @@ pub mod api {
     /// selection; surfaces `ApiError::Status` so a page can branch on
     /// 401 / 403 / 404 without re-parsing the envelope.
     #[cfg(feature = "app")]
+    // SPEC-4.34.4, SPEC-4.31.11
     pub async fn get_authed_any_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::get(&url);
@@ -2445,6 +2564,7 @@ pub mod api {
     /// on 403 (missing cap) or 501 (not implemented yet) without
     /// re-parsing the envelope.
     #[cfg(feature = "app")]
+    // SPEC-4.34.4, SPEC-4.31.11
     pub async fn post_authed_any_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -2476,6 +2596,7 @@ pub mod api {
     /// can branch on 403 (missing cap / not-owner) without re-parsing
     /// the envelope.
     #[cfg(feature = "app")]
+    // SPEC-4.34.4, SPEC-4.31.11
     pub async fn patch_authed_any_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -2507,6 +2628,7 @@ pub mod api {
     /// so a caller can branch on 501 (PDF generation stubbed out) and
     /// render the fallback copy inline.
     #[cfg(feature = "app")]
+    // SPEC-4.34.4, SPEC-4.31.11, SPEC-4.35.6
     pub async fn get_authed_any_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), ApiError> {
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::get(&url);
@@ -2567,6 +2689,7 @@ pub mod api {
     /// sessionStorage. `None` when the operator has not signed in on
     /// `/platform/login` (or the browser blocks sessionStorage).
     #[cfg(feature = "app")]
+    // SPEC-4.29.15
     pub fn current_platform_access_token() -> Option<String> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -2584,6 +2707,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.29.12, SPEC-4.34.6
     fn platform_not_signed_in() -> String {
         "not signed in as a platform admin".to_string()
     }
@@ -2661,6 +2785,7 @@ pub mod api {
     /// platform helpers below, factored out so each does not duplicate the
     /// `ErrorResponse` decode.
     #[cfg(feature = "app")]
+    // SPEC-4.33.11, SPEC-4.35.8
     async fn platform_status_error(resp: crate::platform::http::Response) -> ApiError {
         let status = resp.status();
         super::note_response_status(status);
@@ -2675,6 +2800,7 @@ pub mod api {
     /// no body (`PUT /platform/me/password`). Mirrors
     /// [`post_authed_json_no_content`] for the tenant-bearer family.
     #[cfg(feature = "app")]
+    // SPEC-4.35.2, SPEC-4.29.12
     pub async fn put_platform_authed_json_no_content<B: Serialize>(
         path: &str,
         body: &B,
@@ -2699,6 +2825,7 @@ pub mod api {
     /// MAPPS-946: platform-authed POST with a JSON body that answers 200
     /// with no body (`POST /platform/me/mfa/disable`).
     #[cfg(feature = "app")]
+    // SPEC-4.35.2, SPEC-4.29.12
     pub async fn post_platform_authed_json_no_content<B: Serialize>(
         path: &str,
         body: &B,
@@ -2731,6 +2858,7 @@ pub mod api {
     const PLATFORM_MFA_ENABLED_KEY: &str = "mokosh:platform_mfa_enabled";
 
     #[cfg(feature = "app")]
+    // SPEC-4.37.4, SPEC-4.37.5
     pub fn current_platform_mfa_enabled() -> bool {
         #[cfg(target_arch = "wasm32")]
         {
@@ -2783,6 +2911,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.37.4
     pub fn set_platform_mfa_enabled(enabled: bool) {
         #[cfg(target_arch = "wasm32")]
         {
@@ -2818,6 +2947,7 @@ pub mod api {
     /// to match on every possible status code.
     #[cfg(feature = "app")]
     #[derive(Debug, Clone)]
+    // SPEC-4.33.1
     pub enum ApiError {
         /// Transport failed before a response was received.
         Network(String),
@@ -2851,6 +2981,7 @@ pub mod api {
     #[cfg(feature = "app")]
     impl ApiError {
         /// User-facing message suitable for a toast.
+        // SPEC-4.33.6, SPEC-4.33.7, SPEC-4.33.8
         pub fn user_message(&self) -> String {
             match self {
                 Self::Network(_) => "Network error. Check your connection and try again.".into(),
@@ -2899,6 +3030,7 @@ pub mod api {
         }
 
         /// Status code if the error was a non-2xx HTTP response.
+        // SPEC-4.33.10
         pub fn status_code(&self) -> Option<u16> {
             match self {
                 Self::Status { code, .. } => Some(*code),
@@ -2909,6 +3041,7 @@ pub mod api {
         /// Server-provided field-level validation errors, if any
         /// (MAPPS-210). Empty for transport / decode errors and for
         /// non-2xx responses that carried no `error.errors[]` envelope.
+        // SPEC-4.33.10
         pub fn field_errors(&self) -> &[crate::utils::error::FieldError] {
             match self {
                 Self::Status { fields, .. } => fields,
@@ -2919,6 +3052,7 @@ pub mod api {
         /// Validation message the server attached to a specific form field,
         /// if present. Lets a form route the message next to the offending
         /// input (MAPPS-210).
+        // SPEC-4.33.10
         pub fn field_message(&self, field: &str) -> Option<String> {
             self.field_errors()
                 .iter()
@@ -2928,6 +3062,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.33.9
     impl std::fmt::Display for ApiError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
@@ -2945,6 +3080,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.33.2, SPEC-4.33.4, SPEC-4.33.5
     async fn handle_response<T: DeserializeOwned>(
         response: crate::platform::http::Response,
     ) -> Result<T, ApiError> {
@@ -2961,6 +3097,8 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body = response.text().await.unwrap_or_default();
+        // SPEC-4.33.3
+        // SPEC-4.27.5
         let err = api_error_from_body(status, &body);
         // MAPPS-348: mirror `status_error`'s terminal-state detection on the
         // typed path so a fetch on either helper flips the global
@@ -2979,6 +3117,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.31.9, SPEC-4.29.14
     pub async fn get_authed_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         ensure_fresh_access_token().await;
         let url = format!("{}{}", api_base(), path);
@@ -2999,6 +3138,7 @@ pub mod api {
     /// [`get_all_authed`] with a typed error, so a caller can tell a 403 from
     /// a failure. Same paging contract as [`get_all_with_auth`].
     #[cfg(feature = "app")]
+    // SPEC-4.36.4
     pub async fn get_all_authed_typed<T: DeserializeOwned>(path: &str) -> Result<Vec<T>, ApiError> {
         let mut rows: Vec<T> = Vec::new();
         for page in 1..=MAX_PAGES {
@@ -3010,6 +3150,7 @@ pub mod api {
                 return Ok(rows);
             }
         }
+        // SPEC-4.36.5
         Err(ApiError::Decode(format!(
             "{path} returned more than {MAX_PAGES} full pages of {MAX_PER_PAGE} rows; \
              refusing to render a list that is silently short"
@@ -3021,6 +3162,7 @@ pub mod api {
     /// cannot fetch through a plain `<a href>` because the bearer lives in WASM
     /// memory rather than a cookie (the data export, MAPPS-364).
     #[cfg(feature = "app")]
+    // SPEC-4.35.6, SPEC-4.29.14
     pub async fn get_authed_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), String> {
         ensure_fresh_access_token().await;
         let url = format!("{}{}", api_base(), path);
@@ -3057,6 +3199,7 @@ pub mod api {
     /// document that is gone (404), on the network or on the server, rather
     /// than showing the transport's string.
     #[cfg(feature = "app")]
+    // SPEC-4.31.10, SPEC-4.35.6
     pub async fn get_authed_bytes_typed(path: &str) -> Result<(Vec<u8>, Option<String>), ApiError> {
         // MAPPS-768: the contact's bearer first, the staff one second, the
         // `_any_` convention `post_authed_any_typed` and friends already
@@ -3117,6 +3260,7 @@ pub mod api {
     /// Only the simple quoted or unquoted `filename=` form is handled (no
     /// RFC 5987 `filename*=`), which is all the export endpoint emits.
     #[cfg(feature = "app")]
+    // SPEC-4.35.7
     fn content_disposition_filename(header: &str) -> Option<String> {
         let idx = header.to_ascii_lowercase().find("filename=")?;
         let raw = header[idx + "filename=".len()..].trim();
@@ -3134,6 +3278,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.31.9, SPEC-4.29.14
     pub async fn post_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -3163,6 +3308,7 @@ pub mod api {
     /// mirroring [`put_portal_authed_json_no_content`] for the bearer-authed
     /// family.
     #[cfg(feature = "app")]
+    // SPEC-4.35.2, SPEC-4.31.9
     pub async fn post_authed_json_no_content<B: Serialize>(
         path: &str,
         body: &B,
@@ -3200,6 +3346,7 @@ pub mod api {
     /// yet), so the caller can inspect `ApiError::Status { code, .. }` and map
     /// 401 -> "invalid credentials" / 429 -> "too many attempts".
     #[cfg(feature = "app")]
+    // SPEC-4.34.5, SPEC-4.28.10
     pub async fn post_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -3224,6 +3371,7 @@ pub mod api {
     /// the caller could not tell 410 (link already submitted) from 400
     /// (expired or unknown). This keeps the typed error.
     #[cfg(feature = "app")]
+    // SPEC-4.34.5, SPEC-4.28.10
     pub async fn get_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::get(&url);
@@ -3249,6 +3397,7 @@ pub mod api {
     /// then fails silently and the handler returns 204 with no
     /// email dispatched. Same reason `post_typed` already attaches it.
     #[cfg(feature = "web")]
+    // SPEC-4.34.5, SPEC-4.28.10, SPEC-4.35.2
     pub async fn post_typed_no_content<B: Serialize>(path: &str, body: &B) -> Result<(), ApiError> {
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::post(&url);
@@ -3274,6 +3423,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.31.9, SPEC-4.29.13
     pub async fn put_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -3305,6 +3455,7 @@ pub mod api {
     /// `String`-error `patch_authed` existed, which loses the per-field 422
     /// envelope the editor needs to report a bad field set.
     #[cfg(feature = "app")]
+    // SPEC-4.31.9, SPEC-4.29.13
     pub async fn patch_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
         body: &B,
@@ -3332,6 +3483,7 @@ pub mod api {
     }
 
     #[cfg(feature = "app")]
+    // SPEC-4.31.9, SPEC-4.29.13, SPEC-4.35.2
     pub async fn delete_authed_typed(path: &str) -> Result<(), ApiError> {
         ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| ApiError::Status {

@@ -19,6 +19,7 @@ pub enum ModalSize {
 }
 
 impl ModalSize {
+    // SPEC-5.61.3: width class per size.
     fn class(&self) -> &'static str {
         match self {
             ModalSize::Small => "max-w-md",
@@ -64,6 +65,7 @@ pub struct ModalProps {
 /// Modal dialog component
 #[component]
 pub fn Modal(props: ModalProps) -> Element {
+    // SPEC-5.61.1: nothing renders, and no dialog is mounted, while closed.
     if !props.open {
         return rsx! {};
     }
@@ -99,6 +101,7 @@ fn ModalDialog(
     // restore it when this component unmounts (any close path). MAPPS-511: both
     // hosts do this now - the desktop parks the element in its webview under
     // the token rather than reading it back into Rust.
+    // SPEC-5.61.2: focus is restored on unmount, whichever path closed the dialog.
     let trigger = use_hook(crate::platform::dom::capture_focus);
     use_drop(move || trigger.restore());
 
@@ -131,6 +134,7 @@ fn ModalChrome(
     // title even when two `ModalChrome`s are mounted at once. Atomic counter is
     // deterministic and wasm is single-threaded (same pattern as `Markdown`'s
     // `dom_id`).
+    // SPEC-5.61.4: unique title id from a counter.
     let title_id = use_hook(|| {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -142,6 +146,7 @@ fn ModalChrome(
             // Backdrop. Tailwind v4 removed `bg-opacity-*`; use the
             // slash alpha syntax instead so the page stays visible
             // through a 75% gray dim instead of being fully covered.
+            // SPEC-5.61.6: a backdrop click closes the dialog.
             div {
                 class: "fixed inset-0 bg-gray-500/75 transition-opacity", // theme-guard-allow: overlay scrim
                 onclick: move |_| onclose.call(()),
@@ -167,6 +172,7 @@ fn ModalChrome(
                     // PMS-369: Esc cancels. Focus the dialog on mount so the
                     // keydown lands here even before the user clicks anything;
                     // keydown from any focused control inside also bubbles up.
+                    // SPEC-5.61.8: capped flex column; SPEC-5.61.10: no transform class.
                     tabindex: "-1",
                     role: "dialog",
                     aria_modal: "true",
@@ -185,6 +191,7 @@ fn ModalChrome(
                         }
                     },
                     onkeydown: move |e: KeyboardEvent| {
+                        // SPEC-5.61.5: Escape closes only the innermost modal.
                         if e.key() == Key::Named(NamedKey::Escape) {
                             // MAPPS-1006: a nested modal's own `ModalChrome`
                             // sits inside this one's DOM subtree, so this
@@ -197,6 +204,7 @@ fn ModalChrome(
                     },
                     onclick: |e| e.stop_propagation(),
 
+                    // SPEC-5.61.7: title heading plus a labelled close button.
                     // Header (pinned)
                     div { class: "flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-line",
                         h3 {
@@ -217,6 +225,7 @@ fn ModalChrome(
                     // purpose: a tab bar that lives inside it has to be made to
                     // hover over its own container, and whatever it fails to
                     // cover is a strip of scrolled content sitting above it.
+                    // SPEC-5.61.9: only rendered when supplied, outside the scroller.
                     if let Some(subheader) = subheader {
                         div { class: "flex-shrink-0 px-4 border-b border-line",
                             {subheader}
@@ -243,6 +252,7 @@ fn ModalChrome(
 /// Confirmation dialog props
 #[derive(Props, Clone, PartialEq)]
 pub struct ConfirmDialogProps {
+    // SPEC-5.62.2: prop defaults are listed on the fields below.
     /// Whether dialog is open
     open: bool,
     /// Dialog title
@@ -310,6 +320,7 @@ pub struct ConfirmDialogProps {
 /// `required` means no gate (always satisfied). Otherwise the typed text must
 /// match after trimming, case-insensitively, so " acme corp " passes for
 /// "Acme Corp".
+// SPEC-5.62.6: trimmed, ASCII case-insensitive match; blank requirement is always met.
 pub fn confirm_phrase_satisfied(typed: &str, required: &str) -> bool {
     let required = required.trim();
     required.is_empty() || typed.trim().eq_ignore_ascii_case(required)
@@ -327,6 +338,7 @@ pub fn confirm_phrase_satisfied(typed: &str, required: &str) -> bool {
 /// dialog re-arms the gate on every open, with no reset to remember.
 #[component]
 pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
+    // SPEC-5.62.1: closed renders nothing; the phrase state lives in the child.
     if !props.open {
         return rsx! {};
     }
@@ -371,6 +383,7 @@ fn OpenConfirmDialog(
     onconfirm: EventHandler<()>,
     oncancel: EventHandler<()>,
 ) -> Element {
+    // SPEC-5.62.7: destructive confirmations use the danger variant.
     let confirm_variant = if destructive {
         ButtonVariant::Danger
     } else {
@@ -384,8 +397,10 @@ fn OpenConfirmDialog(
     let mut typed = use_signal(String::new);
     // MAPPS-577: no gate when the action is refused. There is nothing for the
     // phrase to unlock.
+    // SPEC-5.62.5: the phrase gate is active only for an unblocked, non-blank phrase.
     let gated = !blocked && !confirm_phrase.trim().is_empty();
     let satisfied = confirm_phrase_satisfied(&typed.read(), &confirm_phrase);
+    // SPEC-5.62.7: three independent reasons keep confirm disabled.
     let confirm_disabled = loading || !satisfied || confirm_disabled;
     let phrase = confirm_phrase.clone();
 
@@ -394,7 +409,9 @@ fn OpenConfirmDialog(
             open: true,
             title: title.clone(),
             size: ModalSize::Small,
+            // SPEC-5.62.3: every close path means cancel.
             onclose: move |_| oncancel.call(()),
+            // SPEC-5.62.9: the alternative precedes Cancel; SPEC-5.62.8: Cancel is locked while loading.
             footer: rsx! {
                 if let Some(alternative) = alternative {
                     {alternative}
@@ -419,6 +436,7 @@ fn OpenConfirmDialog(
                     }
                 }
             },
+            // SPEC-5.62.4: message, body, error, then the phrase gate.
             p { class: "text-sm text-muted",
                 "{message}"
             }
@@ -450,6 +468,7 @@ fn OpenConfirmDialog(
                         // MAPPS-582: raw input. An invisible character pasted
                         // with the phrase would leave the confirm button dead
                         // with the right words on screen.
+                        // SPEC-5.62.5: invisible characters never enter the typed phrase.
                         oninput: move |e: FormEvent| {
                             typed.set(crate::utils::text::strip_invisible(&e.value()))
                         },
@@ -538,6 +557,7 @@ pub struct AlertProps {
 /// Alert banner component
 #[component]
 pub fn Alert(props: AlertProps) -> Element {
+    // SPEC-5.63.1: colours and icon are chosen by alert type.
     let (bg_class, icon_class, text_class) = props.alert_type.classes();
 
     rsx! {
@@ -558,6 +578,7 @@ pub fn Alert(props: AlertProps) -> Element {
                     }
                 }
                 div { class: "ml-3 flex-1",
+                    // SPEC-5.63.2: the title is optional, the message is not.
                     if !props.title.is_empty() {
                         h3 { class: "text-sm font-medium {text_class}",
                             "{props.title}"
@@ -567,6 +588,7 @@ pub fn Alert(props: AlertProps) -> Element {
                         "{props.message}"
                     }
                 }
+                // SPEC-5.63.2: the dismiss control exists only when dismissible.
                 if props.dismissible {
                     div { class: "ml-auto pl-3",
                         IconButton {
@@ -633,6 +655,7 @@ pub struct ToastContainerProps {
 /// Toast container component
 #[component]
 pub fn ToastContainer(props: ToastContainerProps) -> Element {
+    // SPEC-5.63.3: fixed bottom-right stack keyed by toast id.
     let position_class = props.position.class();
 
     rsx! {
@@ -669,6 +692,7 @@ fn ToastRow(props: ToastRowProps) -> Element {
     // mounts a fresh component) and fires the dismiss after the
     // configured ms. `None` skips scheduling entirely - the toast
     // stays sticky until the user clicks X.
+    // SPEC-5.63.5: timer only when auto_dismiss_ms is set, and only in app builds.
     use_effect(move || {
         let id = id.clone();
         if let Some(ms) = auto_dismiss_ms {
@@ -693,10 +717,12 @@ fn ToastRow(props: ToastRowProps) -> Element {
                 alert_type: props.toast.toast_type,
                 title: props.toast.title.clone().unwrap_or_default(),
                 message: props.toast.message.clone(),
+                // SPEC-5.63.4: every toast is dismissible and reports its own id.
                 dismissible: true,
                 ondismiss: move |_| dismiss.call(dismiss_id.clone()),
             }
             if let Some(retry) = retry_handler {
+                // SPEC-5.63.6: dismiss first, then retry.
                 // MAPPS-1114: retry chip rendered under the Alert so a
                 // failed save or load is actionable from the toast itself.
                 // Dismiss first so a repeat failure can push a fresh toast.

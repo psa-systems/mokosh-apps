@@ -53,6 +53,7 @@ use crate::utils::url::urlencoding_minimal;
 use crate::utils::Paginated;
 use crate::Route;
 
+// SPEC-10.39.2
 const PER_PAGE: usize = 25;
 
 /// `Expense`, as `GET /expenses` serves it.
@@ -150,6 +151,7 @@ pub(crate) struct MembersEnvelope {
 /// filter applies (PMS-1535), so these narrow what that caller can see
 /// and never widen it.
 pub(crate) fn list_path(page: usize, status: &str, q: &str) -> String {
+    // SPEC-10.39.2
     let mut path = format!("/expenses?page={page}&per_page={PER_PAGE}");
     let status = status.trim();
     if !status.is_empty() {
@@ -169,6 +171,7 @@ pub(crate) fn list_path(page: usize, status: &str, q: &str) -> String {
 /// `status_badge` gives each of these its own label, so the filter and the
 /// column cannot drift apart.
 pub(crate) const EXPENSE_STATUSES: &[(&str, &str)] = &[
+    // SPEC-10.39.5
     ("draft", "Draft"),
     ("submitted", "Submitted"),
     ("approved", "Approved"),
@@ -182,6 +185,7 @@ pub(crate) const EXPENSE_STATUSES: &[(&str, &str)] = &[
 /// state a reader scanning the column is looking for. An unknown status
 /// renders as itself: it means the server is ahead of this build.
 pub(crate) fn status_badge(status: &str) -> (String, BadgeVariant) {
+    // SPEC-10.39.11
     match status {
         "draft" => ("Draft".to_string(), BadgeVariant::Gray),
         "submitted" => ("Submitted".to_string(), BadgeVariant::Yellow),
@@ -206,6 +210,7 @@ pub(crate) fn status_badge(status: &str) -> (String, BadgeVariant) {
 /// non-finance member nothing, which is the honest answer and not an
 /// omission.
 pub(crate) fn transitions_for(status: &str, can_decide: bool) -> Vec<(&'static str, &'static str)> {
+    // SPEC-10.40.1
     match status {
         "draft" => vec![("Submit", "submit")],
         "submitted" if can_decide => vec![("Approve", "approve"), ("Reject", "reject")],
@@ -223,6 +228,7 @@ pub(crate) fn transitions_for(status: &str, can_decide: bool) -> Vec<(&'static s
 /// from `rejected` to anything, so a misclick is a claim the submitter has
 /// to enter again.
 pub(crate) fn needs_confirmation(action: &str) -> bool {
+    // SPEC-10.40.2
     action == "reject"
 }
 
@@ -238,6 +244,7 @@ pub(crate) fn expense_body(
     notes: &str,
     lines: &[(String, String, String, String)],
 ) -> Result<serde_json::Value, String> {
+    // SPEC-10.41.6
     if incurred_on.trim().is_empty() {
         return Err("A claim needs the date the cost was incurred.".to_string());
     }
@@ -278,6 +285,7 @@ pub(crate) fn expense_body(
             "position": position as i64,
         }));
     }
+    // SPEC-10.41.7
     Ok(serde_json::json!({
         "incurred_on": incurred_on.trim(),
         "currency": currency,
@@ -297,6 +305,7 @@ pub(crate) fn expense_body(
 /// `check-per-page-cap` exists to stop. Paged to the end rather than read
 /// once, because a submitter on page two would otherwise render as a
 /// former member.
+// SPEC-10.40.3
 const MEMBERS_PER_PAGE: usize = 50;
 const MEMBERS_MAX_PAGES: usize = 20;
 
@@ -349,6 +358,7 @@ where
 {
     let mut names = HashMap::new();
     for page in 1..=MEMBERS_MAX_PAGES {
+        // SPEC-10.40.4: a failed page returns the partial map with no signal to callers.
         let Ok(envelope) = fetch_page(page)
             .await
             .inspect_err(|e| tracing::error!("member list load failed: {e}"))
@@ -373,6 +383,8 @@ where
             return (names, MemberLookupEnd::Complete);
         }
     }
+    // SPEC-10.40.5
+    // SPEC-10.40.6
     (names, MemberLookupEnd::Capped)
 }
 
@@ -430,6 +442,7 @@ fn use_can_decide() -> bool {
     let auth = crate::hooks::use_auth();
     // Copied out of the guard before it drops, the shape the sibling pages
     // use: the signal's read guard cannot outlive this function.
+    // SPEC-10.40.7
     let decides = auth
         .read()
         .user
@@ -441,6 +454,7 @@ fn use_can_decide() -> bool {
 
 #[component]
 pub fn ExpenseListPage() -> Element {
+    // SPEC-10.39.1
     use_page_title("Expense Claims");
     // No role gate (MAPPS-1165): the server lets any member file a claim
     // and scopes the list to their own, so there is nothing here to
@@ -495,6 +509,7 @@ fn ExpenseListBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     let can_decide = use_can_decide();
     let navigator = use_navigator();
+    // SPEC-10.39.9
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Expense Claims".to_string() }
@@ -504,11 +519,13 @@ fn ExpenseListBody() -> Element {
     // MAPPS-1165: the server scopes a non-finance caller's list to their
     // own claims, so the Who column would be the same name on every row
     // and the copy would be about people they cannot see.
+    // SPEC-10.39.3
     let columns = if can_decide { 5 } else { 4 };
 
     // An empty list under a filter is "nothing matches", not "nothing
     // here": the second offers a New Claim button to somebody whose claims
     // are one filter away.
+    // SPEC-10.39.8
     let filtered = !status_text.trim().is_empty() || !search_text.trim().is_empty();
     let mut status_options = vec![SelectOption::new("", "All claims")];
     status_options.extend(
@@ -526,6 +543,7 @@ fn ExpenseListBody() -> Element {
                     variant: ButtonVariant::Primary,
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    // SPEC-10.39.10
                     onclick: move |_| creating.set(true),
                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                     "New Claim"
@@ -533,6 +551,7 @@ fn ExpenseListBody() -> Element {
             },
         }
 
+        // SPEC-10.39.4
         p { class: "mb-4 text-sm text-muted",
             if can_decide {
                 "A claim is submitted by the person who spent the money, approved or rejected by somebody else, and marked reimbursed once it has been paid back. A claim you create here is yours."
@@ -594,6 +613,7 @@ fn ExpenseListBody() -> Element {
                     }
                 }
                 if is_loading {
+                    // SPEC-10.39.8
                     TableLoading { columns, rows: 4 }
                 } else if rows.is_empty() && !fetch_failed && filtered {
                     TableEmpty {
@@ -622,6 +642,7 @@ fn ExpenseListBody() -> Element {
                             {
                                 let key = row.id.to_string();
                                 let id = row.id;
+                                // SPEC-10.39.6
                                 let who = member_label(&names, members_end, row.user_id);
                                 let decided = row
                                     .approver_id
@@ -638,6 +659,7 @@ fn ExpenseListBody() -> Element {
                                         },
                                         if can_decide {
                                             TableCell {
+                                                // SPEC-10.39.7
                                                 // MAPPS-569: the row navigates, so this cell is
                                                 // the keyboard path.
                                                 onactivate: move |_| {
@@ -710,6 +732,7 @@ struct NewExpenseModalProps {
 #[component]
 fn NewExpenseModal(props: NewExpenseModalProps) -> Element {
     let mut incurred_on = use_signal(String::new);
+    // SPEC-10.41.1
     let mut currency = use_signal(|| "USD".to_string());
     let mut notes = use_signal(String::new);
     let mut lines = use_signal(|| vec![LineDraft::default()]);
@@ -719,6 +742,7 @@ fn NewExpenseModal(props: NewExpenseModalProps) -> Element {
     let onclose = props.onclose;
     let onsaved = props.onsaved;
 
+    // SPEC-10.41.3
     let categories = use_resource(move || async move {
         crate::hooks::fetch::api::get_all_authed::<NamedRow>("/expense-categories")
             .await
@@ -740,6 +764,7 @@ fn NewExpenseModal(props: NewExpenseModalProps) -> Element {
     // What the server will total, shown while it is typed: a total that
     // only appears after saving is one nobody can check against the
     // receipts in front of them.
+    // SPEC-10.41.4
     let preview: i64 = lines
         .read()
         .iter()
@@ -758,6 +783,7 @@ fn NewExpenseModal(props: NewExpenseModalProps) -> Element {
             return;
         }
         error.set(String::new());
+        // SPEC-10.41.8
         let drafts: Vec<(String, String, String, String)> = lines
             .read()
             .iter()
@@ -839,6 +865,7 @@ fn NewExpenseModal(props: NewExpenseModalProps) -> Element {
                         name: "expense_currency",
                         label: "Currency",
                         required: true,
+                        // SPEC-10.41.2
                         maxlength: 3,
                         value: currency.read().clone(),
                         oninput: move |e: FormEvent| currency.set(e.value()),
@@ -911,6 +938,7 @@ fn NewExpenseModal(props: NewExpenseModalProps) -> Element {
                             PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                             "Add line"
                         }
+                        // SPEC-10.41.5
                         // The server refuses a claim with no lines, so the last
                         // one cannot be removed.
                         if lines.read().len() > 1 {
@@ -952,6 +980,7 @@ fn fire_transition(
     mut confirming: Signal<Option<&'static str>>,
     mut resource: Resource<Option<RemoteExpenseWithLines>>,
 ) {
+    // SPEC-10.42.8
     let path = format!("/expenses/{expense_id}/{action}");
     busy.set(true);
     error.set(String::new());
@@ -973,6 +1002,7 @@ fn fire_transition(
 #[component]
 pub fn ExpenseDetailPage(id: String) -> Element {
     use_page_title("Expense Claim");
+    // SPEC-10.42.1
     // No role gate, for the reason the list has none. The server refuses
     // somebody else's claim with a 403, and the detail read below surfaces
     // that as the page's own error rather than being pre-empted by a gate
@@ -990,6 +1020,7 @@ fn ExpenseDetailBody(id: String) -> Element {
     let busy = use_signal(|| false);
     let mut confirming = use_signal(|| None::<&'static str>);
 
+    // SPEC-10.42.2
     let resource = use_resource(use_reactive(&expense_id, |expense_id| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
@@ -1047,14 +1078,17 @@ fn ExpenseDetailBody(id: String) -> Element {
             p { class: "mb-3 text-sm text-muted", "{MEMBERS_FAILED_NOTE}" }
         }
         match data {
+            // SPEC-10.42.3: a failed load also lands here, with no error shown.
             None if load_failed => rsx! { ErrorBanner { "Could not load this claim." } },
             None => rsx! { crate::components::DetailSkeleton {} },
             Some(loaded) => {
                 let claim = loaded.expense.clone();
                 let (label, tone) = status_badge(&claim.status);
+                // SPEC-10.42.4: an unresolved approver also reads "Nobody yet".
                 let who = member_label(&names, members_end, claim.user_id);
                 let decided = approver_label(&names, members_end, claim.approver_id);
                 let notes = claim.notes.clone().unwrap_or_default();
+                // SPEC-10.42.6
                 let offered = if can_mutate {
                     transitions_for(&claim.status, can_decide)
                 } else {
@@ -1086,6 +1120,7 @@ fn ExpenseDetailBody(id: String) -> Element {
                                     dd { class: "font-medium text-content", "{format_money_minor(claim.total_minor)}" }
                                 }
                             }
+                            // SPEC-10.42.5
                             if let (Some(provider), Some(external)) = (
                                 claim.external_provider.clone(),
                                 claim.external_expense_id.clone(),
@@ -1132,11 +1167,13 @@ fn ExpenseDetailBody(id: String) -> Element {
                                     }
                                 }
                             }
+                            // SPEC-10.42.9: a draft with no mutate right also gets the "finished" text.
                             if offered.is_empty() {
                                 p { class: "text-sm text-muted", "{no_action_note(&claim.status, can_mutate)}" }
                             }
                             ConfirmDialog {
                                 open: confirming().is_some(),
+                                // SPEC-10.42.7
                                 title: "Reject this claim?".to_string(),
                                 message: "The claim stays on record as rejected and cannot be moved again. If it was rejected by mistake, the person who spent the money has to enter it a second time.".to_string(),
                                 confirm_text: "Reject".to_string(),
@@ -1162,6 +1199,7 @@ fn ExpenseDetailBody(id: String) -> Element {
                         }
                     }
 
+                    // SPEC-10.42.10
                     Card { title: "Lines".to_string(), class: "mt-4",
                         Table {
                             TableHead {

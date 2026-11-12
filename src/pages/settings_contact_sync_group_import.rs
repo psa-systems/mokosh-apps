@@ -191,6 +191,7 @@ fn spawn_guarded_review(
 ) {
     spawn(async move {
         let result = fetch.await;
+        // SPEC-8.10.1: write only if no later `review` call has superseded this one.
         if *generation.peek() == expected {
             exact.set(Some(result));
         }
@@ -236,6 +237,7 @@ fn GroupImportBody(vendor: Vendor) -> Element {
     // MAPPS-1173: bumped every time `review` is called, so a response that
     // resolves after a later call has already bumped it is a response for a
     // superseded selection and gets dropped instead of overwriting `exact`.
+    // SPEC-8.10.1: generation counter that lets a stale preview be dropped.
     let mut review_generation = use_signal(|| 0u64);
     let mut error = use_signal(String::new);
     let mut starting = use_signal(|| false);

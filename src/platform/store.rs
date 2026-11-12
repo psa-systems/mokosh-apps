@@ -13,6 +13,7 @@
 
 /// A handle to the session store. Cheap to obtain; not cached by the
 /// callers, matching how `web_sys::Storage` is used.
+// SPEC-3.43.1
 pub struct Store {
     #[cfg(target_arch = "wasm32")]
     inner: web_sys::Storage,
@@ -26,6 +27,7 @@ pub struct Store {
 /// empty store, which would read as "signed out" instead of "storage
 /// unavailable".
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.43.2: SPEC-3.43.3
 pub fn session() -> Result<Store, String> {
     let inner = web_sys::window()
         .ok_or_else(|| "no window".to_string())?
@@ -36,6 +38,7 @@ pub fn session() -> Result<Store, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.43.5
 pub fn session() -> Result<Store, String> {
     Ok(Store {})
 }
@@ -49,6 +52,7 @@ fn map() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>>
 
 impl Store {
     #[cfg(target_arch = "wasm32")]
+    // SPEC-3.43.4
     pub fn get_item(&self, key: &str) -> Result<Option<String>, String> {
         self.inner
             .get_item(key)
@@ -74,6 +78,7 @@ impl Store {
     /// panic can have broken, so recovering the guard is correct and
     /// losing the session to a `PoisonError` would not be.
     #[cfg(not(target_arch = "wasm32"))]
+    // SPEC-3.43.6: SPEC-3.43.7
     pub fn get_item(&self, key: &str) -> Result<Option<String>, String> {
         Ok(map()
             .lock()

@@ -24,6 +24,7 @@ use crate::components::IconSize;
 /// page composes it from the field + the resolved display name
 /// (`Company: Acme Corp`) rather than the uuid.
 #[derive(Clone, PartialEq, Debug)]
+// SPEC-5.24.1
 pub struct FilterPill {
     pub field: String,
     pub op: String,
@@ -33,6 +34,7 @@ pub struct FilterPill {
 
 impl FilterPill {
     /// Equality pill: single value, label `field: display`.
+    // SPEC-5.24.2
     pub fn eq(
         field: impl Into<String>,
         display: impl Into<String>,
@@ -68,6 +70,7 @@ pub struct FilterPillBarProps {
 
 #[component]
 pub fn FilterPillBar(props: FilterPillBarProps) -> Element {
+    // SPEC-5.24.3
     if props.pills.is_empty() {
         return rsx! {};
     }
@@ -77,6 +80,7 @@ pub fn FilterPillBar(props: FilterPillBarProps) -> Element {
     rsx! {
         div {
             class: "flex flex-wrap items-center gap-2 {extra}",
+            // SPEC-5.24.4, SPEC-5.24.5, SPEC-5.24.7: chips in order, remove by index.
             for (i, pill) in pills.into_iter().enumerate() {
                 FilterChip {
                     key: "{pill.field}:{pill.op}:{i}",
@@ -84,6 +88,7 @@ pub fn FilterPillBar(props: FilterPillBarProps) -> Element {
                     onclose: move |_| props.onremove.call(i),
                 }
             }
+            // SPEC-5.24.6
             if pill_count >= 2 {
                 if let Some(onclear) = props.onclear {
                     button {
@@ -114,6 +119,7 @@ fn FilterChip(props: FilterChipProps) -> Element {
             button {
                 r#type: "button",
                 class: "ml-0.5 rounded-full p-0.5 hover:bg-accent-100 dark:hover:bg-accent-900/70",
+                // SPEC-5.24.4
                 "aria-label": "Remove filter",
                 onclick: move |_| props.onclose.call(()),
                 crate::components::XMarkIcon { size: IconSize::Small }

@@ -14,10 +14,12 @@ use dioxus::prelude::*;
 use crate::modules::kb::KbCategory;
 
 /// `GET /kb/categories` and its create/update calls all target this path.
+// SPEC-4.20.1
 pub const ENDPOINT: &str = "/kb/categories";
 
 /// Provide the shared KB-categories list at the App root (MAPPS-1001: see
 /// [`crate::hooks::shared_list`]).
+// SPEC-4.20.2
 pub fn use_kb_categories_provider() {
     crate::hooks::shared_list::use_shared_list_provider::<KbCategory>("KB categories", ENDPOINT);
 }
@@ -27,6 +29,7 @@ pub fn use_kb_categories_provider() {
 /// thereafter share) the one underlying fetch. The returned `Resource` also
 /// exposes `.restart()`, which a category create/update/delete calls so
 /// every consumer re-fetches the moment one page changes the set.
+// SPEC-4.20.3, SPEC-4.20.4: restart() on the returned resource is the shared refresh.
 pub fn use_kb_categories(enabled: bool) -> Resource<Vec<KbCategory>> {
     crate::hooks::shared_list::use_shared_list::<KbCategory>(enabled)
 }

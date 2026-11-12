@@ -48,6 +48,7 @@ use dioxus::prelude::*;
 /// the 14 former call sites read out of their own local struct.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
 pub struct UserRow {
+    // SPEC-4.40.1: id is required; every name field and email defaults to empty.
     pub id: uuid::Uuid,
     #[serde(default)]
     pub full_name: String,
@@ -65,6 +66,7 @@ impl UserRow {
     /// former per-site structs disagreed on it: "Unknown", "Unknown user",
     /// a short id, ...).
     pub fn display_name(&self) -> Option<String> {
+        // SPEC-4.40.2: full name, then first+last, then email, else None.
         if !self.full_name.trim().is_empty() {
             return Some(self.full_name.clone());
         }
@@ -89,6 +91,7 @@ impl UserRow {
 pub fn use_user_roster_provider() {
     let auth = crate::hooks::auth::use_auth();
     crate::hooks::shared_list::use_list_provider_with::<UserRow, _, _>(move || {
+        // SPEC-4.40.5: read before the first await so a role change re-fetches.
         let can_manage = auth.read().can_manage();
         async move { fetch_roster(can_manage).await }
     });
@@ -108,6 +111,7 @@ enum RosterSource {
 /// A caller meeting the server's `RequireManager` floor keeps the full
 /// roster; anyone else reads the unprivileged directory instead of 403ing.
 fn roster_source(can_manage: bool) -> RosterSource {
+    // SPEC-4.40.4: managers read /auth/users, everyone else /auth/directory.
     if can_manage {
         RosterSource::Users
     } else {
@@ -131,6 +135,7 @@ struct DirectoryEntry {
 /// so [`UserRow::display_name`] falls through those unset fields to `email`
 /// and then `None`, same as a row the roster never knew about.
 fn user_row_from_directory_entry(entry: DirectoryEntry) -> UserRow {
+    // SPEC-4.40.6: only id and full_name come across.
     UserRow {
         id: entry.id,
         full_name: entry.name,
@@ -152,9 +157,11 @@ async fn fetch_roster(can_manage: bool) -> Vec<UserRow> {
 
 #[cfg(not(feature = "app"))]
 async fn fetch_roster(_can_manage: bool) -> Vec<UserRow> {
+    // SPEC-4.40.10: a non-app build never fetches.
     Vec::new()
 }
 
+// SPEC-4.40.7: active users only, so a deactivated name falls back.
 /// `GET /auth/directory` (PMS-921, `RequireAuth`), mapped onto [`UserRow`]
 /// via [`user_row_from_directory_entry`]. The directory holds active users
 /// only, so a technician sees a deactivated person's name fall back the way
@@ -170,10 +177,12 @@ async fn fetch_directory_as_rows() -> Vec<UserRow> {
         // Refused for this role is not expected here (the directory is
         // `RequireAuth`), but treated the same as the manager-roster 403: an
         // answer, not a fault.
+        // SPEC-4.40.8: a refused role is logged, with no toast.
         Err(e) if e.status_code() == Some(403) => {
             tracing::warn!("directory load refused for this role, its pickers stay empty: {e}");
             Vec::new()
         }
+        // SPEC-4.40.9: any other failure is logged and toasted.
         Err(e) => {
             tracing::error!("directory load failed, its pickers are empty: {e}");
             crate::hooks::push_toast(
@@ -192,6 +201,7 @@ async fn fetch_directory_as_rows() -> Vec<UserRow> {
 /// the one underlying fetch; passing `false` never blocks a roster another
 /// consumer already cached.
 pub fn use_user_roster(enabled: bool) -> Resource<Vec<UserRow>> {
+    // SPEC-4.40.3: the roster is fetched only once a page asks.
     crate::hooks::shared_list::use_shared_list::<UserRow>(enabled)
 }
 

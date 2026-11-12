@@ -7,6 +7,7 @@
 //! `approval_status` typed as `String` instead of the shared enums, and
 //! missing `worked_minutes` / `task_id` / `ticket_number` and siblings).
 
+// SPEC-3.21.8: re-exported from the shared crate so the compiler enforces the wire contract.
 pub use mokosh_types::time_tracking::*;
 
 #[cfg(test)]
@@ -26,6 +27,7 @@ mod tests {
 
     /// The drift MAPPS-383 removes: the old hand copy typed the two statuses
     /// as `String` and lacked the joined / PMS-395 fields.
+    // SPEC-3.21.8
     #[test]
     fn shared_shape_types_the_statuses_as_enums() {
         fn _statuses(

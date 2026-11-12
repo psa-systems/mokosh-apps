@@ -68,6 +68,7 @@ struct TestSendBody {
     to: String,
 }
 
+// SPEC-11.42.4
 /// The closed set `SmtpTls::parse` accepts, canonical value first.
 const TLS_MODES: &[(&str, &str)] = &[
     ("starttls", "STARTTLS (port 587, default)"),
@@ -80,6 +81,7 @@ const DEFAULT_TLS: &str = "starttls";
 #[component]
 pub fn EmailSettingsPage() -> Element {
     use_page_title("Email");
+    // SPEC-11.42.1
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Email" } };
     }
@@ -111,6 +113,7 @@ fn EmailSettingsForm() -> Element {
 
     let can_mutate = crate::hooks::use_can_mutate();
 
+    // SPEC-11.42.2: 403 means not the operator, anything else is a failure.
     let settings_resource = use_resource(move || async move {
         let _reachable = crate::hooks::use_server_reachable();
         crate::pages::settings::load_operator_setting::<EmailSettingsView>(
@@ -131,6 +134,7 @@ fn EmailSettingsForm() -> Element {
         *snap,
         Some(crate::pages::settings::OperatorLoad::NotOperator)
     );
+    // SPEC-11.42.3: seeded once so later renders keep the user's edits.
     if !seeded() {
         if let Some(crate::pages::settings::OperatorLoad::Loaded(view)) = &*snap {
             host.set(view.host.clone().unwrap_or_default());
@@ -144,12 +148,15 @@ fn EmailSettingsForm() -> Element {
     }
 
     let handle_save = move |_| {
+        // SPEC-11.42.12
         if saving() {
             return;
         }
         error.set(String::new());
         port_error.set(String::new());
 
+        // SPEC-11.42.7: blank port is null.
+        // SPEC-11.42.6
         let parsed_port = match parse_port(&port.read()) {
             Ok(p) => p,
             Err(e) => {
@@ -158,6 +165,7 @@ fn EmailSettingsForm() -> Element {
             }
         };
 
+        // SPEC-11.42.8, SPEC-11.42.9: blank text clears, absent password keeps.
         let body = EmailSettingsBody {
             host: Some(host.read().trim().to_string()),
             port: parsed_port,
@@ -186,6 +194,7 @@ fn EmailSettingsForm() -> Element {
                 .await
                 {
                     Ok(saved) => {
+                        // SPEC-11.42.13
                         host.set(saved.host.clone().unwrap_or_default());
                         port.set(saved.port.map(|p| p.to_string()).unwrap_or_default());
                         username.set(saved.username.clone().unwrap_or_default());
@@ -200,6 +209,7 @@ fn EmailSettingsForm() -> Element {
                         );
                     }
                     Err(err) => {
+                        // SPEC-11.42.14
                         crate::hooks::push_api_error(&err);
                         error.set(err.user_message());
                     }
@@ -218,11 +228,13 @@ fn EmailSettingsForm() -> Element {
     // the new one.
     let mut retry_tick = use_signal(|| 0u32);
     let send_test_cb = use_callback(move |_: ()| {
+        // SPEC-11.43.3
         if test_sending() {
             return;
         }
         test_error.set(String::new());
         let to = test_to.read().trim().to_string();
+        // SPEC-11.43.2
         if to.is_empty() {
             test_error.set("Enter an address to send the test to.".to_string());
             return;
@@ -238,12 +250,14 @@ fn EmailSettingsForm() -> Element {
                 .await
                 {
                     Ok(()) => {
+                        // SPEC-11.43.1, SPEC-11.43.4
                         crate::hooks::push_toast(
                             crate::components::AlertType::Success,
                             "Test email sent.",
                         );
                     }
                     Err(err) => {
+                        // SPEC-11.43.5
                         crate::hooks::push_api_error_with_retry(
                             &err,
                             EventHandler::new(move |_| {
@@ -266,6 +280,7 @@ fn EmailSettingsForm() -> Element {
     let handle_test_send = move |_| send_test_cb.call(());
 
     let handle_verify = move |_| {
+        // SPEC-11.43.8
         if verifying() {
             return;
         }
@@ -281,6 +296,7 @@ fn EmailSettingsForm() -> Element {
                 .await
                 {
                     Ok(()) => {
+                        // SPEC-11.43.6, SPEC-11.43.7
                         crate::hooks::push_toast(
                             crate::components::AlertType::Success,
                             "Mailer verified.",
@@ -296,6 +312,7 @@ fn EmailSettingsForm() -> Element {
         });
     };
 
+    // SPEC-11.42.11
     let password_placeholder = if password_set() {
         "Set. Leave blank to keep it.".to_string()
     } else {
@@ -313,6 +330,7 @@ fn EmailSettingsForm() -> Element {
 
         // MAPPS-966: the cards are gapped, not stacked edge to edge.
         div { class: "space-y-6",
+            // SPEC-11.42.2
             if fetch_failed {
                 Card {
                     ErrorBanner { "Could not load the email settings." }
@@ -335,6 +353,7 @@ fn EmailSettingsForm() -> Element {
                         name: "smtp_host",
                         label: "SMTP host",
                         value: host(),
+                        // SPEC-11.42.5
                         disabled: form_locked || saving(),
                         placeholder: "smtp.example.com",
                         oninput: move |e: FormEvent| host.set(e.value()),
@@ -381,6 +400,7 @@ fn EmailSettingsForm() -> Element {
                             .to_string(),
                         oninput: move |e: FormEvent| password.set(e.value()),
                     }
+                    // SPEC-11.42.10
                     if password_set() {
                         Checkbox {
                             name: "smtp_password_clear",
@@ -408,6 +428,7 @@ fn EmailSettingsForm() -> Element {
                         Button {
                             variant: ButtonVariant::Primary,
                             loading: saving(),
+                            // SPEC-11.42.5
                             disabled: !can_mutate || form_locked,
                             title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                             onclick: handle_save,
@@ -417,6 +438,7 @@ fn EmailSettingsForm() -> Element {
                 }
             }
 
+            // SPEC-11.43.9: these cards sit inside the not-operator else branch.
             Card {
                 title: "Send a test email".to_string(),
                 div { class: "space-y-4 max-w-xl",

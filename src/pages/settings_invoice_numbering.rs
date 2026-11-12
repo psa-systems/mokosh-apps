@@ -31,6 +31,7 @@ use crate::Route;
 
 /// One row of `GET /api/v1/settings` (`TenantSettingResponse`), narrowed to
 /// what this page needs to find its own.
+// SPEC-10.60.5: missing fields deserialize to empty values and never match.
 #[derive(Clone, Debug, Deserialize)]
 struct TenantSetting {
     #[serde(default)]
@@ -41,6 +42,7 @@ struct TenantSetting {
     value: serde_json::Value,
 }
 
+// SPEC-10.60.1: the one setting row this page owns.
 const CATEGORY: &str = "billing_prefs";
 const KEY: &str = "invoice_numbering";
 
@@ -51,6 +53,7 @@ const DEFAULT_SCHEME: &str = "tenant_sequence";
 /// of what it produces, and what choosing it means. Written out because the
 /// server refuses anything else, so a value invented here would be a 422 the
 /// administrator cannot act on.
+// SPEC-10.60.2, SPEC-10.61.4: closed scheme set, labels, examples, meanings.
 const SCHEMES: &[(&str, &str, &str, &str)] = &[
     (
         DEFAULT_SCHEME,
@@ -69,6 +72,7 @@ const SCHEMES: &[(&str, &str, &str, &str)] = &[
 /// The scheme in force in `settings`, or the server's default when no row is
 /// set. A stored value this build does not know reads as the default too,
 /// which is what the server does with one.
+// SPEC-10.60.1, SPEC-10.60.3, SPEC-10.60.4: lookup with server-default fallback.
 fn scheme_in(settings: &[TenantSetting]) -> &'static str {
     settings
         .iter()
@@ -84,6 +88,7 @@ fn scheme_in(settings: &[TenantSetting]) -> &'static str {
 /// directions are not the same act: one starts every customer's numbering
 /// over, the other returns to a single sequence that carries on from where it
 /// was left.
+// SPEC-10.63.1, SPEC-10.63.2: direction-specific dialog wording.
 fn switch_warning(to: &str) -> &'static str {
     match to {
         "company_prefix" => "Invoices you have already issued keep their numbers: nothing is ever renumbered. From now on each customer starts at 000001 under a new prefix of their own, so the next invoice will not continue from the last one you sent them. Switching back later is possible, and does not undo the numbers issued in between.",
@@ -93,6 +98,7 @@ fn switch_warning(to: &str) -> &'static str {
 
 #[component]
 pub fn InvoiceNumberingSettingsPage() -> Element {
+    // SPEC-10.59.1, SPEC-10.59.2: title, then the admin gate.
     use_page_title("Invoice Numbering");
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Invoice Numbering" } };
@@ -102,6 +108,7 @@ pub fn InvoiceNumberingSettingsPage() -> Element {
 
 #[component]
 fn InvoiceNumberingSettingsBody() -> Element {
+    // SPEC-10.59.3, SPEC-10.59.5: load all settings; failure is logged and becomes None.
     let mut settings = use_resource(|| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
@@ -119,6 +126,7 @@ fn InvoiceNumberingSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     let snap = settings.read_unchecked().clone();
 
+    // SPEC-10.62.5, SPEC-10.62.8, SPEC-10.62.9: the only write path.
     let on_confirm = move |_: ()| {
         let Some(next) = pending() else {
             return;
@@ -141,15 +149,18 @@ fn InvoiceNumberingSettingsBody() -> Element {
                 {
                     // Re-read rather than trusting the local value: the
                     // server is what decides which scheme is in force.
+                    // SPEC-10.62.6
                     Ok(_) => {
                         pending.set(None);
                         settings.restart();
                     }
+                    // SPEC-10.62.7: pending stays set so the dialog stays open.
                     Err(e) => error.set(format!("Could not change the numbering scheme: {e}")),
                 }
             }
             #[cfg(not(feature = "app"))]
             {
+                // SPEC-10.62.10
                 let _ = next;
                 pending.set(None);
             }
@@ -158,6 +169,7 @@ fn InvoiceNumberingSettingsBody() -> Element {
     };
 
     rsx! {
+        // SPEC-10.59.6
         PageHeader {
             title: "Invoice Numbering",
             subtitle: "What a new invoice's number looks like. Invoices you have already issued keep the numbers they were issued with.",
@@ -170,6 +182,7 @@ fn InvoiceNumberingSettingsBody() -> Element {
             if !error().is_empty() {
                 ErrorBanner { "{error}" }
             }
+            // SPEC-10.62.3, SPEC-10.63.3: closed dialog still computes a message.
             ConfirmDialog {
                 open: pending().is_some(),
                 title: "Change invoice numbering".to_string(),
@@ -179,13 +192,16 @@ fn InvoiceNumberingSettingsBody() -> Element {
                 loading: saving(),
                 onconfirm: on_confirm,
                 oncancel: move |_| {
+                    // SPEC-10.62.4
                     if !saving() {
                         pending.set(None);
                     }
                 },
             }
             match snap {
+                // SPEC-10.59.4
                 None => rsx! { crate::components::DetailSkeleton {} },
+                // SPEC-10.59.5
                 Some(None) => rsx! {
                     Card {
                         ErrorBanner { "Could not load the invoice numbering scheme." }
@@ -201,6 +217,7 @@ fn InvoiceNumberingSettingsBody() -> Element {
                     rsx! {
                         Card {
                             div { class: "space-y-4",
+                                // SPEC-10.61.1, SPEC-10.61.2
                                 Select {
                                     name: "invoice_numbering",
                                     label: "How new invoices are numbered",
@@ -215,11 +232,13 @@ fn InvoiceNumberingSettingsBody() -> Element {
                                         // Nothing is written from the select: the
                                         // dialog is what writes, so cancelling
                                         // leaves the scheme where it was.
+                                        // SPEC-10.62.1, SPEC-10.62.2
                                         if next != current {
                                             pending.set(Some(next));
                                         }
                                     },
                                 }
+                                // SPEC-10.61.3, SPEC-10.61.5
                                 p { class: "text-sm text-muted", "For example: {described.0}" }
                                 p { class: "text-sm text-muted", "{described.1}" }
                                 p { class: "text-sm text-subtle",

@@ -15,6 +15,7 @@ use crate::components::{AlertType, Toast, ToastContainer};
 /// right primitive: every component can read it and re-render on
 /// change, and every event handler can mutate it from any closure
 /// without setting up a context provider.
+// SPEC-4.45.1: one global stack; SPEC-4.45.2: ids come from one counter from 0.
 pub static TOASTS: GlobalSignal<Vec<Toast>> = Signal::global(Vec::new);
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -23,6 +24,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 /// land for 5s then fade; Warning / Error stay sticky so a real
 /// failure cannot be missed by a user who tabbed away.
 fn default_auto_dismiss_ms(alert_type: AlertType) -> Option<u32> {
+    // SPEC-4.45.3: 5 s for Success/Info, sticky for Warning/Error.
     match alert_type {
         AlertType::Success | AlertType::Info => Some(5_000),
         AlertType::Warning | AlertType::Error => None,
@@ -39,6 +41,7 @@ pub fn push_toast(alert_type: AlertType, message: impl Into<String>) {
         id,
         toast_type: alert_type,
         message: message.into(),
+        // SPEC-4.45.4: no title on a plain toast.
         title: None,
         auto_dismiss_ms: default_auto_dismiss_ms(alert_type),
         retry: None,
@@ -56,6 +59,7 @@ pub fn push_toast_with_title(
         id,
         toast_type: alert_type,
         message: message.into(),
+        // SPEC-4.45.4: the title rides above the message.
         title: Some(title.into()),
         auto_dismiss_ms: default_auto_dismiss_ms(alert_type),
         retry: None,
@@ -67,6 +71,7 @@ pub fn push_toast_with_title(
 /// via [`ApiError::user_message`].
 #[cfg(feature = "app")]
 pub fn push_api_error(err: &crate::hooks::fetch::api::ApiError) {
+    // SPEC-4.45.5: an Error toast carrying the API error's user message.
     push_toast(AlertType::Error, err.user_message());
 }
 
@@ -88,6 +93,7 @@ pub fn push_api_error_with_retry(
         toast_type: AlertType::Error,
         message: err.user_message(),
         title: None,
+        // SPEC-4.45.6: sticky Error toast with the retry handler attached.
         auto_dismiss_ms: None,
         retry: Some(retry),
     });
@@ -98,6 +104,7 @@ pub fn push_api_error_with_retry(
 #[component]
 pub fn ToastRoot() -> Element {
     let toasts_snapshot = TOASTS.read().clone();
+    // SPEC-4.45.7: nothing renders for an empty stack.
     if toasts_snapshot.is_empty() {
         return rsx! {};
     }
@@ -105,6 +112,7 @@ pub fn ToastRoot() -> Element {
         ToastContainer {
             toasts: toasts_snapshot,
             ondismiss: move |id: String| {
+                // SPEC-4.45.7: dismiss removes only the toast with this id.
                 TOASTS.write().retain(|t| t.id != id);
             },
         }

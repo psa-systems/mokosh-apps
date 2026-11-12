@@ -13,6 +13,7 @@ pub enum ButtonVariant {
     Link,
 }
 
+// SPEC-5.9.1
 impl ButtonVariant {
     fn class(&self) -> &'static str {
         match self {
@@ -36,6 +37,7 @@ pub enum ButtonSize {
     Large,
 }
 
+// SPEC-5.9.1
 impl ButtonSize {
     fn class(&self) -> &'static str {
         match self {
@@ -67,6 +69,7 @@ pub struct ButtonProps {
     #[props(default)]
     class: String,
     /// Button type attribute
+    // SPEC-5.9.3
     #[props(default = "button".to_string())]
     r#type: String,
     /// Click handler
@@ -89,6 +92,7 @@ pub struct ButtonProps {
 
 /// The full class recipe for a variant and size. Public so a link that leaves
 /// the app (a plain `a`) can look like a `Button` without re-typing the recipe.
+// SPEC-5.9.2
 pub fn button_class(variant: ButtonVariant, size: ButtonSize) -> String {
     let base_class = "inline-flex items-center justify-center font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
     format!("{} {} {}", base_class, variant.class(), size.class())
@@ -103,6 +107,7 @@ pub fn Button(props: ButtonProps) -> Element {
         props.class
     );
 
+    // SPEC-5.9.4
     let is_disabled = props.disabled || props.loading;
 
     rsx! {
@@ -114,10 +119,13 @@ pub fn Button(props: ButtonProps) -> Element {
             // tech announces the control as unavailable, paired with the `title`
             // reason for why (MAPPS-262).
             "aria-disabled": is_disabled.then_some("true"),
+            // SPEC-5.9.6
             title: props.title.as_deref(),
             "aria-label": props.aria_label.as_deref(),
             "data-testid": props.data_testid.as_deref(),
+            // SPEC-5.9.7
             onclick: move |e| props.onclick.call(e),
+            // SPEC-5.9.5
             if props.loading {
                 span { class: "mr-2",
                     Spinner {}
@@ -130,6 +138,7 @@ pub fn Button(props: ButtonProps) -> Element {
 
 /// Small loading spinner
 #[component]
+// SPEC-5.9.8
 pub fn Spinner() -> Element {
     rsx! {
         svg {

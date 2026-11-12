@@ -8,8 +8,11 @@
 /// `CARGO_PKG_VERSION`). Bumped as the first step of `just create-release`,
 /// so it is correct the moment a release commit exists - it does NOT wait
 /// for the `vX.Y.Z` git tag, which is applied post-merge (MAPPS-200).
+// SPEC-4.91.1: value comes from build.rs, not from git tags.
 pub const VERSION: &str = env!("APP_GIT_TAG");
 /// Exact build commit (CI `GIT_SHA`, or `git rev-parse` locally). Carries
 /// the build provenance the version string intentionally does not.
+// SPEC-4.91.2
 pub const GIT_HASH: &str = env!("APP_GIT_HASH");
+// SPEC-4.91.3
 pub const BUILD_DATE: &str = env!("APP_BUILD_DATE");

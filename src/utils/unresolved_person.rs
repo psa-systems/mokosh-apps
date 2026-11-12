@@ -31,10 +31,13 @@ thread_local! {
 /// absent and not-set text is being shown (call this only when a `Some` id
 /// could not be named; an absent id that legitimately means "no one" is not
 /// logged and does not call this helper at all).
+// SPEC-4.83.5: callers skip this helper entirely for an absent-by-contract reference.
 pub fn unresolved(surface: &str, kind: &str, id: Option<uuid::Uuid>, shown: &str) -> String {
+    // SPEC-4.83.3: dedup key is (surface, id); kind and shown are not part of it.
     let key = (surface.to_string(), id);
     let first_time = LOGGED.with(|logged| logged.borrow_mut().insert(key));
     if first_time {
+        // SPEC-4.83.2
         match id {
             Some(id) => {
                 tracing::info!(surface, kind, %id, shown, "reference unresolved, placeholder shown");
@@ -49,6 +52,7 @@ pub fn unresolved(surface: &str, kind: &str, id: Option<uuid::Uuid>, shown: &str
             }
         }
     }
+    // SPEC-4.83.1
     match id {
         Some(id) => format!("Unresolved {kind} {id}"),
         None => format!("Unresolved {kind}"),
@@ -60,6 +64,7 @@ pub fn unresolved(surface: &str, kind: &str, id: Option<uuid::Uuid>, shown: &str
 /// name (a dashboard widget_key, a feature flag, etc.) rather than by id.
 /// Dedup is per `(surface, key)` for a page load.
 pub fn unresolved_by_key(surface: &str, kind: &str, key: &str, shown: &str) -> String {
+    // SPEC-4.83.4
     let entry = (surface.to_string(), key.to_string());
     let first_time = LOGGED_BY_KEY.with(|logged| logged.borrow_mut().insert(entry));
     if first_time {
@@ -90,6 +95,7 @@ pub enum PersonRef {
 }
 
 impl PersonRef {
+    // SPEC-4.84.6
     pub fn text(&self) -> &str {
         match self {
             PersonRef::System => "System",
@@ -122,15 +128,18 @@ pub fn resolve_person(
     viewer: Option<(uuid::Uuid, &str)>,
     roster: &[crate::hooks::UserRow],
 ) -> PersonRef {
+    // SPEC-4.84.1
     if let Some(name) = server_name {
         let name = name.trim();
         if !name.is_empty() {
             return PersonRef::Named(name.to_string());
         }
     }
+    // SPEC-4.84.2
     let Some(uid) = id else {
         return PersonRef::System;
     };
+    // SPEC-4.84.3
     if let Some((viewer_id, viewer_name)) = viewer {
         // MAPPS-1242: trimmed, as the server-name branch above is.
         let viewer_name = viewer_name.trim();
@@ -138,6 +147,7 @@ pub fn resolve_person(
             return PersonRef::Named(viewer_name.to_string());
         }
     }
+    // SPEC-4.84.4
     if let Some(name) = roster
         .iter()
         .find(|u| &u.id == uid)
@@ -145,6 +155,7 @@ pub fn resolve_person(
     {
         return PersonRef::Named(name);
     }
+    // SPEC-4.84.5
     let tooltip = unresolved(surface, "user", Some(*uid), "Someone");
     PersonRef::Unresolved {
         shown: "Someone".to_string(),
@@ -178,6 +189,7 @@ impl CompanyRef {
     /// wording, which differs per screen ("-" on the asset screens, "No
     /// company" on the projects list) and is deliberately NOT unified here:
     /// changing visible copy is not what MAPPS-1038 is for.
+    // SPEC-4.85.5
     pub fn text<'a>(&'a self, not_set: &'a str) -> &'a str {
         match self {
             CompanyRef::NotSet => not_set,
@@ -208,15 +220,18 @@ pub fn resolve_company(
     server_name: Option<&str>,
     id: Option<uuid::Uuid>,
 ) -> CompanyRef {
+    // SPEC-4.85.1, SPEC-4.85.4: no list fallback; the server name is the only source.
     if let Some(name) = server_name {
         let name = name.trim();
         if !name.is_empty() {
             return CompanyRef::Named(name.to_string());
         }
     }
+    // SPEC-4.85.2
     let Some(cid) = id else {
         return CompanyRef::NotSet;
     };
+    // SPEC-4.85.3
     let shown = "Unknown company";
     CompanyRef::Unresolved {
         shown: shown.to_string(),

@@ -14,6 +14,7 @@ pub enum IconSize {
 }
 
 impl IconSize {
+    // SPEC-5.31.1: every icon prefixes this size class to its own `class`.
     fn class(&self) -> &'static str {
         match self {
             IconSize::Small => "w-4 h-4",
@@ -24,6 +25,8 @@ impl IconSize {
 }
 
 // Navigation icons
+// SPEC-5.31.2: outline icons share a 24x24 view box, currentColor, stroke 1.5 and round caps.
+// SPEC-5.31.5, SPEC-5.31.6: each exported `*_PATH` constant below feeds the sidebar's distinct-glyph check.
 
 #[component]
 pub fn SwatchIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
@@ -935,6 +938,7 @@ pub fn ArrowDownIcon(#[props(default)] size: IconSize, #[props(default)] class: 
 /// glance. Stroke matches `stroke-linejoin: round` so the tip and base
 /// corners round softly rather than reading as a sharp arrowhead.
 #[component]
+// SPEC-5.31.3: filled, stroke 1, round joins.
 pub fn TriangleUpIcon(
     #[props(default)] size: IconSize,
     #[props(default)] class: String,
@@ -1346,6 +1350,7 @@ pub fn MoonIcon(#[props(default)] size: IconSize, #[props(default)] class: Strin
 /// path the top-bar `GlobalSearch` renders inline, exposed as a
 /// reusable component so the portal sidebar can reference it.
 #[component]
+// SPEC-5.31.3: stroke width 2.
 pub fn MagnifyingGlassIcon(
     #[props(default)] size: IconSize,
     #[props(default)] class: String,
@@ -1755,6 +1760,7 @@ pub fn ArrowTopRightOnSquareIcon(
             view_box: "0 0 24 24",
             stroke_width: "1.5",
             stroke: "currentColor",
+            // SPEC-5.31.4: the only icon that hides itself from assistive tech.
             "aria-hidden": "true",
             path {
                 stroke_linecap: "round",

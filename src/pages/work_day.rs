@@ -70,6 +70,7 @@ use crate::Route;
 
 /// One `work` or `break` segment as `GET /workday` returns it. `ended_at`
 /// is null while the segment is open; `minutes` counts up to now then.
+// SPEC-9.57.6: every field but id decodes when the server omits it.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteSegment {
     id: uuid::Uuid,
@@ -192,6 +193,7 @@ enum DayLoad {
 /// than clocked. The wording drops "accounted for", which MAPPS-751 called
 /// jargon and which is: it is an accounting word for a technician-facing
 /// sentence, and the state it names most often is the one needing an action.
+// SPEC-9.56.5: the three wordings of the signed gap.
 pub(crate) fn unlogged_label(unlogged: i64) -> String {
     match unlogged {
         0 => "All clocked time is logged".to_string(),
@@ -209,6 +211,7 @@ pub(crate) fn unlogged_label(unlogged: i64) -> String {
 /// threshold belongs to the tenant and to a server that can act on it
 /// (PMS-1146), and inventing a tenant setting the server does not read would
 /// be a promise this client cannot keep.
+// SPEC-9.55.2: fixed client constant, not a tenant setting.
 // SPEC-9.3.8: fixed client-side constant; no tenant setting for it exists server-side.
 pub(crate) const STALE_AFTER_HOURS: i64 = 16;
 
@@ -221,6 +224,8 @@ pub(crate) const STALE_AFTER_HOURS: i64 = 16;
 /// Clamped at `base`, because a clock that jumped backwards must not make an
 /// elapsed figure shrink.
 pub(crate) fn live_minutes(base: i64, fetched_at: DateTime<Utc>, now: DateTime<Utc>) -> i64 {
+    // SPEC-9.52.5: server base plus whole minutes since receipt; never shrinks.
+    // SPEC-9.52.6: anchored on the receive instant, not on started_at.
     let since = (now - fetched_at).num_minutes();
     base + since.max(0)
 }
@@ -238,6 +243,7 @@ pub(crate) enum ClockState {
 }
 
 impl ClockState {
+    // SPEC-9.52.1: on_break wins over is_clocked_in.
     pub(crate) fn read(is_clocked_in: bool, on_break: bool) -> Self {
         match (is_clocked_in, on_break) {
             (_, true) => ClockState::OnBreak,
@@ -248,6 +254,7 @@ impl ClockState {
 
     /// The words. Half of the non-colour distinction; the other half is that
     /// only the two running states carry a timer at all.
+    // SPEC-9.52.2: exact state label strings.
     pub(crate) fn label(self) -> &'static str {
         match self {
             ClockState::Out => "Clocked out",
@@ -258,6 +265,7 @@ impl ClockState {
 
     /// The container treatment. Border WEIGHT carries the distinction so it
     /// survives greyscale; the tint only reinforces it.
+    // SPEC-9.52.4: states differ by border weight and style, not colour only.
     pub(crate) fn container_class(self) -> &'static str {
         match self {
             ClockState::Out => "border border-line bg-surface-2",
@@ -266,6 +274,7 @@ impl ClockState {
         }
     }
 
+    // SPEC-9.52.3: In and OnBreak are the running states.
     pub(crate) fn is_running(self) -> bool {
         matches!(self, ClockState::In | ClockState::OnBreak)
     }
@@ -290,6 +299,8 @@ pub(crate) fn local_time_to_utc(
     hhmm: &str,
     tz: chrono_tz::Tz,
 ) -> Option<DateTime<Utc>> {
+    // SPEC-9.59.1: profile zone, not the browser's.
+    // SPEC-9.59.2: unparsable, nonexistent or ambiguous local time gives None.
     let time = chrono::NaiveTime::parse_from_str(hhmm, "%H:%M").ok()?;
     let naive = date.and_time(time);
     tz.from_local_datetime(&naive)
@@ -300,6 +311,7 @@ pub(crate) fn local_time_to_utc(
 /// The `HH:MM` an instant reads as in the viewer's zone, for prefilling the
 /// input above. Round-trips with `local_time_to_utc` for every time that
 /// exists once in the zone.
+// SPEC-9.59.3: inverse of local_time_to_utc for unambiguous times.
 pub(crate) fn utc_to_local_time(dt: DateTime<Utc>, tz: chrono_tz::Tz) -> String {
     dt.with_timezone(&tz).format("%H:%M").to_string()
 }
@@ -319,9 +331,12 @@ pub(crate) fn segment_edit_allowed(
     caller_can_manage: bool,
     owner_id: uuid::Uuid,
 ) -> bool {
+    // SPEC-9.58.3: off refuses everyone, the owner included.
+    // SPEC-9.58.4: owner_or_manager allows anyone who can manage users.
     match policy {
         "off" => false,
         "owner_or_manager" => caller_id == owner_id || caller_can_manage,
+        // SPEC-9.58.5: unknown values read as owner_or_admin.
         // `owner_or_admin` and anything this build does not recognise, which
         // is what the server falls back to as well.
         _ => caller_id == owner_id || caller_is_admin,
@@ -348,14 +363,18 @@ pub(crate) fn other_day_note(
     today: chrono::NaiveDate,
     running: bool,
 ) -> Option<String> {
+    // SPEC-9.53.2: the server's `today` is believed over the client date.
     if source == Some("today") {
         return None;
     }
+    // SPEC-9.53.4: an unparsable date yields no note.
     let shown_date = chrono::NaiveDate::parse_from_str(shown, "%Y-%m-%d").ok()?;
+    // SPEC-9.53.3: otherwise compare with the viewer's today.
     if shown_date == today {
         return None;
     }
     let pretty = shown_date.format("%A %-d %b");
+    // SPEC-9.53.1: note wording differs for a running clock.
     Some(if running {
         format!("Still clocked in from {pretty}")
     } else {
@@ -370,6 +389,8 @@ pub(crate) fn other_day_note(
 /// [`DayLoad::ModulesOff`]; only a loaded [`crate::hooks::modules::ModuleFlags`]
 /// missing either gate module is enough to skip.
 pub(crate) fn should_skip_workday(flags: Option<&crate::hooks::modules::ModuleFlags>) -> bool {
+    // SPEC-9.50.3: skip only when loaded flags lack either gate module.
+    // SPEC-9.50.4: unknown flags still ask.
     match flags {
         None => false,
         Some(f) => {
@@ -382,6 +403,7 @@ pub(crate) fn should_skip_workday(flags: Option<&crate::hooks::modules::ModuleFl
 /// The `date` query the strip sends: nothing for the server's own today
 /// (the caller's zone, never the UTC day), or the picked day.
 pub(crate) fn day_query(date: Option<NaiveDate>, user_id: Option<uuid::Uuid>) -> String {
+    // SPEC-9.51.1: date then user_id; SPEC-9.51.2: nothing sent when unpicked.
     let mut parts = Vec::new();
     if let Some(d) = date {
         parts.push(format!("date={}", d.format("%Y-%m-%d")));
@@ -402,10 +424,12 @@ pub(crate) fn day_query(date: Option<NaiveDate>, user_id: Option<uuid::Uuid>) ->
 /// `org` with it on; migration 120 backfilled the same rule). Named, so a
 /// reader can ask for the right thing; there is no module page in this
 /// client yet, so it does not promise a link it cannot make.
+// SPEC-9.50.6: exact modules-off notice text.
 pub(crate) const MODULES_OFF_NOTICE: &str = "Clocking in and out needs the Timesheets module, which is off for this organisation. An administrator can turn it on; time entries are unaffected.";
 
 /// The strip on the Time page: clock in and out, breaks when the tenant
 /// tracks them, the day's segments, the per-item breakdown and the gap.
+// SPEC-9.50.1: mounted by the Time page; has no route of its own.
 /// The name shown for a viewed day whose owner is not in the roster
 /// (MAPPS-1251). The id rides in the tooltip.
 const UNKNOWN_PERSON: &str = "an unknown person";
@@ -455,11 +479,14 @@ pub fn WorkDayStrip() -> Element {
 
     // Loads the flags when they are missing or stale. Called here, at the top
     // level, because it is a hook; the resource below reads the cache.
+    // SPEC-9.50.12: hook called once here, at the top level.
     crate::hooks::modules::use_module_flags();
 
+    // SPEC-9.53.14: the picked date and user feed the day request.
     let date_for_resource = picked_date();
     let user_for_resource = picked_user();
     let mut day_resource = use_resource(move || async move {
+        // SPEC-9.51.3: these reads are the restart dependencies of the load.
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
         let _tick = refetch_tick();
@@ -469,6 +496,7 @@ pub fn WorkDayStrip() -> Element {
         // tick dependency to happen to fire too. MAPPS-1127: the plain read,
         // not the hook: a hook called from this future lands in the strip's
         // hook list outside render and panics the next render.
+        // SPEC-9.50.11: plain accessor, never the hook, inside this future.
         // SPEC-9.6.16: read here, inside the resource's own closure, not via
         // the reactive hook, to keep hook ordering stable across renders.
         let module_flags = crate::hooks::modules::module_flags();
@@ -481,12 +509,15 @@ pub fn WorkDayStrip() -> Element {
         // SPEC-9.8.1: no-ops on a build without the `app` feature.
         #[cfg(feature = "app")]
         {
+            // SPEC-9.50.2: GET /workday, stamped with the receive instant.
             match crate::hooks::fetch::api::get_authed_typed::<RemoteWorkDay>(&path).await {
                 // Stamped here rather than at render: this is the instant the
                 // server's figures were true, and every elapsed value on the
                 // card counts from it.
                 Ok(day) => Some(DayLoad::Day(Box::new(day), Utc::now())),
+                // SPEC-9.50.5: 404 is the module gate, not a failure.
                 Err(e) if e.status_code() == Some(404) => Some(DayLoad::ModulesOff),
+                // SPEC-9.50.7: any other error is logged and shows the retry banner.
                 // SPEC-9.5.15: logs a warning; the resulting None resolves to
                 // the "Could not load today's clock." banner, distinct from
                 // the module-off notice above.
@@ -498,10 +529,12 @@ pub fn WorkDayStrip() -> Element {
         }
         #[cfg(not(feature = "app"))]
         {
+            // SPEC-9.50.10: no request without the app feature.
             let _ = path;
             Some(DayLoad::ModulesOff)
         }
     });
+    // SPEC-9.51.4: refetch every 60 seconds.
     // SPEC-9.6.14: restarts the day fetch every 60 seconds.
     use_future(move || async move {
         loop {
@@ -514,6 +547,7 @@ pub fn WorkDayStrip() -> Element {
     // so this only has to be short enough that the minute turns over without
     // a visible lag. A one-second tick would re-render sixty times for one
     // changed digit.
+    // SPEC-9.51.5: re-render every 10 seconds, no request.
     // SPEC-9.6.14: only forces a re-render every 10 seconds, with no fetch.
     use_future(move || async move {
         loop {
@@ -529,6 +563,7 @@ pub fn WorkDayStrip() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "app")]
         {
+            // SPEC-9.58.1: failure is logged and falls back to the default policy.
             // SPEC-9.7.12: the segment-edit policy comes from the settings endpoint.
             crate::hooks::fetch::api::get_all_authed::<
                 crate::pages::settings_timesheet_editing::TenantSetting,
@@ -560,6 +595,8 @@ pub fn WorkDayStrip() -> Element {
         user_for_resource,
         date_for_resource,
     );
+    // SPEC-9.51.9: replace the held day only on a difference.
+    // SPEC-9.51.10: only a received day is held, never a failure.
     if let Some(Some(DayLoad::Day(fresh, at))) = &snap {
         let incoming = Some((current_key, fresh.clone(), *at));
         if last_day.peek().as_ref().map(|(k, d, a)| (k, d, a))
@@ -575,6 +612,8 @@ pub fn WorkDayStrip() -> Element {
         // only reuse the held day when its key matches the current viewing
         // context; a user or tenant switch has to re-render as the first-load
         // silent state, not flash the previous selection.
+        // SPEC-9.51.7: reuse the held day while a reload is in flight.
+        // SPEC-9.51.8: only on a key match; SPEC-9.50.9: else first load is silent.
         // SPEC-9.1.26: only the first, still-loading fetch renders nothing;
         // a later refetch keeps showing the last loaded day.
         None => match last_day() {
@@ -585,6 +624,8 @@ pub fn WorkDayStrip() -> Element {
         // with nothing on the page to say why, and the nav's Timesheets
         // entries do not follow the module flag, so the reader had every
         // reason to expect a clock and no way to learn where it went.
+        // SPEC-9.50.7: error banner with Retry.
+        // SPEC-9.50.8: Retry restarts the load, no page reload.
         Some(None) => {
             return rsx! {
                 div { class: "mb-6 flex items-center justify-between gap-3 rounded-lg border border-line bg-surface px-4 py-3",
@@ -597,6 +638,7 @@ pub fn WorkDayStrip() -> Element {
                 }
             }
         }
+        // SPEC-9.50.6: modules-off shows only the notice.
         Some(Some(DayLoad::ModulesOff)) => {
             return rsx! {
                 p { class: "mb-6 text-sm text-subtle", "{MODULES_OFF_NOTICE}" }
@@ -608,6 +650,7 @@ pub fn WorkDayStrip() -> Element {
     // SPEC-9.7.12: clock-in, clock-out, break-start, and break-end each post
     // to their own dedicated endpoint via this shared closure.
     let mut post = move |path: &'static str, body: serde_json::Value, verb: &'static str| {
+        // SPEC-9.54.4: ignored while another action is in flight.
         // SPEC-9.6.13: no-ops if a mutation from this strip is already in flight.
         if *busy.read() {
             return;
@@ -622,7 +665,9 @@ pub fn WorkDayStrip() -> Element {
                 )
                 .await
                 {
+                    // SPEC-9.51.6: success reloads; SPEC-9.54.8: no optimistic update.
                     Ok(_) => day_resource.restart(),
+                    // SPEC-9.54.5: failure shows "Could not <verb>: <message>".
                     Err(e) => action_error.set(format!("Could not {verb}: {}", e.user_message())),
                 }
             }
@@ -630,6 +675,7 @@ pub fn WorkDayStrip() -> Element {
             {
                 let _ = (path, &body, verb);
             }
+            // SPEC-9.54.7: cleared on success and on failure.
             busy.set(false);
         });
     };
@@ -640,6 +686,7 @@ pub fn WorkDayStrip() -> Element {
     // messages names what is wrong, and re-wording them here would drift from
     // what the server actually enforces.
     let mut put_segment = move |id: uuid::Uuid, body: serde_json::Value| {
+        // SPEC-9.59.9: ignored while another action is in flight.
         // SPEC-9.6.13: no-ops if a mutation from this strip is already in flight.
         if *busy.read() {
             return;
@@ -654,6 +701,7 @@ pub fn WorkDayStrip() -> Element {
                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
                     .await
                 {
+                    // SPEC-9.59.7: success reloads; failure shows the server text unprefixed.
                     Ok(_) => day_resource.restart(),
                     Err(e) => action_error.set(e),
                 }
@@ -677,6 +725,7 @@ pub fn WorkDayStrip() -> Element {
             {
                 // SPEC-9.7.12: segment-delete against its own dedicated endpoint.
                 let path = format!("/workday/segments/{id}");
+                // SPEC-9.60.3: DELETE then reload; SPEC-9.60.4: failure text unprefixed.
                 // MAPPS-1251: the confirmation closes only once the delete
                 // has succeeded; a refusal stays in the dialog, which shows
                 // `action_error` and the busy state while this runs.
@@ -698,6 +747,7 @@ pub fn WorkDayStrip() -> Element {
             busy.set(false);
         });
     };
+    // SPEC-9.54.1: the clock-in body carries the picked date, else is empty.
     let clock_in_body = match picked_date() {
         Some(d) => serde_json::json!({ "date": d.format("%Y-%m-%d").to_string() }),
         None => serde_json::json!({}),
@@ -713,7 +763,9 @@ pub fn WorkDayStrip() -> Element {
     let open_segment = day.segments.iter().find(|s| s.ended_at.is_none());
     // Only a running clock accrues. Nothing here counts up for a day that is
     // closed, or for another user's day being read.
+    // SPEC-9.52.7: accrue only when running on one's own day.
     let accruing = state.is_running() && !viewing_someone_else;
+    // SPEC-9.52.8: session figure from the open segment.
     let session_minutes = open_segment.map(|s| {
         if accruing {
             live_minutes(s.minutes, fetched_at, now)
@@ -721,6 +773,7 @@ pub fn WorkDayStrip() -> Element {
             s.minutes
         }
     });
+    // SPEC-9.52.9: clocked is live only In; break is live only OnBreak.
     let clocked_live = if accruing && state == ClockState::In {
         live_minutes(day.clocked_minutes, fetched_at, now)
     } else {
@@ -733,11 +786,13 @@ pub fn WorkDayStrip() -> Element {
     };
     // The gap follows the clocked figure, or it contradicts the number
     // printed beside it the moment the clock moves.
+    // SPEC-9.56.4: computed here, not the server's unlogged_minutes.
     let unlogged_live = clocked_live - day.logged_minutes;
     let started_label = open_segment
         .and_then(|s| s.started_at)
         .map(|dt| clock_time(dt, pref.as_deref(), tz))
         .unwrap_or_default();
+    // SPEC-9.55.1: threshold on the live session figure; SPEC-9.55.3: only while accruing.
     let stale = accruing && session_minutes.is_some_and(|m| m >= STALE_AFTER_HOURS * 60);
     let day_note = other_day_note(
         &day.date,
@@ -746,6 +801,7 @@ pub fn WorkDayStrip() -> Element {
         state.is_running(),
     );
 
+    // SPEC-9.53.12: the date input shows the picked date, else the shown day.
     let date_value = picked_date()
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| day.date.clone());
@@ -767,6 +823,7 @@ pub fn WorkDayStrip() -> Element {
                 // MAPPS-1251: a visible placeholder carrying the id, not an
                 // empty name ("this is 's day").
                 None => {
+                    // SPEC-9.53.10: the unresolved id is logged.
                     let tooltip = crate::utils::unresolved(
                         "work_day.viewing_user",
                         "user",
@@ -779,6 +836,7 @@ pub fn WorkDayStrip() -> Element {
         }
         None => (String::new(), None),
     };
+    // SPEC-9.54.6: mutating buttons are disabled while the server is unreachable.
     let (viewing_name, viewing_name_title) = viewing_name;
     let disabled_title =
         (!can_mutate).then(|| "Can't change the day while the server is unreachable".to_string());
@@ -787,11 +845,14 @@ pub fn WorkDayStrip() -> Element {
     // on a day belongs to one person, so the answer is per day and not per
     // segment. A day whose owner the server did not name offers nothing
     // rather than guessing that it is the caller's own.
+    // SPEC-9.58.2: default policy until loaded.
     let policy = policy_resource
         .read_unchecked()
         .clone()
         .unwrap_or_else(|| crate::pages::settings_timesheet_editing::DEFAULT_POLICY.to_string());
     let caller = auth.read().user.as_ref().map(|u| (u.id, u.role));
+    // SPEC-9.58.7: this only decides drawing; the server's refusal is shown as is.
+    // SPEC-9.58.6: no signed-in caller or no day owner offers no controls.
     let can_correct = match (caller, day.user_id) {
         (Some((caller_id, role)), Some(owner)) => segment_edit_allowed(
             &policy,
@@ -815,6 +876,7 @@ pub fn WorkDayStrip() -> Element {
                 // is labelled and out of the action row: MAPPS-751 read it as a
                 // mode selector for the clock, which it never was.
                 div { class: "flex flex-wrap items-center gap-3",
+                    // SPEC-9.53.5: admin-only picker; SPEC-9.53.8: never for others.
                     // SPEC-9.1.28: Viewing selector, defaulting to "My day",
                     // rendered only when the admin's roster is non-empty.
                     if is_admin && !users.is_empty() {
@@ -822,6 +884,7 @@ pub fn WorkDayStrip() -> Element {
                             "Viewing"
                             select {
                                 class: "rounded-md border border-line bg-surface px-2 py-1 text-sm text-content",
+                                // SPEC-9.53.6: an unparsable value clears the pick.
                                 onchange: move |e: FormEvent| {
                                     picked_user.set(uuid::Uuid::parse_str(&e.value()).ok());
                                 },
@@ -842,6 +905,7 @@ pub fn WorkDayStrip() -> Element {
                     // the whole `<select>` goes away and there is no way back
                     // to one's own day. Keep a reset affordance reachable in
                     // that case, independent of roster state.
+                    // SPEC-9.53.7: reset stays reachable when the roster is empty.
                     if is_admin && picked_user().is_some() && users.is_empty() {
                         Button {
                             variant: ButtonVariant::Secondary,
@@ -851,6 +915,7 @@ pub fn WorkDayStrip() -> Element {
                     }
                 }
 
+                // SPEC-9.53.9: read-only notice; the action controls below are hidden.
                 if viewing_someone_else {
                     p { class: "text-sm text-muted",
                         "Read-only: this is "
@@ -859,6 +924,7 @@ pub fn WorkDayStrip() -> Element {
                     }
                 }
 
+                // SPEC-9.53.1: the day note.
                 if let Some(note) = day_note.clone() {
                     p { class: "text-sm text-muted", "{note}" }
                 }
@@ -871,13 +937,16 @@ pub fn WorkDayStrip() -> Element {
                 // elapsed value below updates silently, because a live region
                 // that re-read the timer every minute would be unusable.
                 div {
+                    // SPEC-9.62.3: state shown by words and structure, not colour alone.
                     class: "rounded-lg p-4 {state.container_class()}",
+                    // SPEC-9.62.1: polite live region holding the state label.
                     div {
                         class: "sr-only",
                         role: "status",
                         "aria-live": "polite",
                         "{state.label()}"
                     }
+                    // SPEC-9.52.12: running card layout; the else branch is the clocked-out card.
                     if state.is_running() {
                         div { class: "flex flex-wrap items-center justify-between gap-4",
                             div { class: "flex items-start gap-3",
@@ -891,11 +960,13 @@ pub fn WorkDayStrip() -> Element {
                                     // a live region; see the div above.
                                     p {
                                         class: "text-3xl font-semibold tabular-nums text-content",
+                                        // SPEC-9.62.2: the timer is not announced.
                                         "aria-live": "off",
                                         if let Some(m) = session_minutes {
                                             "{fmt_duration(m)}"
                                         }
                                     }
+                                    // SPEC-9.52.10: no "since" line without a start.
                                     if !started_label.is_empty() {
                                         p { class: "text-sm text-muted", "since {started_label}" }
                                     }
@@ -906,6 +977,7 @@ pub fn WorkDayStrip() -> Element {
                             // another user's day.
                             if !viewing_someone_else {
                                 div { class: "flex flex-wrap gap-2",
+                                    // SPEC-9.54.3: break buttons only when the tenant tracks breaks.
                                     if day.track_breaks {
                                         if day.on_break {
                                             Button {
@@ -930,6 +1002,7 @@ pub fn WorkDayStrip() -> Element {
                                     // Match the Medium cadence of the adjacent Start/End-break buttons
                                     // instead of carrying the solo `Large` the clock-in state uses when no
                                     // break controls sit beside it (PMS-1349).
+                                    // SPEC-9.54.2: clock out.
                                     Button {
                                         variant: ButtonVariant::Danger,
                                         loading: *busy.read(),
@@ -941,6 +1014,7 @@ pub fn WorkDayStrip() -> Element {
                                 }
                             }
                         }
+                        // SPEC-9.55.1: forgotten clock-out warning.
                         if stale {
                             div { class: "mt-3 flex items-start gap-2 rounded-md border border-line-strong bg-surface px-3 py-2",
                                 ExclamationIcon {
@@ -961,6 +1035,7 @@ pub fn WorkDayStrip() -> Element {
                             // SPEC-9.1.27: Clock in while out; never while
                             // viewing another user's day.
                             if !viewing_someone_else {
+                                // SPEC-9.54.1: clock in, with the picked date when set.
                                 Button {
                                     variant: ButtonVariant::Primary,
                                     size: ButtonSize::Large,
@@ -979,6 +1054,7 @@ pub fn WorkDayStrip() -> Element {
                         // occupying the widest control on the card.
                         if !viewing_someone_else {
                             div { class: "mt-3",
+                                // SPEC-9.53.11: backdating is revealed on request.
                                 if *show_date_picker.read() {
                                     label { class: "flex flex-wrap items-center gap-2 text-sm text-muted",
                                         "Clock in for"
@@ -986,6 +1062,7 @@ pub fn WorkDayStrip() -> Element {
                                             r#type: "date",
                                             class: "rounded-md border border-line bg-surface px-2 py-1 text-sm text-content",
                                             value: "{date_value}",
+                                            // SPEC-9.53.12: an unparsable value clears the pick.
                                             oninput: move |e: FormEvent| {
                                                 picked_date.set(NaiveDate::parse_from_str(&e.value(), "%Y-%m-%d").ok());
                                             },
@@ -993,6 +1070,7 @@ pub fn WorkDayStrip() -> Element {
                                         Button {
                                             variant: ButtonVariant::Ghost,
                                             size: ButtonSize::Small,
+                                            // SPEC-9.53.13: back to the server's today.
                                             onclick: move |_| {
                                                 picked_date.set(None);
                                                 show_date_picker.set(false);
@@ -1017,6 +1095,8 @@ pub fn WorkDayStrip() -> Element {
                 // The reconciliation: three facts, three slots. The gap is
                 // the one that asks for something, so it is the one that
                 // carries an action.
+                // SPEC-9.56.1: three slots; SPEC-9.56.2: break line only when above 0.
+                // SPEC-9.56.3: logged is the server figure; SPEC-9.56.8: shared duration format.
                 div { class: "grid grid-cols-1 gap-3 sm:grid-cols-3",
                     div {
                         p { class: "text-xs uppercase tracking-wide text-subtle", "Clocked" }
@@ -1031,10 +1111,12 @@ pub fn WorkDayStrip() -> Element {
                     }
                     div {
                         p { class: "text-xs uppercase tracking-wide text-subtle", "Unlogged" }
+                        // SPEC-9.56.6: emphasis only for a positive gap.
                         p {
                             class: if unlogged_live > 0 { "text-lg font-medium tabular-nums text-content" } else { "text-lg font-medium tabular-nums text-muted" },
                             "{unlogged_label(unlogged_live)}"
                         }
+                        // SPEC-9.56.7: the action link for a positive gap.
                         if unlogged_live > 0 && !viewing_someone_else {
                             Link {
                                 to: Route::TimeEntryNew {},
@@ -1045,6 +1127,7 @@ pub fn WorkDayStrip() -> Element {
                     }
                 }
 
+                // SPEC-9.57.1: server order, keyed by id; SPEC-9.57.5: break rows are muted.
                 if !day.segments.is_empty() {
                     ul { class: "flex flex-col gap-2 text-xs",
                         for seg in day.segments.iter() {
@@ -1052,6 +1135,7 @@ pub fn WorkDayStrip() -> Element {
                                 // SPEC-9.2.15: anything other than the literal "break" renders as work.
                                 class: if seg.kind == "break" { "rounded-md border border-line px-2 py-1 text-muted" } else { "rounded-md border border-line bg-surface-2 px-2 py-1" },
                                 div { class: "flex flex-wrap items-center gap-2",
+                                    // SPEC-9.57.2: any kind other than break reads "Work".
                                     span { class: "font-medium", if seg.kind == "break" { "Break" } else { "Work" } }
                                     " "
                                     {segment_span_el(seg.started_at, seg.ended_at, pref.as_deref(), tz)}
@@ -1062,6 +1146,7 @@ pub fn WorkDayStrip() -> Element {
                                     // would let the request through. The
                                     // server still decides; this decides
                                     // whether to draw the control.
+                                    // SPEC-9.58.8: Correct is drawn only when the policy allows.
                                     // SPEC-9.1.29: Correct offered only when
                                     // allowed and no other form is open.
                                     if can_correct && correcting() != Some(seg.id) {
@@ -1075,6 +1160,7 @@ pub fn WorkDayStrip() -> Element {
                                                 let id = seg.id;
                                                 let started = seg.started_at;
                                                 let ended = seg.ended_at;
+                                                // SPEC-9.58.9: prefill in the viewer's zone; SPEC-9.58.10: one form open.
                                                 move |_| {
                                                     edit_start.set(started.map(|t| utc_to_local_time(t, zone)).unwrap_or_default());
                                                     edit_end.set(ended.map(|t| utc_to_local_time(t, zone)).unwrap_or_default());
@@ -1086,6 +1172,7 @@ pub fn WorkDayStrip() -> Element {
                                         }
                                     }
                                 }
+                                // SPEC-9.58.11: the correction form.
                                 // SPEC-9.1.29: open form offers Save, Reopen
                                 // (only when already closed), Remove, Cancel.
                                 if can_correct && correcting() == Some(seg.id) {
@@ -1122,7 +1209,9 @@ pub fn WorkDayStrip() -> Element {
                                             onclick: {
                                                 let id = seg.id;
                                                 let closed = seg.ended_at.is_some();
+                                                // SPEC-9.59.4: PUT started_at, plus ended_at only for a closed segment.
                                                 move |_| {
+                                                    // SPEC-9.59.5: unreadable day date refuses the save.
                                                     // SPEC-9.5.17: an unparseable day date is reported
                                                     // and no request is sent.
                                                     let Some(date) = segment_day else {
@@ -1132,6 +1221,7 @@ pub fn WorkDayStrip() -> Element {
                                                     let mut body = serde_json::Map::new();
                                                     match local_time_to_utc(date, &edit_start.read(), zone) {
                                                         Some(at) => { body.insert("started_at".to_string(), serde_json::json!(at)); }
+                                                        // SPEC-9.59.6: a start that does not convert is refused.
                                                         // SPEC-9.5.17: a typed time that does not exist
                                                         // in the viewer's zone is reported, not guessed.
                                                         None => {
@@ -1142,12 +1232,14 @@ pub fn WorkDayStrip() -> Element {
                                                     if closed {
                                                         match local_time_to_utc(date, &edit_end.read(), zone) {
                                                             Some(at) => { body.insert("ended_at".to_string(), serde_json::json!(at)); }
+                                                            // SPEC-9.59.6: likewise an end that does not convert.
                                                             None => {
                                                                 action_error.set("That end time does not exist on this day in your time zone.".to_string());
                                                                 return;
                                                             }
                                                         }
                                                     }
+                                                    // SPEC-9.59.7: the form closes as the request is sent.
                                                     // SPEC-9.9.7: cleared before the mutation fires.
                                                     correcting.set(None);
                                                     put_segment(id, serde_json::Value::Object(body));
@@ -1168,6 +1260,7 @@ pub fn WorkDayStrip() -> Element {
                                                 disabled: !can_mutate,
                                                 onclick: {
                                                     let id = seg.id;
+                                                    // SPEC-9.59.8: an explicit null reopens the segment.
                                                     move |_| {
                                                         // SPEC-9.9.7: cleared before the mutation fires.
                                                         correcting.set(None);
@@ -1185,6 +1278,7 @@ pub fn WorkDayStrip() -> Element {
                                             disabled: !can_mutate,
                                             onclick: {
                                                 let id = seg.id;
+                                                // SPEC-9.60.1: opens the confirmation, sends nothing.
                                                 move |_| removing.set(Some(id))
                                             },
                                             "Remove"
@@ -1192,6 +1286,7 @@ pub fn WorkDayStrip() -> Element {
                                         Button {
                                             variant: ButtonVariant::Ghost,
                                             size: ButtonSize::Small,
+                                            // SPEC-9.58.12: Cancel sends no request.
                                             onclick: move |_| correcting.set(None),
                                             "Cancel"
                                         }
@@ -1206,6 +1301,7 @@ pub fn WorkDayStrip() -> Element {
                 // is looking at on the chip they clicked.
                 if let Some(id) = removing() {
                     {
+                        // SPEC-9.60.2: the entry is named by kind and span.
                         let target = day.segments.iter().find(|s| s.id == id);
                         let label = target
                             .map(|s| {
@@ -1226,6 +1322,7 @@ pub fn WorkDayStrip() -> Element {
                                 confirm_text: "Remove".to_string(),
                                 cancel_text: "Cancel".to_string(),
                                 destructive: true,
+                                // SPEC-9.60.6: dialog shows the action error and busy state.
                                 error: action_error.read().clone(),
                                 loading: *busy.read(),
                                 // SPEC-9.9.7: the correction form is cleared before the
@@ -1236,6 +1333,7 @@ pub fn WorkDayStrip() -> Element {
                                     correcting.set(None);
                                     delete_segment(id);
                                 },
+                                // SPEC-9.60.5: cancel is ignored while a request is in flight.
                                 oncancel: move |_| {
                                     if !*busy.read() {
                                         removing.set(None);
@@ -1245,10 +1343,13 @@ pub fn WorkDayStrip() -> Element {
                         }
                     }
                 }
+                // SPEC-9.61.1: breakdown only when something is logged.
                 if day.logged_minutes > 0 {
+                    // SPEC-9.61.5: one column, two from sm; labels truncate.
                     div { class: "grid grid-cols-1 gap-3 sm:grid-cols-2 text-sm",
                         div {
                             h3 { class: "font-medium text-content mb-1", "Tickets" }
+                            // SPEC-9.61.2: "None" for no ticket lines, else linked rows.
                             if day.breakdown.tickets.is_empty() {
                                 p { class: "text-subtle", "None" }
                             } else {
@@ -1267,6 +1368,7 @@ pub fn WorkDayStrip() -> Element {
                             }
                         }
                         div {
+                            // SPEC-9.61.4: projects, then Administrative always, then unattached if above 0.
                             h3 { class: "font-medium text-content mb-1", "Projects and own time" }
                             ul { class: "space-y-1",
                                 for p in day.breakdown.projects.iter() {
@@ -1303,6 +1405,7 @@ pub fn WorkDayStrip() -> Element {
 /// `format_user_datetime` renders against `users.timezone` (the same
 /// preference the server dates a clock-in with), and only the time half is
 /// wanted here: the day is named by the card itself.
+// SPEC-9.52.11: only the time part of the user-formatted datetime.
 fn clock_time(dt: DateTime<Utc>, pref: Option<&str>, tz: chrono_tz::Tz) -> String {
     let full = crate::utils::datetime::fmt_user_dt_in(dt, pref, tz, None);
     full.rsplit(' ').next().unwrap_or(&full).to_string()
@@ -1325,6 +1428,8 @@ fn segment_span(
 
 /// [`segment_span`] rendered as `time` elements with an ISO `datetime` on
 /// each endpoint, for the segment list (N5).
+// SPEC-9.57.3: closed "to", open "onward", RFC 3339 datetime attributes.
+// SPEC-9.57.4: no start renders nothing.
 fn segment_span_el(
     started: Option<DateTime<Utc>>,
     ended: Option<DateTime<Utc>>,
@@ -1346,6 +1451,7 @@ fn segment_span_el(
     }
 }
 
+// SPEC-9.61.3: number and title, either, or "Ticket".
 fn ticket_label(t: &RemoteTicketLine) -> String {
     match (t.ticket_number.as_deref(), t.ticket_title.as_deref()) {
         (Some(n), Some(title)) => format!("{n} {title}"),

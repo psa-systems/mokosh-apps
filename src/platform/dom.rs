@@ -39,6 +39,7 @@
 /// in-app navigation. The desktop renderer still goes through
 /// `dioxus::document`, which talks to the webview and is unaffected.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.25.1: a direct write; the eval path is blocked by the CSP and panics the wasm instance.
 pub fn set_title(title: &str) {
     if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
         doc.set_title(title);
@@ -46,6 +47,7 @@ pub fn set_title(title: &str) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.25.2
 pub fn set_title(title: &str) {
     if !in_runtime() {
         return;
@@ -68,12 +70,14 @@ pub fn set_title(title: &str) {
 /// `pub(crate)` for the sibling modules that open their own channel
 /// rather than going through [`eval`] (MAPPS-699).
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.28.1
 pub(crate) fn in_runtime() -> bool {
     dioxus::core::Runtime::try_current().is_some()
 }
 
 /// Add or remove the Tailwind `dark` class on `<html>`.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.25.3, SPEC-3.25.4
 pub fn set_root_dark(is_dark: bool) {
     let Some(root) = document_element() else {
         return;
@@ -96,6 +100,7 @@ pub fn set_root_dark(is_dark: bool) {
 /// the stylesheet defaults in `input.css`, which is how the accent ramp
 /// recolours live.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.25.6, SPEC-3.25.7, SPEC-3.25.8
 pub fn set_root_css_vars(vars: &[(&str, &str)]) {
     use wasm_bindgen::JsCast;
 
@@ -118,6 +123,7 @@ pub fn set_root_css_vars(vars: &[(&str, &str)]) {
 ///
 /// Used by the auth heartbeat to skip a poll nobody is waiting on.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.26.1
 pub fn window_hidden() -> bool {
     match web_sys::window().and_then(|w| w.document()) {
         Some(d) => d.visibility_state() == web_sys::VisibilityState::Hidden,
@@ -160,6 +166,7 @@ thread_local! {
 /// window reports itself visible at all times (see [`window_hidden`]), so a
 /// native `visible_again()` never resolves and the auth loops keep the poll
 /// cadence they have always had there.
+// SPEC-3.26.2
 pub fn notify_visible() {
     VISIBLE_GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
     let waiters = VISIBLE_WAITERS.with(|w| std::mem::take(&mut *w.borrow_mut()));
@@ -169,6 +176,7 @@ pub fn notify_visible() {
 }
 
 /// Resolves the next time the app comes back to the foreground.
+// SPEC-3.26.3: compares a generation, so a wake between creation and first poll is kept.
 pub fn visible_again() -> VisibleAgain {
     VisibleAgain {
         start: VISIBLE_GENERATION.with(std::cell::Cell::get),
@@ -187,6 +195,7 @@ pub struct VisibleAgain {
     id: u64,
 }
 
+// SPEC-3.26.3, SPEC-3.26.4
 impl std::future::Future for VisibleAgain {
     type Output = ();
 
@@ -208,6 +217,7 @@ impl std::future::Future for VisibleAgain {
     }
 }
 
+// SPEC-3.26.4
 impl Drop for VisibleAgain {
     fn drop(&mut self) {
         VISIBLE_WAITERS.with(|w| w.borrow_mut().retain(|(id, _)| *id != self.id));
@@ -217,6 +227,7 @@ impl Drop for VisibleAgain {
 /// Start reporting a return to the foreground. Idempotent, and mounted from
 /// the auth loops at the app root, so a second call installs nothing.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.26.5, SPEC-3.26.6
 pub fn watch_visibility() {
     use wasm_bindgen::JsCast;
 
@@ -266,10 +277,12 @@ pub fn watch_visibility() {
 /// A desktop window is always visible (see [`window_hidden`]), so there is no
 /// hidden -> visible edge to listen for and nothing to install.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.26.7
 pub fn watch_visibility() {}
 
 /// Does the operating system ask for a dark UI right now?
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.25.10
 pub fn system_prefers_dark() -> bool {
     match web_sys::window()
         .and_then(|w| w.match_media("(prefers-color-scheme: dark)").ok().flatten())
@@ -289,6 +302,7 @@ pub fn system_prefers_dark() -> bool {
 /// Move keyboard focus to the element with this id. No-op when the
 /// element is not in the document.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.27.1
 pub fn focus_by_id(id: &str) {
     use wasm_bindgen::JsCast;
 
@@ -325,6 +339,7 @@ pub struct FocusToken(u64);
 
 /// Record the currently-focused element.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.27.2
 pub fn capture_focus() -> FocusToken {
     use wasm_bindgen::JsCast;
 
@@ -340,6 +355,7 @@ pub fn capture_focus() -> FocusToken {
 impl FocusToken {
     /// Put focus back. No-op when nothing was focused, or when the
     /// element has since left the document.
+    // SPEC-3.27.2
     pub fn restore(&self) {
         if let Some(el) = &self.0 {
             // Best-effort, and expected to fail sometimes: the element
@@ -359,6 +375,7 @@ impl FocusToken {
 /// token and [`FocusToken::restore`] focuses whatever is parked there.
 /// Both halves are writes, which the desktop can do synchronously.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.27.3: parked, not read back; an async read lands after the dialog took focus.
 pub fn capture_focus() -> FocusToken {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -376,6 +393,7 @@ impl FocusToken {
     /// Put focus back on the parked element and let go of it. No-op when
     /// nothing was focused, or when the element has since left the
     /// document - the same best-effort contract as the browser's.
+    // SPEC-3.27.3
     pub fn restore(&self) {
         let token = self.0;
         eval(&format!(
@@ -401,6 +419,7 @@ const FOCUS_STASH: &str = "__mokoshFocusStash";
 /// offsets survives every English-language test and then corrupts the first
 /// article containing an accent.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.27.4
 pub fn textarea_selection(id: &str, fallback_end: u32) -> (u32, u32) {
     use wasm_bindgen::JsCast;
     let Some(el) = web_sys::window()
@@ -417,6 +436,7 @@ pub fn textarea_selection(id: &str, fallback_end: u32) -> (u32, u32) {
 
 /// Focus a `<textarea>` and put its selection back, in UTF-16 code units.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.27.8
 pub fn set_textarea_selection(id: &str, start: u32, end: u32) {
     use wasm_bindgen::JsCast;
     if let Some(el) = web_sys::window()
@@ -431,6 +451,7 @@ pub fn set_textarea_selection(id: &str, start: u32, end: u32) {
 
 /// Current scroll offset of the element with this id.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.27.9
 pub fn scroll_top(id: &str) -> Option<i32> {
     web_sys::window()
         .and_then(|w| w.document())
@@ -442,12 +463,14 @@ pub fn scroll_top(id: &str) -> Option<i32> {
 /// already in the document, so this is [`scroll_top`] with an `await` in
 /// front of it; the desktop twin asks the webview and waits.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.27.9
 pub async fn scroll_top_async(id: &str) -> Option<i32> {
     scroll_top(id)
 }
 
 /// Restore a scroll offset onto the element with this id.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.27.10
 pub fn set_scroll_top(id: &str, top: i32) {
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())
@@ -463,6 +486,7 @@ pub fn set_scroll_top(id: &str, top: i32) {
 /// MAPPS-503 uses this to follow a keyboard highlight past the edge of a
 /// dropdown's `max-h-*` scroll box.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.27.11
 pub fn scroll_into_view(id: &str, align_top: bool) {
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())
@@ -481,6 +505,7 @@ pub fn scroll_into_view(id: &str, align_top: bool) {
 /// is; computing the pixels here would need a read back out of the
 /// document, which the desktop cannot do synchronously.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.27.12
 pub fn scroll_to_fraction(id: &str, vertical: bool, frac: f64) {
     let Some(el) = web_sys::window()
         .and_then(|w| w.document())
@@ -506,6 +531,7 @@ fn document_element() -> Option<web_sys::Element> {
 // --- desktop -------------------------------------------------------------
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.25.5
 pub fn set_root_dark(is_dark: bool) {
     let action = if is_dark { "add" } else { "remove" };
     eval(&format!(
@@ -514,6 +540,7 @@ pub fn set_root_dark(is_dark: bool) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.25.6, SPEC-3.25.9
 pub fn set_root_css_vars(vars: &[(&str, &str)]) {
     // One script for the whole ramp: thirteen separate evals would be
     // thirteen round trips to the webview on every theme change.
@@ -539,6 +566,7 @@ pub fn set_root_css_vars(vars: &[(&str, &str)]) {
 /// stops noticing that its account was deleted, which is the condition
 /// the heartbeat exists to catch.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.26.1
 pub fn window_hidden() -> bool {
     false
 }
@@ -558,6 +586,7 @@ thread_local! {
 /// so the theme that got applied and the theme the accent picker shows
 /// are the same answer; the window's tao theme until then.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.25.11: the webview's own answer wins so the applied theme and the picker agree.
 pub fn system_prefers_dark() -> bool {
     if let Some(is_dark) = WEBVIEW_PREFERS_DARK.with(std::cell::Cell::get) {
         return is_dark;
@@ -567,6 +596,7 @@ pub fn system_prefers_dark() -> bool {
 
 /// The window's theme as the OS reports it to tao.
 #[cfg(all(not(target_arch = "wasm32"), feature = "desktop"))]
+// SPEC-3.25.11, SPEC-3.25.12
 fn window_theme_is_dark() -> bool {
     let Some(ctx) = dioxus::prelude::try_consume_context::<dioxus::desktop::DesktopContext>()
     else {
@@ -579,6 +609,7 @@ fn window_theme_is_dark() -> bool {
 /// is `cargo check` / `cargo test` on the host, which renders nothing -
 /// so it reports light and the caller's explicit preference still wins.
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "desktop")))]
+// SPEC-3.25.12
 fn window_theme_is_dark() -> bool {
     false
 }
@@ -598,6 +629,7 @@ fn window_theme_is_dark() -> bool {
 /// whose webview disagrees with the tao theme it booted on lands on the
 /// webview's answer rather than staying wrong until the user switches.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.25.13: the media query, not tao's ThemeChanged, which Linux never emits.
 pub fn watch_system_theme(mut on_change: impl FnMut() + 'static) {
     if !in_runtime() {
         return;
@@ -624,6 +656,7 @@ pub fn watch_system_theme(mut on_change: impl FnMut() + 'static) {
                 Err(e) => {
                     // Losing this pins a `Theme::System` user to whatever
                     // the OS said at boot, with nothing to say why.
+                    // SPEC-3.25.14
                     tracing::error!("stopped following OS dark-mode changes: {e}");
                     return;
                 }
@@ -643,6 +676,7 @@ pub fn watch_system_theme(mut on_change: impl FnMut() + 'static) {
 /// Rust at all, so the script attaches it and posts each click back
 /// over the `eval` channel instead.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.28.4, SPEC-3.28.6
 pub fn watch_task_toggles(dom_id: &str, on_toggle: dioxus::prelude::EventHandler<usize>) {
     if !in_runtime() {
         return;
@@ -666,6 +700,7 @@ pub fn watch_task_toggles(dom_id: &str, on_toggle: dioxus::prelude::EventHandler
                 Err(e) => {
                     // The checkboxes render either way, so without this
                     // the only symptom is a click that does nothing.
+                    // SPEC-3.28.5
                     tracing::error!("stopped listening for markdown task toggles: {e}");
                     return;
                 }
@@ -675,6 +710,7 @@ pub fn watch_task_toggles(dom_id: &str, on_toggle: dioxus::prelude::EventHandler
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.27.1
 pub fn focus_by_id(id: &str) {
     eval(&format!(
         "document.getElementById({})?.focus();",
@@ -687,6 +723,7 @@ pub fn focus_by_id(id: &str) {
 /// round trip fails - the caller (the sidebar scroll memory in
 /// `components::layout`) reads that as "nothing to record".
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.27.9: failures are logged because a caller cannot tell them from an absent element.
 pub async fn scroll_top_async(id: &str) -> Option<i32> {
     if !in_runtime() {
         return None;
@@ -716,6 +753,7 @@ pub async fn scroll_top_async(id: &str) -> Option<i32> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.27.11
 pub fn scroll_into_view(id: &str, align_top: bool) {
     eval(&format!(
         "document.getElementById({})?.scrollIntoView({align_top});",
@@ -724,6 +762,7 @@ pub fn scroll_into_view(id: &str, align_top: bool) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.27.12: a fraction, because only the rendered element knows its extent.
 pub fn scroll_to_fraction(id: &str, vertical: bool, frac: f64) {
     let axis = if vertical { "Top" } else { "Left" };
     let extent = if vertical {
@@ -739,6 +778,7 @@ pub fn scroll_to_fraction(id: &str, vertical: bool, frac: f64) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.27.10
 pub fn set_scroll_top(id: &str, top: i32) {
     eval(&format!(
         "{{ const el = document.getElementById({}); if (el) el.scrollTop = {top}; }}",
@@ -758,6 +798,7 @@ pub fn set_scroll_top(id: &str, top: i32) {
 /// `platform::scroll_sync` write the same kind of script and must not
 /// each re-derive the runtime guard.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.28.2
 pub(crate) fn eval(js: &str) {
     if !in_runtime() {
         return;
@@ -768,6 +809,7 @@ pub(crate) fn eval(js: &str) {
 /// Encode `s` as a JavaScript string literal so an id carrying a quote
 /// cannot terminate the literal and change what the script does.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.28.3
 pub(crate) fn js_string(s: &str) -> String {
     // Serializing a `&str` cannot fail; the fallback is an empty literal
     // so a future change that makes it fallible produces a script that
@@ -797,6 +839,7 @@ thread_local! {
 /// Idempotent per element: the marker rides on the element, so an effect that
 /// re-runs installs nothing and the first channel keeps reporting.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.27.6: pushed, because the caller is a click handler that must answer at once.
 pub fn watch_textarea_selection(id: &str) {
     if !in_runtime() {
         return;
@@ -828,6 +871,7 @@ pub fn watch_textarea_selection(id: &str) {
                     // Losing this silently puts every caret-relative edit back
                     // at the end of the field, which reads as the toolbar and
                     // the sync button ignoring where the author is typing.
+                    // SPEC-3.27.7
                     tracing::error!("stopped following the selection in #{key}: {e}");
                     return;
                 }
@@ -844,6 +888,7 @@ pub fn watch_textarea_selection(id: &str) {
 /// it on demand is asynchronous (see the module header on reads) and every
 /// caller is a handler that has to answer at once.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.27.5
 pub fn textarea_selection(id: &str, fallback_end: u32) -> (u32, u32) {
     TEXTAREA_SELECTION
         .with(|m| m.borrow().get(id).copied())
@@ -852,6 +897,7 @@ pub fn textarea_selection(id: &str, fallback_end: u32) -> (u32, u32) {
 
 /// Desktop: a write, so it CAN be done through `eval`.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.27.8
 pub fn set_textarea_selection(id: &str, start: u32, end: u32) {
     eval(&format!(
         "{{const e=document.getElementById({});if(e){{e.focus();e.setSelectionRange({start},{end});}}}}",
@@ -862,12 +908,14 @@ pub fn set_textarea_selection(id: &str, start: u32, end: u32) {
 /// MAPPS-741: the headings a table of contents follows, inside the article
 /// body. Only headings carry an id in rendered Markdown (`utils::markdown`),
 /// so `[id]` is the whole filter.
+// SPEC-3.29.1
 pub const HEADING_SELECTOR: &str = "h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]";
 
 /// The band of the viewport a heading has to be in to count as current:
 /// the top 30%. A heading that scrolled out above stays current until the
 /// next one enters, so the section being read is the one marked, not the
 /// one whose heading happens to be on screen further down.
+// SPEC-3.29.2
 const HEADING_BAND: &str = "0px 0px -70% 0px";
 
 /// Report which heading inside the container with this id is current, as
@@ -884,6 +932,7 @@ const HEADING_BAND: &str = "0px 0px -70% 0px";
 /// `EventHandler` for the MAPPS-586 reason: nothing else may touch the
 /// runtime from there.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.29.3, SPEC-3.29.4, SPEC-3.28.6
 pub fn watch_active_heading(container_id: &str, on_active: dioxus::prelude::EventHandler<String>) {
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -954,6 +1003,7 @@ pub fn watch_active_heading(container_id: &str, on_active: dioxus::prelude::Even
     ) else {
         // The table of contents still lists and still jumps; only the
         // current-section mark is missing.
+        // SPEC-3.29.5
         tracing::error!("could not observe the article headings for #{container_id}");
         return;
     };
@@ -974,6 +1024,7 @@ pub fn watch_active_heading(container_id: &str, on_active: dioxus::prelude::Even
 /// hears again and stays parked, which is the cost of not being able to
 /// cancel an `eval` from Rust.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.29.3, SPEC-3.29.4, SPEC-3.29.6, SPEC-3.28.6
 pub fn watch_active_heading(container_id: &str, on_active: dioxus::prelude::EventHandler<String>) {
     if !in_runtime() {
         return;
@@ -1007,6 +1058,7 @@ pub fn watch_active_heading(container_id: &str, on_active: dioxus::prelude::Even
             match eval.recv::<String>().await {
                 Ok(id) => on_active.call(id),
                 Err(e) => {
+                    // SPEC-3.29.6
                     tracing::error!("stopped following the article headings: {e}");
                     return;
                 }

@@ -15,6 +15,7 @@
 
 #[cfg(target_arch = "wasm32")]
 mod imp {
+    // SPEC-3.36.1
     pub use gloo_net::http::{Request, RequestBuilder, Response};
     pub type Error = gloo_net::Error;
 
@@ -42,6 +43,7 @@ mod imp {
             mime: &str,
             bytes: &[u8],
         ) -> Result<Request, Error> {
+            // SPEC-3.36.4, SPEC-3.36.5: no Content-Type here, the browser adds the boundary.
             let array = js_sys::Uint8Array::from(bytes);
             let parts = js_sys::Array::new();
             parts.push(&array.buffer());
@@ -94,6 +96,7 @@ mod imp {
     /// (no usable TLS backend, for instance) is kept and returned from
     /// every `send()` rather than panicking the UI thread or being
     /// retried per request.
+    // SPEC-3.36.6
     fn client() -> Result<&'static reqwest::Client, Error> {
         static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
         CLIENT
@@ -133,6 +136,7 @@ mod imp {
     /// `reqwest` ends up with (the boundary it picks for multipart, the
     /// `Content-Type` this module sets for JSON) without needing a live
     /// server.
+    // SPEC-3.36.3, SPEC-3.36.4, SPEC-3.36.5, SPEC-3.36.7
     fn build_reqwest_request(
         client: &reqwest::Client,
         builder: RequestBuilder,
@@ -175,6 +179,7 @@ mod imp {
             .map_err(|e| Error::new(format!("could not build the request: {e}")))
     }
 
+    // SPEC-3.36.2
     impl Request {
         pub fn get(url: &str) -> RequestBuilder {
             RequestBuilder::new(reqwest::Method::GET, url)
@@ -193,6 +198,7 @@ mod imp {
         }
 
         pub async fn send(self) -> Result<Response, Error> {
+            // SPEC-3.36.7, SPEC-3.36.8: a non-2xx status is still Ok; the caller decides.
             let Self { builder, body } = self;
             let req = build_reqwest_request(client()?, builder, body)?;
             let resp = client()?.execute(req).await.map_err(Error::new)?;
@@ -229,6 +235,7 @@ mod imp {
         }
 
         #[must_use]
+        // SPEC-3.36.2
         pub fn header(mut self, key: &str, value: &str) -> Self {
             self.headers.push((key.to_string(), value.to_string()));
             self
@@ -238,6 +245,7 @@ mod imp {
         /// `application/x-www-form-urlencoded` (the OIDC token endpoint).
         /// Fallible to match `gloo_net`'s signature, which can fail
         /// converting the value into a JS body.
+        // SPEC-3.36.3
         pub fn body(self, body: impl Into<Vec<u8>>) -> Result<Request, Error> {
             Ok(Request {
                 builder: self,
@@ -245,6 +253,7 @@ mod imp {
             })
         }
 
+        // SPEC-3.36.3
         pub fn json<T: Serialize + ?Sized>(self, value: &T) -> Result<Request, Error> {
             let bytes = serde_json::to_vec(value)
                 .map_err(|e| Error::new(format!("could not encode the request body: {e}")))?;
@@ -280,6 +289,7 @@ mod imp {
             mime: &str,
             bytes: &[u8],
         ) -> Result<Request, Error> {
+            // SPEC-3.36.4
             Ok(Request {
                 builder: self,
                 body: Body::Multipart {
@@ -295,6 +305,7 @@ mod imp {
     /// `&self`, matching `gloo_net::http::Response`. `hooks::fetch`
     /// relies on that: `handle_response` calls `json()` on the success
     /// branch and `text()` on the error branch of the same response.
+    // SPEC-3.36.8, SPEC-3.36.10: buffered so readers take &self and may be called repeatedly.
     pub struct Response {
         status: u16,
         headers: Vec<(String, String)>,
@@ -308,6 +319,7 @@ mod imp {
     }
 
     impl Headers<'_> {
+        // SPEC-3.36.9
         pub fn get(&self, name: &str) -> Option<String> {
             let name = name.to_ascii_lowercase();
             self.pairs
@@ -322,6 +334,7 @@ mod imp {
             self.status
         }
 
+        // SPEC-3.36.9
         pub fn ok(&self) -> bool {
             (200..300).contains(&self.status)
         }
@@ -332,6 +345,7 @@ mod imp {
             }
         }
 
+        // SPEC-3.36.10
         pub async fn text(&self) -> Result<String, Error> {
             Ok(String::from_utf8_lossy(&self.body).into_owned())
         }
@@ -435,4 +449,5 @@ mod imp {
     }
 }
 
+// SPEC-3.36.1
 pub use imp::{Error, MultipartExt, Request, RequestBuilder, Response};

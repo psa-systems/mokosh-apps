@@ -29,6 +29,7 @@ pub struct CardGridSkeletonProps {
 
 #[component]
 pub fn CardGridSkeleton(props: CardGridSkeletonProps) -> Element {
+    // SPEC-5.58.1: count cards in the caller's grid; SPEC-5.58.2: four blocks per card.
     rsx! {
         div { class: "grid {props.grid_class}",
             for _ in 0..props.count {
@@ -58,6 +59,7 @@ pub struct DetailSkeletonProps {
 
 #[component]
 pub fn DetailSkeleton(props: DetailSkeletonProps) -> Element {
+    // SPEC-5.58.3: title block, rows lines, shorter trailing line; SPEC-5.58.4: shared shimmer.
     rsx! {
         Card {
             div { class: "space-y-4",

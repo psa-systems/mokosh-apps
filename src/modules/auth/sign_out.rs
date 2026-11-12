@@ -18,6 +18,7 @@ use crate::modules::oidc::{storage, OidcConfig};
 /// so the user sees mokosh's public landing page, signed out. Falls back to
 /// the hub root when the origin is unavailable (desktop / SSR path).
 fn post_logout_target(cfg: &OidcConfig) -> String {
+    // SPEC-3.5.2: own origin plus "/", hub root when there is no origin.
     crate::platform::location::origin()
         .map(|origin| format!("{}/", origin.trim_end_matches('/')))
         .unwrap_or_else(|| cfg.hub_url("/"))
@@ -34,6 +35,7 @@ pub fn logout_redirect_url() -> String {
     // MAPPS-368: a standalone deployment has no OP. Interpolating its empty
     // issuer produced the origin-relative `/v1/auth/logout?url=...`, which
     // resolves against this SPA and 404s, so go to the landing page directly.
+    // SPEC-3.5.1: no issuer means the landing page directly, never a provider URL.
     if !cfg.has_issuer() {
         return target;
     }
@@ -54,6 +56,7 @@ async fn revoke_mokosh_session() {
     {
         use crate::hooks::fetch::api;
 
+        // SPEC-3.5.4: quiet return without a bearer; a failed revoke is logged, never blocking.
         if api::current_access_token().is_none() {
             return;
         }
@@ -75,6 +78,7 @@ async fn revoke_all_mokosh_sessions() {
     {
         use crate::hooks::fetch::api;
 
+        // SPEC-3.5.8: logout-all with the held bearer, logged on failure.
         if api::current_access_token().is_none() {
             return;
         }
@@ -89,6 +93,7 @@ async fn revoke_all_mokosh_sessions() {
 /// Revoke the OP's refresh-token family (MAPPS-336) so a leaked refresh token
 /// does not survive the user clicking "Log out".
 async fn revoke_provider_refresh_token() {
+    // SPEC-3.5.5: only when a refresh token is stored; failure is logged and not blocking.
     let refresh = match storage::load_auth().and_then(|t| t.refresh_token) {
         Some(r) => r,
         None => return,
@@ -118,11 +123,13 @@ async fn revoke_provider_refresh_token() {
 /// ([`crate::hooks::auth::use_session_end_watch`]) picks up to clear
 /// `AuthContext`.
 pub async fn sign_out() {
+    // SPEC-3.5.3: revoke, revoke, clear, drop token, then leave; SPEC-3.5.6: no revoke blocks it.
     revoke_mokosh_session().await;
     revoke_provider_refresh_token().await;
     storage::clear_auth();
     #[cfg(feature = "app")]
     crate::hooks::fetch::api::set_access_token(None);
+    // SPEC-3.5.7: desktop only, so the window drops its signed-in state.
     #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
     crate::hooks::fetch::note_session_ended();
     crate::platform::location::replace(&logout_redirect_url());
@@ -139,6 +146,7 @@ pub async fn sign_out() {
 /// skipping it would leave that token valid for the rest of its own life
 /// (MAPPS-336).
 pub async fn sign_out_everywhere() {
+    // SPEC-3.5.8: same shape as sign_out, with the provider token revoke still run.
     revoke_all_mokosh_sessions().await;
     revoke_provider_refresh_token().await;
     storage::clear_auth();
@@ -160,6 +168,7 @@ pub async fn sign_out_everywhere() {
 /// used, so the customer retypes it. Better than the alternative, which was
 /// landing them on the wrong product entirely.
 pub fn portal_login_url() -> String {
+    // SPEC-3.5.9: own /portal/login, origin-relative without an origin.
     crate::platform::location::origin()
         .map(|origin| format!("{}/portal/login", origin.trim_end_matches('/')))
         .unwrap_or_else(|| "/portal/login".to_string())
@@ -178,6 +187,7 @@ async fn revoke_portal_session() {
     {
         use crate::hooks::fetch::api;
 
+        // SPEC-3.5.10: only with a portal token held; failure is logged and not blocking.
         if !api::has_portal_session() {
             return;
         }
@@ -207,9 +217,12 @@ async fn revoke_portal_session() {
 /// so clearing `AuthContext` here too is what leaves that window fully signed
 /// out rather than still rendering the agent's app underneath.
 pub async fn sign_out_portal() {
+    // SPEC-3.5.11: revoke, clear portal token, leave for the portal login; never the provider.
+    // SPEC-3.5.12: the caller picks this path; token presence must not.
     revoke_portal_session().await;
     #[cfg(feature = "app")]
     crate::hooks::fetch::api::set_portal_access_token(None);
+    // SPEC-3.5.7: desktop only, so a window holding both tokens ends fully signed out.
     #[cfg(all(feature = "app", not(target_arch = "wasm32")))]
     crate::hooks::fetch::note_session_ended();
     crate::platform::location::replace(&portal_login_url());
@@ -235,6 +248,7 @@ mod tests {
     /// is the whole defect. The URL is built in exactly one place.
     #[test]
     fn sign_out_paths_go_through_the_shared_helper() {
+        // SPEC-3.5.13: enforces that components never build the provider logout URL.
         for (name, src) in SIGN_OUT_SITES {
             assert!(
                 !src.contains("v1/auth/logout"),

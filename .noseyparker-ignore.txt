@@ -1,3 +1,4 @@
+# SPEC-1.11.4: path-pattern allow-list read by the shared secrets scan.
 # Nosey Parker ignore file, gitignore-style patterns applied against blob
 # paths in this repo's history and working tree. Add a path here only when
 # every finding in it has been reviewed and none is a real credential.

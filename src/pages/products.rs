@@ -76,6 +76,7 @@ struct RemoteProduct {
 /// The `is_active` filter the status select maps to. Blank is the whole
 /// catalog, active and retired, so an administrator can see history; a
 /// picker passes `true` on its own.
+// SPEC-10.50.2
 pub(crate) fn status_filter(raw: &str) -> Option<bool> {
     match raw.trim() {
         "active" => Some(true),
@@ -85,6 +86,7 @@ pub(crate) fn status_filter(raw: &str) -> Option<bool> {
 }
 
 /// The list path for a page, a search and a status filter.
+// SPEC-10.50.2
 pub(crate) fn list_path(page: usize, q: &str, status: &str) -> String {
     let mut path = format!("/products?page={page}&per_page={PER_PAGE}");
     let q = q.trim();
@@ -124,6 +126,7 @@ pub fn ProductsSettingsPage() -> Element {
         .unwrap_or(false);
 
     use_page_title("Products");
+    // SPEC-10.50.1: gate before the body so no list request is made.
     if !has_finance {
         return rsx! { crate::pages::billing::NoFinancePermission { title: "Products" } };
     }
@@ -144,13 +147,14 @@ fn ProductsSettingsBody() -> Element {
     // MAPPS-931: debounce the search dependency so a burst of keystrokes
     // fires one refetch per pause in typing rather than one per keystroke,
     // matching the sibling call sites MAPPS-855 debounced.
+    // SPEC-10.50.3
     let search_debounced = crate::hooks::use_debounced_signal(search, 300);
     let mut resource = use_resource(move || {
         // Read page/search/status here, inside the resource's own closure, so
         // Dioxus's dependency tracker attaches the resource's subscription to
         // them directly (the same reason active_tenant_generation() is read
         // here rather than above): a read outside this closure subscribes the
-        // component to a re-render, not the resource to a re-fetch.
+        // component to a re-render, not the resource to a re-fetch. SPEC-10.50.5
         let path = list_path(
             (*page.read()).max(1),
             &search_debounced.read(),
@@ -178,6 +182,7 @@ fn ProductsSettingsBody() -> Element {
 
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // SPEC-10.50.6: an outage replaces the page; otherwise the banner below shows.
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Products".to_string() }
@@ -185,6 +190,7 @@ fn ProductsSettingsBody() -> Element {
     }
 
     let filtered = !search_text.trim().is_empty() || !status_text.is_empty();
+    // SPEC-10.50.4
     let status_options = vec![
         SelectOption::new("", "All products"),
         SelectOption::new("active", "Active"),
@@ -202,6 +208,7 @@ fn ProductsSettingsBody() -> Element {
                 Button {
                     variant: ButtonVariant::Primary,
                     // MAPPS-357: block creates while the server is unreachable.
+                    // SPEC-10.50.10
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                     onclick: move |_| editing.set(Some(ProductFormState::new())),
@@ -224,6 +231,7 @@ fn ProductsSettingsBody() -> Element {
                     placeholder: "Name or SKU",
                     value: search_text.clone(),
                     oninput: move |e: FormEvent| {
+                        // SPEC-10.50.3
                         search.set(e.value());
                         page.set(1);
                     },
@@ -241,6 +249,7 @@ fn ProductsSettingsBody() -> Element {
             }
         }
 
+        // SPEC-10.50.6
         if fetch_failed {
             ErrorBanner { class: "mb-3", "Could not load products. Refresh the page to retry." }
         }
@@ -263,6 +272,7 @@ fn ProductsSettingsBody() -> Element {
                         TableHeader { "Status" }
                     }
                 }
+                // SPEC-10.50.7, SPEC-10.50.8: empty state only when the load succeeded.
                 if is_loading {
                     TableLoading { columns: 6, rows: 4 }
                 } else if rows.is_empty() && !fetch_failed {
@@ -310,7 +320,7 @@ fn ProductsSettingsBody() -> Element {
                                         },
                                         TableCell {
                                             // MAPPS-569: the row opens a modal, so this cell is
-                                            // the keyboard path.
+                                            // the keyboard path. SPEC-10.50.11
                                             onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
@@ -323,6 +333,7 @@ fn ProductsSettingsBody() -> Element {
                                         }
                                         TableCell { class: "text-right font-medium", "{price}" }
                                         TableCell { "{unit}" }
+                                        // SPEC-10.50.9
                                         TableCell {
                                             if taxable {
                                                 Badge { variant: BadgeVariant::Blue, "Taxable" }
@@ -354,6 +365,7 @@ fn ProductsSettingsBody() -> Element {
                 state,
                 onclose: move |_| editing.set(None),
                 onsaved: move |_| {
+                    // SPEC-10.50.11
                     editing.set(None);
                     resource.restart();
                 },
@@ -388,6 +400,7 @@ impl ProductFormState {
             name: String::new(),
             description: String::new(),
             unit_price: String::new(),
+            // SPEC-10.51.1
             unit: "each".to_string(),
             is_taxable: true,
             is_active: true,
@@ -398,6 +411,7 @@ impl ProductFormState {
     /// Whether the modal offers Delete. Only an existing row can be deleted,
     /// and only one nothing has sold; the server refuses the rest with a 409,
     /// so the button is withheld rather than offered to fail.
+    // SPEC-10.51.6
     fn deletable(&self) -> bool {
         self.id.is_some() && !self.in_use
     }
@@ -418,6 +432,7 @@ impl ProductFormState {
 
     /// The `UpsertProductRequest` body. Pure, so the null-for-blank rule on
     /// the optional fields is pinned by a test.
+    // SPEC-10.51.3
     fn body(&self) -> serde_json::Value {
         serde_json::json!({
             "sku": optional_json(&self.sku),
@@ -467,11 +482,13 @@ fn ProductFormModal(props: ProductFormModalProps) -> Element {
 
     let save_id = initial.id.clone();
     let handle_save = move |_| {
+        // SPEC-10.51.4
         if *saving.read() || *deleting.read() {
             return;
         }
         error.set(String::new());
 
+        // SPEC-10.51.2
         // PMS-518: every field reported at once, first invalid focused. The
         // caps mirror `UpsertProductRequest`.
         let mut guard = FormGuard::new();
@@ -526,6 +543,7 @@ fn ProductFormModal(props: ProductFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-10.51.4
                 let result = match id {
                     None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                         "/products",
@@ -542,6 +560,7 @@ fn ProductFormModal(props: ProductFormModalProps) -> Element {
                 };
                 match result {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-10.51.5
                     Err(err) => error.set(format!("Could not save product: {err}")),
                 }
             }
@@ -566,6 +585,7 @@ fn ProductFormModal(props: ProductFormModalProps) -> Element {
             {
                 match crate::hooks::fetch::api::delete_authed(&format!("/products/{id}")).await {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-10.51.7
                     Err(err) => error.set(format!("Could not delete product: {err}")),
                 }
             }
@@ -630,6 +650,7 @@ fn ProductFormModal(props: ProductFormModalProps) -> Element {
                     label: "Unit Price",
                     r#type: "number",
                     required: true,
+                    // SPEC-10.51.9
                     step: "0.01".to_string(),
                     min: "0".to_string(),
                     placeholder: "0.00",
@@ -660,6 +681,7 @@ fn ProductFormModal(props: ProductFormModalProps) -> Element {
                     },
                 }
             }
+            // SPEC-10.51.8
             if is_edit {
                 p { class: "text-xs text-muted", "{PRICE_NOTE}" }
             }

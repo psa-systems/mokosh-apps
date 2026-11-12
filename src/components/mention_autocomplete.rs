@@ -29,6 +29,7 @@ pub struct MentionAutocompleteProps {
     pub target_id: String,
     /// The current source. Owned by the caller.
     pub value: String,
+    // SPEC-5.51.16: the one directory fetch feeds this list; no caller fetches its own.
     /// The staff directory to match against. Empty disables the whole feature,
     /// which is the correct degrade: `GET /auth/directory` can fail, and a
     /// mention the author types by hand still resolves at render time.
@@ -39,6 +40,7 @@ pub struct MentionAutocompleteProps {
 
 /// Read the caret, in UTF-16 units, from the field being typed in.
 fn caret_of(target_id: &str, value: &str) -> u32 {
+    // SPEC-5.51.1: UTF-16 end-of-value is the fallback when the selection is unreadable.
     let end = value.chars().map(|c| c.len_utf16() as u32).sum();
     let (_, caret) = crate::platform::dom::textarea_selection(target_id, end);
     caret
@@ -53,6 +55,8 @@ pub(crate) fn active_mention_and_rows(
     value: &str,
     people: &[Mention],
 ) -> (Option<ActiveMention>, Vec<Mention>) {
+    // SPEC-5.51.2: an empty directory means no active mention.
+    // SPEC-5.51.3: the trigger is the shared rule, not a local search for an at sign.
     let active = if people.is_empty() {
         None
     } else {
@@ -75,17 +79,20 @@ pub fn MentionAutocomplete(props: MentionAutocompleteProps) -> Element {
     // panel renders, whether a key is the popover's or the textarea's, and
     // that only works with one nav shared through context rather than two
     // separate `use_dropdown_nav` calls drifting apart.
+    // SPEC-5.51.5: the nav comes from context. SPEC-5.51.4: same row computation as the keydown path.
     let mut nav = use_context::<DropdownNav>();
     let (active, rows) = active_mention_and_rows(&props.target_id, &props.value, &props.people);
 
     // Nothing to offer is not an empty list, it is no list. A popover reading
     // "no matches" over every unrecognised word would be noise.
+    // SPEC-5.51.6: nothing to offer renders nothing and closes the shared nav.
     if active.is_none() || rows.is_empty() {
         if nav.is_open() {
             nav.close();
         }
         return rsx! {};
     }
+    // SPEC-5.51.7: a fresh open highlights no row.
     if !nav.is_open() {
         nav.open_fresh();
     }
@@ -97,6 +104,7 @@ pub fn MentionAutocomplete(props: MentionAutocompleteProps) -> Element {
 
     rsx! {
         div { class: "relative",
+            // SPEC-5.51.8: listbox panel geometry and accessible name.
             div {
                 id: nav.panel_id(),
                 role: "listbox",
@@ -110,6 +118,7 @@ pub fn MentionAutocomplete(props: MentionAutocompleteProps) -> Element {
                 aria_label: "People you can mention",
                 for (i , person) in rows_for_click.iter().enumerate() {
                     {
+                        // SPEC-5.51.10: first handle, else the display name.
                         let handle = person
                             .handles()
                             .first()
@@ -118,6 +127,7 @@ pub fn MentionAutocomplete(props: MentionAutocompleteProps) -> Element {
                         let value = value.clone();
                         let active = active_for_click.clone();
                         rsx! {
+                            // SPEC-5.51.9: one option button per matching person.
                             button {
                                 key: "{person.id}",
                                 id: nav.row_id(i),
@@ -125,6 +135,7 @@ pub fn MentionAutocomplete(props: MentionAutocompleteProps) -> Element {
                                 role: "option",
                                 aria_selected: nav.row_selected(i),
                                 class: nav.row_class(i, "block w-full px-3 py-2 text-left text-sm"),
+                                // SPEC-5.51.11: accepting is the click path of SPEC-5.51.12.
                                 onclick: move |e: MouseEvent| {
                                     e.prevent_default();
                                     let Some(a) = active.clone() else { return };
@@ -156,12 +167,14 @@ pub fn handle_keydown(
     active: Option<&ActiveMention>,
     onaccept: &EventHandler<(String, u32)>,
 ) -> bool {
+    // SPEC-5.51.13: with no active mention or no rows the key belongs to the textarea.
     let Some(active) = active else {
         return false;
     };
     if rows.is_empty() {
         return false;
     }
+    // SPEC-5.51.14: the keyboard accept path, the second of the two in SPEC-5.51.12.
     let mut accepted = false;
     let action = nav.keydown(e, rows.len(), |index| {
         if let Some(person) = rows.get(index) {
@@ -175,6 +188,7 @@ pub fn handle_keydown(
             accepted = true;
         }
     });
+    // SPEC-5.51.15: consumed means accepted or any non-ignored nav action.
     accepted || !matches!(action, NavAction::Ignore)
 }
 

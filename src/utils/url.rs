@@ -10,6 +10,7 @@
 /// result, so non-ASCII passes straight through.
 pub fn urlencoding_minimal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
+    // SPEC-4.86.1, SPEC-4.86.2: '%' is not encoded yet (see defects).
     for c in s.chars() {
         match c {
             '%' => out.push_str("%25"),
@@ -41,6 +42,7 @@ pub fn urlencoding_minimal(s: &str) -> String {
 /// MAPPS-683: sourced from the router rather than the browser URL, so the
 /// desktop build reads the same scoping the link carried.
 pub fn current_query_param(key: &str) -> Option<String> {
+    // SPEC-4.86.4: an unresolvable location yields None via `?`.
     query_param_in(&crate::platform::location::current_query()?, key)
 }
 
@@ -48,6 +50,7 @@ pub fn current_query_param(key: &str) -> Option<String> {
 /// string the caller already holds. Split out so the rule is testable
 /// without a host that has a location at all.
 pub fn query_param_in(search: &str, key: &str) -> Option<String> {
+    // SPEC-4.86.5: the first matching key decides, even when its value is empty.
     let search = search.strip_prefix('?').unwrap_or(search);
     for pair in search.split('&') {
         let mut parts = pair.splitn(2, '=');
@@ -74,11 +77,13 @@ pub fn query_param_in(search: &str, key: &str) -> Option<String> {
 /// means the client-side field validators reject the same whitespace tricks
 /// that [`safe_href`] guards against at render time (MAPPS-213).
 pub fn scheme_of(value: &str) -> Option<String> {
+    // SPEC-4.87.1: strip what browsers strip before resolving a scheme.
     let collapsed: String = value
         .trim()
         .chars()
         .filter(|c| !c.is_whitespace() && (*c as u32) >= 0x20)
         .collect();
+    // SPEC-4.87.2
     let colon = collapsed.find(':')?;
     let scheme = &collapsed[..colon];
     if scheme.is_empty() || scheme.contains('/') {
@@ -97,17 +102,20 @@ pub fn scheme_of(value: &str) -> Option<String> {
 /// link. Scheme-less / relative references carry no executable scheme and
 /// are returned unchanged.
 pub fn safe_href(value: &str) -> Option<String> {
+    // SPEC-4.87.3, SPEC-4.87.6
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
     }
     match scheme_of(trimmed) {
         // Explicit scheme: only the allowlisted ones may become a live link.
+        // SPEC-4.87.4
         Some(scheme) => match scheme.as_str() {
             "http" | "https" | "mailto" => Some(trimmed.to_string()),
             _ => None,
         },
         // No scheme: relative reference, safe to link as-is.
+        // SPEC-4.87.5
         None => Some(trimmed.to_string()),
     }
 }
@@ -120,6 +128,7 @@ pub fn safe_href(value: &str) -> Option<String> {
 /// browser had the function built in; there is nothing browser-specific
 /// about the rule, and having it here makes it testable on the host.
 pub fn encode_uri_component(s: &str) -> String {
+    // SPEC-4.86.3
     const UNRESERVED: &[u8] = b"-_.!~*'()";
     let mut out = String::with_capacity(s.len());
     for byte in s.as_bytes() {
@@ -143,6 +152,7 @@ pub struct QueryString {
 }
 
 impl QueryString {
+    // SPEC-4.86.6
     pub fn parse(search: &str) -> Self {
         let trimmed = search.strip_prefix('?').unwrap_or(search);
         let pairs = trimmed
@@ -157,6 +167,7 @@ impl QueryString {
     }
 
     /// First value for `key`, matching `UrlSearchParams::get`.
+    // SPEC-4.86.7
     pub fn get(&self, key: &str) -> Option<String> {
         self.pairs
             .iter()
@@ -165,6 +176,7 @@ impl QueryString {
     }
 }
 
+// SPEC-4.86.8, SPEC-4.86.9: byte-wise so a multi-byte neighbour of '%' cannot panic.
 fn decode_component(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());

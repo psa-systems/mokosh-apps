@@ -26,22 +26,26 @@ use crate::components::{IconSize, XMarkIcon};
 use crate::hooks::{use_auth, use_version_cache};
 use crate::modules::system::{get_version, SystemVersion};
 
+// SPEC-5.73.7: dismissal record key prefix in the durable preference store
 const DISMISS_KEY_PREFIX: &str = "mokosh-update-dismissed-";
 
 /// True when the durable store holds a dismissal record for this exact
 /// pair of latest versions. Failing closed (returning false) on any
 /// access error means the banner still shows; an admin who can't
 /// dismiss is better than an admin who never sees the notification.
+// SPEC-5.73.9: a missing record or store failure means not dismissed
 fn is_dismissed(key: &str) -> bool {
     crate::platform::prefs::get(key).is_some()
 }
 
+// SPEC-5.73.7: dismissal stored as "1"
 fn mark_dismissed(key: &str) {
     crate::platform::prefs::set(key, "1");
 }
 
 /// Build the dismissal key from both the server and client latest
 /// versions. Either bump re-shows the banner because the key changes.
+// SPEC-5.73.8: "-" stands in for a missing latest version
 fn dismissal_key(v: &SystemVersion) -> String {
     let s = v.server.latest.as_deref().unwrap_or("-");
     let c = v.client.latest.as_deref().unwrap_or("-");
@@ -51,12 +55,14 @@ fn dismissal_key(v: &SystemVersion) -> String {
 /// MAPPS-1040: the banner's remediation only applies to a standalone
 /// operator who controls the host; a SaaS tenant admin does not, so role
 /// alone is no longer sufficient.
+// SPEC-5.71.1: both admin and standalone are required
 fn should_check_for_update(is_admin: bool, standalone: bool) -> bool {
     is_admin && standalone
 }
 
 #[component]
 pub fn UpdateBanner() -> Element {
+    // SPEC-5.71.4: hooks run before the gate so the hook order stays stable
     // Hooks first, gating render afterwards. Dioxus requires the set
     // of hooks called per render to stay stable across that component
     // instance's lifetime; bailing on `!is_admin` before
@@ -73,11 +79,13 @@ pub fn UpdateBanner() -> Element {
     // (OIDC callback, then rehydration) with the same user; the memo only
     // notifies when the bool actually changes, so /version is fetched once.
     let auth = use_auth();
+    // SPEC-5.71.3: admin check lives in this component
     let is_admin = use_memo(move || auth.read().user.as_ref().is_some_and(|u| u.role.is_admin()));
     // MAPPS-1040: standalone-ness never changes within a session (it is
     // derived from build-time OIDC config), but folding it into the same
     // memo that keys the fetch below keeps the gate in one place and
     // reuses the identical value for the render-time early return.
+    // SPEC-5.71.5: memoized gate keys the fetch; SPEC-5.71.2 SaaS never fetches
     let should_check = use_memo(move || {
         should_check_for_update(is_admin(), crate::modules::oidc::is_standalone())
     });
@@ -92,6 +100,7 @@ pub fn UpdateBanner() -> Element {
     // navigation; the cache is updated when it resolves so subsequent
     // mounts benefit. The non-admin early-out below means we still
     // skip the network call entirely for non-admins (MAPPS-187).
+    // SPEC-5.71.6: gate false resolves to an error with no request
     //
     // MAPPS-1247: `None` means the gate refused, which is not a fetch result.
     // It used to be the sentinel `Err("not admin")`, which the effect below
@@ -110,6 +119,7 @@ pub fn UpdateBanner() -> Element {
             )
         }
     });
+    // SPEC-5.71.7: write the result through to the App-root cache
     // Each time a real fetch resolves, write through to the App-root cache
     // so the next AppLayout re-mount (any nav click) starts at a resolved
     // state instead of `Reserving`. A gated (`None`) result is not cached.
@@ -119,6 +129,7 @@ pub fn UpdateBanner() -> Element {
         }
     });
 
+    // SPEC-5.71.1: render nothing when the gate is false
     if !should_check() {
         return rsx! {};
     }
@@ -154,6 +165,7 @@ pub fn UpdateBanner() -> Element {
         Collapsed,
     }
 
+    // SPEC-5.72.4: show on any update or client-ahead unless dismissed
     let derive_state = |v: &SystemVersion| -> BannerState {
         let has_update =
             v.server.update_available() || v.client.update_available() || v.client.running_ahead();
@@ -165,6 +177,8 @@ pub fn UpdateBanner() -> Element {
         }
     };
 
+    // SPEC-5.72.1: cache, then live resource, then reserving; SPEC-5.72.3, 5.82.5
+    // SPEC-5.72.5: an Err result, cached or live, collapses the banner.
     let state = match (
         cached_version.read().as_ref(),
         version_resource.read().as_ref(),
@@ -176,6 +190,7 @@ pub fn UpdateBanner() -> Element {
         (None, None) => BannerState::Reserving,
     };
 
+    // SPEC-5.72.6: collapse and fade transition values
     // `1fr` reserves/keeps the row's natural height; `0fr` collapses it.
     let rows = match &state {
         BannerState::Collapsed => "grid-rows-[0fr]",
@@ -183,12 +198,14 @@ pub fn UpdateBanner() -> Element {
     };
     // Only the shown banner is visible; the reserved placeholder and the
     // collapsing row stay transparent (AC: invisible on first paint).
+    // SPEC-5.72.7: only the shown state is opaque
     let opacity = match &state {
         BannerState::Show(_) => "opacity-100",
         _ => "opacity-0",
     };
 
     rsx! {
+        // SPEC-5.72.8: this container stays mounted in every state so the height transition runs on it.
         div {
             class: "grid overflow-hidden transition-all duration-200 ease-in-out {rows} {opacity}",
             // Inner wrapper is the grid row whose height the transition
@@ -220,6 +237,7 @@ pub fn UpdateBanner() -> Element {
                                 div {
                                     class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center justify-between gap-4 text-sm",
                                     div { class: "flex-1",
+                                        // SPEC-5.73.1, SPEC-5.73.5: update message takes precedence over server-behind
                                         if client_update || server_update {
                                             span { class: "font-medium", "Update available." }
                                             " "
@@ -229,6 +247,7 @@ pub fn UpdateBanner() -> Element {
                                             if server_update {
                                                 span { "Server: {server_running} → {server_latest}. " }
                                             }
+                                            // SPEC-5.73.2: update-available remediation text
                                             span { class: "text-amber-700 dark:text-amber-300",
                                                 "Bump the tag(s) in your compose.yml and run "
                                                 code { class: "px-1 py-0.5 bg-amber-100 dark:bg-amber-900/50 rounded text-xs",
@@ -236,10 +255,12 @@ pub fn UpdateBanner() -> Element {
                                                 }
                                                 " on the host to apply."
                                             }
+                                        // SPEC-5.73.3: server-behind message
                                         } else if server_behind {
                                             span { class: "font-medium", "Server needs updating." }
                                             " "
                                             span { "The client bundle ({client_running}) is newer than the server ({client_latest}). " }
+                                            // SPEC-5.73.4: server-behind remediation text
                                             span { class: "text-amber-700 dark:text-amber-300",
                                                 "Upgrade the server image: bump its tag in your compose.yml and run "
                                                 code { class: "px-1 py-0.5 bg-amber-100 dark:bg-amber-900/50 rounded text-xs",
@@ -249,6 +270,7 @@ pub fn UpdateBanner() -> Element {
                                             }
                                         }
                                     }
+                                    // SPEC-5.73.6: dismiss button
                                     button {
                                         class: "shrink-0 p-1 rounded hover:bg-amber-100 dark:hover:bg-amber-900/40",
                                         title: "Dismiss until next update",
@@ -266,6 +288,7 @@ pub fn UpdateBanner() -> Element {
                             }
                         }
                     }
+                    // SPEC-5.72.2: reserving row
                     // One banner-line tall, transparent: reserves the
                     // height so the real banner fades in without shifting
                     // anything below it.
