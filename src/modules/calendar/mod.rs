@@ -18,6 +18,7 @@
 //! the client crate; the server-only `routes`/`service` halves stay in
 //! mokosh-server.
 
+// SPEC-3.17.3: calendar DTOs are re-exported from the module path.
 mod models;
 
 pub use models::*;

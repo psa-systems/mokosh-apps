@@ -24,6 +24,7 @@ use dioxus::prelude::*;
 /// read the same two fields, so this covers both.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
 pub struct WorkTypeRow {
+    // SPEC-4.39.3: id is required; name defaults to empty.
     pub id: uuid::Uuid,
     #[serde(default)]
     pub name: String,
@@ -32,6 +33,7 @@ pub struct WorkTypeRow {
 /// Provide the shared work-types list at the App root (MAPPS-1001: see
 /// [`crate::hooks::shared_list`]).
 pub fn use_work_types_provider() {
+    // SPEC-4.39.3: endpoint and list name; SPEC-4.39.5: mounted at the App root.
     crate::hooks::shared_list::use_shared_list_provider::<WorkTypeRow>("work types", "/work-types");
 }
 

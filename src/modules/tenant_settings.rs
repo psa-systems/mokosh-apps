@@ -7,6 +7,7 @@
 
 /// One row of `GET /settings/{category}`; only `key` and `value` are read.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+// SPEC-3.20.1
 pub struct SettingRow {
     pub key: String,
     #[serde(default)]
@@ -14,6 +15,7 @@ pub struct SettingRow {
 }
 
 /// The stored value of `key`, or `None` when the tenant has not set it.
+// SPEC-3.20.2, SPEC-3.20.3: a present row with a null value is Some(null), not unset.
 pub fn value_of(rows: Vec<SettingRow>, key: &str) -> Option<serde_json::Value> {
     rows.into_iter().find(|r| r.key == key).map(|r| r.value)
 }
@@ -24,6 +26,7 @@ pub async fn get(
     category: &str,
     key: &str,
 ) -> Result<Option<serde_json::Value>, crate::hooks::fetch::api::ApiError> {
+    // SPEC-3.20.4, SPEC-3.20.5: the category route avoids the per-key 404 on an unset key.
     let rows = crate::hooks::fetch::api::get_authed_typed::<Vec<SettingRow>>(&format!(
         "/settings/{category}"
     ))

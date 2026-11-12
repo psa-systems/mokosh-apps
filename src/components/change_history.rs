@@ -42,6 +42,7 @@ use crate::utils::word_diff::Piece;
 /// it, usually far more, and collapses. A multi-field edit of short columns
 /// sits between the two and collapses once it is long enough to push the
 /// entries under it off the screen, which is the thing being fixed.
+// SPEC-5.11.3
 pub const DETAIL_CHARS: usize = 120;
 
 /// One field's before and after, already formatted for display.
@@ -68,6 +69,7 @@ impl ChangeLine {
         old: &Option<serde_json::Value>,
         new: &Option<serde_json::Value>,
     ) -> Option<Self> {
+        // SPEC-5.11.1
         let old = crate::modules::audit::fmt_change_value(old);
         let new = crate::modules::audit::fmt_change_value(new);
         if old == "(reference)" && new == "(reference)" {
@@ -90,6 +92,7 @@ impl ChangeLine {
     /// expanded view (MAPPS-864); this method itself may still be called
     /// again from tests or other callers that need only one of the two.
     pub fn render(&self) -> Rendering {
+        // SPEC-5.11.2
         match crate::utils::word_diff::diff_words(&self.old, &self.new) {
             Some(pieces) => Rendering::Diff(crate::utils::word_diff::elide(pieces, CONTEXT_WORDS)),
             None => Rendering::Replacement {
@@ -118,6 +121,7 @@ impl ChangeLine {
 /// [`ChangeLine::weight`] so the collapse decision and the expanded view can
 /// share a single [`ChangeLine::render`] call per entry rather than each
 /// triggering their own `diff_words`.
+// SPEC-5.11.3
 fn weight_of(rendering: &Rendering) -> usize {
     match rendering {
         Rendering::Diff(pieces) => pieces
@@ -132,6 +136,7 @@ fn weight_of(rendering: &Rendering) -> usize {
 ///
 /// Enough to locate the edit in a sentence, few enough that a one-word change
 /// in a long description does not print the description twice.
+// SPEC-5.11.2
 const CONTEXT_WORDS: usize = 6;
 
 /// What one changed field looks like on screen.
@@ -146,6 +151,7 @@ pub enum Rendering {
 }
 
 /// Whether this entry's before/after belongs behind the toggle.
+// SPEC-5.11.3: strictly greater than the threshold.
 pub fn is_large(changes: &[ChangeLine]) -> bool {
     changes.iter().map(ChangeLine::weight).sum::<usize>() > DETAIL_CHARS
 }
@@ -162,6 +168,7 @@ pub struct ChangeDetailsProps {
 pub fn ChangeDetails(props: ChangeDetailsProps) -> Element {
     // Per-instance id so the toggle's `aria-controls` names this entry's body
     // and not the one above it. Atomic counter; wasm is single-threaded.
+    // SPEC-5.11.7
     let body_id = use_hook(|| {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -169,6 +176,7 @@ pub fn ChangeDetails(props: ChangeDetailsProps) -> Element {
     });
     let mut open = use_signal(|| false);
 
+    // SPEC-5.11.4
     if props.changes.is_empty() {
         return rsx! {};
     }
@@ -176,11 +184,13 @@ pub fn ChangeDetails(props: ChangeDetailsProps) -> Element {
     // Computed once per entry render and reused for both the collapse
     // decision and the expanded view below, rather than each calling
     // `ChangeLine::render` (and so `diff_words`) on its own.
+    // SPEC-5.11.8
     let renderings: Vec<Rendering> = props.changes.iter().map(ChangeLine::render).collect();
     let collapsed = renderings.iter().map(weight_of).sum::<usize>() > DETAIL_CHARS;
     let show = !collapsed || open();
 
     rsx! {
+        // SPEC-5.11.5
         if collapsed {
             button {
                 r#type: "button",
@@ -199,17 +209,20 @@ pub fn ChangeDetails(props: ChangeDetailsProps) -> Element {
                 "Details"
             }
         }
+        // SPEC-5.11.6
         if show {
             div { id: "{body_id}",
                 for (c , rendering) in props.changes.iter().zip(renderings.into_iter()) {
                     p { class: "text-xs text-muted mt-1 whitespace-pre-wrap",
                         span { class: "font-medium", "{c.field}: " }
                         match rendering {
+                            // SPEC-5.11.10
                             Rendering::Replacement { old, new } => rsx! {
                                 span { class: "line-through text-subtle", "{old}" }
                                 " → "
                                 span { "{new}" }
                             },
+                            // SPEC-5.11.9
                             Rendering::Diff(pieces) => rsx! {
                                 for piece in pieces.iter() {
                                     match piece {
@@ -273,6 +286,7 @@ pub struct ChangeHistoryEntryProps {
 
 #[component]
 pub fn ChangeHistoryEntry(props: ChangeHistoryEntryProps) -> Element {
+    // SPEC-5.11.11
     rsx! {
         div { class: "flex justify-between gap-2",
             div { class: "min-w-0",

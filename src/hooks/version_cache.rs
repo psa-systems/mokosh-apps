@@ -40,11 +40,13 @@ use crate::modules::system::SystemVersion;
 /// means the most recent fetch errored - the banner collapses on both
 /// `Err` and `Ok(no-update)` so the wire-shape difference does not
 /// matter to the consumer.
+// SPEC-4.48.2: None means unseen, Some(Ok) the live pair, Some(Err) a failed fetch.
 pub type CachedVersion = Option<Result<SystemVersion, String>>;
 
 /// Provide the cache signal at the App root. Mirrors
 /// [`crate::hooks::use_sidebar_provider`] and the auth provider.
 pub fn use_version_cache_provider() -> Signal<CachedVersion> {
+    // SPEC-4.48.1: App-root cache, initially None, outliving banner re-mounts.
     let s = use_signal::<CachedVersion>(|| None);
     use_context_provider(|| s);
     s

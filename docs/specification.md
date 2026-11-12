@@ -155,10 +155,12 @@ format owned by this scope is the operator-facing configuration catalog:
   address and port, dev-only API proxy target, and desktop bundle metadata
   (identifier and icon set) used by every build and packaging step in this
   scope.
-- **SPEC-1.3.4**: `package.json`'s scripts must be the only place the
-  Tailwind CSS build (minified for production, watched for local
-  development) is invoked from, so every build path (CI, container image,
-  `just` recipes) runs the same command.
+- **SPEC-1.3.4**: Every Tailwind CSS build invocation (the `package.json`
+  scripts `build:css`, `watch:css`, `dev` and `build`, the `justfile`
+  `css-build` and `css-watch` recipes, and the container builder stage) must
+  read `input.css` and write `assets/styles.css`; the production container
+  build and `package.json`'s `build:css` additionally minify, and the
+  `justfile` recipes do not.
 - **SPEC-1.3.5**: `input.css` must be the single Tailwind entry point: it
   declares the plugins in use, the brand and semantic design tokens
   (resolved through CSS custom properties so a runtime theme change recolors
@@ -192,9 +194,13 @@ format owned by this scope is the operator-facing configuration catalog:
 - **SPEC-1.3.11**: `oci-build/compose.example.yml` must document every
   operator-facing variable inline, including its fallback behavior, as the
   self-hosting reference compose file.
-- **SPEC-1.3.12**: `renovate.json` must declare which dependency managers are
-  enabled and how their updates are grouped, and must pin `getrandom` below
-  `0.5` until the ecosystem's rand-core transition lands.
+- **SPEC-1.3.12**: `renovate.json` must extend the organization's shared
+  default preset, enable exactly the `cargo`, `npm`, `docker-compose`,
+  `dockerfile` and `github-actions` managers, enable OSV vulnerability
+  alerts, group the Rust toolchain (`rust`, `rustc`) into its own
+  `rust toolchain` update group and the `mokosh-*` crates into their own
+  `mokosh crates` group, and must restrict `getrandom` to versions below
+  `0.5` until `rand_core` 0.10 leaves the dependency tree.
 - **SPEC-1.3.14**: `src/branding.rs` must be the only reader of the
   `brand_name`, `brand_logo_url` and `brand_hero_url` runtime configuration
   fields, trimming a configured value and falling back to the built-in
@@ -247,9 +253,12 @@ format owned by this scope is the operator-facing configuration catalog:
   against a pull request must pass untrusted PR-derived strings (PR number,
   title, branch name) through environment variables, never interpolated
   directly into a shell script.
-- **SPEC-1.4.13**: Every push and pull request must be scanned for
-  accidentally committed secrets before any other check is considered
-  passing.
+- **SPEC-1.4.13**: Every push and pull request run of the check workflow must
+  include a `secrets` job that scans the full git history for committed
+  secrets, independent of the diff classification (see SPEC-1.10.3); a
+  finding must fail that job unless it is listed in the job's
+  by-finding-id exclusion input or matches a pattern in
+  `.noseyparker-ignore.txt` (see SPEC-1.11.4).
 
 ### 1.5 Error handling and observability
 
@@ -356,20 +365,25 @@ format owned by this scope is the operator-facing configuration catalog:
   run the dev server with the `web` feature on container start.
 - **SPEC-1.8.6**: The container image checks and builds must run from the
   repository root using the build tool's multi-platform builder.
-- **SPEC-1.8.7**: The CI check job must run, at minimum, a formatting check,
+- **SPEC-1.8.7**: The check workflow must run, at minimum, a formatting check,
   a lint check with warnings treated as errors on both the host and the
   WASM target, a desktop-feature compilation check, the library test suite,
-  and the dependency audit, in addition to the repository's own guard
-  scripts.
-- **SPEC-1.8.8**: The CI check job must produce a placeholder stylesheet
-  before any guard or compile step runs, because the generated stylesheet is
-  excluded from version control and this job does not render it for real.
+  and the dependency audit (all in its `cargo` job, gated per SPEC-1.10.4),
+  in addition to the repository's own guard scripts (in its `guards` job).
+- **SPEC-1.8.8**: The `cargo` job of the check workflow must produce a
+  placeholder stylesheet (`assets/styles.css`) before any compile step runs,
+  because the generated stylesheet is excluded from version control and this
+  job does not render it for real; the `guards` job creates no placeholder,
+  so every guard it runs must treat an absent stylesheet as not a failure
+  (see SPEC-2.5.23).
 - **SPEC-1.8.9**: The container image publish workflow must resolve exactly
   one of its publish modes (a tagged release, a rolling "latest" update, a
   branch build, or a dry run) from the triggering event, and must tag the
   published image only within that mode's naming convention.
 - **SPEC-1.8.10**: A non-dry-run manual run of the publish workflow must fail
-  immediately if it targets neither the default branch nor a release tag.
+  in its publish-mode resolution step, before any build step, if it targets
+  neither the default branch nor a release tag, with an error message naming
+  the ref.
 - **SPEC-1.8.11**: The scheduled dependency-pin drift check must run the
   strict variant of the shared-crate pin check, and its failure must not
   block any pull request.
@@ -402,10 +416,92 @@ format owned by this scope is the operator-facing configuration catalog:
   OS files must never be committed, so a fresh clone carries no stale
   generated state (see SPEC-1.8.14).
 
+### 1.10 CI job structure and cancellation
+
+- **SPEC-1.10.1**: The check workflow must trigger on a push to the default
+  branch and on a pull request targeting it, and must skip a run only when
+  every changed path is one of `LICENSE`, `.gitignore`, `.editorconfig`,
+  `renovate.json` or `CHANGELOG.md`; a change to any other path, including
+  documentation files, must run the full workflow.
+- **SPEC-1.10.2**: A newer run of the check workflow for the same workflow
+  and ref must cancel an older in-progress run.
+- **SPEC-1.10.3**: The check workflow must consist of four jobs: `classify`,
+  `cargo` (which needs `classify`), `guards`, and `secrets`; the `guards` and
+  `secrets` jobs must run on every triggering event regardless of the
+  `classify` result.
+- **SPEC-1.10.4**: In the `cargo` job, the formatting check must run unless
+  the `classify` result is `non-code`, and the host lint, WASM lint, desktop
+  compile check, and library test steps must run only when the result is
+  `code`; the dependency audit and cache steps are not gated on it.
+- **SPEC-1.10.5**: The `cargo` job must install `cargo-audit` from a pinned
+  release archive and verify its SHA-256 digest before extracting it, and a
+  digest mismatch or a failed download must fail the job rather than fall
+  back to compiling the tool.
+- **SPEC-1.10.6**: The `cargo` job's Rust build cache must use the shared key
+  `check`, so a push to the default branch primes the cache that later pull
+  request runs read.
+- **SPEC-1.10.7**: The `guards` job must fetch release tags with a shallow,
+  submodule-free `git fetch --tags` before any guard runs, because
+  `config-docs.nu` reads the `v*` tag list and the shallow checkout carries
+  no tags, and the job must be bounded by a 15-minute timeout.
+- **SPEC-1.10.8**: The `cargo` job must request the heavy runner label and the
+  `classify`, `guards` and `secrets` jobs the medium one (see SPEC-2.5.4).
+- **SPEC-1.10.9**: The container image publish workflow must cancel an
+  in-progress run in favor of a newer run for the same ref only when that ref
+  is not a release tag; a run for a release tag must never be cancelled by
+  concurrency.
+- **SPEC-1.10.10**: The container image publish workflow's push trigger must
+  carry a path filter listing exactly `src/**`, `assets/**`, `input.css`,
+  `index.html`, `Dioxus.toml`, `build.rs`, `Cargo.toml`, `Cargo.lock`,
+  `package.json`, `bun.lock`, `oci-build/**`,
+  `scripts/check-link-preview.sh`, `scripts/check-oci-runtime.sh`, and the
+  workflow file itself, so a change to a script the workflow runs rebuilds
+  and re-exercises it.
+- **SPEC-1.10.11**: The publish workflow's manual trigger must default
+  `dry_run` to true, so a manual run mutates the registry only when `dry_run`
+  is explicitly false.
+- **SPEC-1.10.12**: After the image build step, the publish workflow must run
+  the link-preview guard and the serving-uid guard, each with `--self-test`
+  first, and a failure of either must fail the job.
+- **SPEC-1.10.13**: The publish workflow's registry mirror step must be
+  skipped when the public package owner variable is empty or the resolved
+  train is `branch`, and must only print what it would do in a dry run; when
+  the variable is empty on a real non-branch publish, a separate step must
+  emit a `::warning` annotation titled `Public mirror skipped` rather than
+  let the job pass without any signal.
+
+### 1.11 Packaging, submodule and secret-scan manifests
+
+- **SPEC-1.11.1**: `package.json` must be marked `private` and its `version`
+  must equal the crate version in `Cargo.toml`; the release recipe bumps both
+  through `release_version_files` in `justfile`.
+- **SPEC-1.11.2**: `package.json` must declare as development dependencies
+  only the Tailwind CLI, the Tailwind forms and typography plugins, the
+  `tailwindcss` package itself, and `concurrently`; the container builder
+  stage installs them with `bun install --frozen-lockfile` against `bun.lock`.
+- **SPEC-1.11.3**: `package.json`'s `dev` script must run the Tailwind watcher
+  and `dx serve` concurrently, and its `build` script must run `build:css` and
+  only then `dx build --release`.
+- **SPEC-1.11.4**: `.noseyparker-ignore.txt` must hold gitignore-style path
+  patterns matched against blob paths in history and the working tree, which
+  the shared secrets scan reads by that default file name; a path may be
+  added only after every finding in it was reviewed as not a real credential,
+  and each entry must carry a comment saying why. Its one entry is the
+  retired path `src/pages/portal_reset_password.rs`.
+- **SPEC-1.11.5**: `.gitmodules` must declare exactly one submodule, named
+  `common` and placed at path `common`, which provides the
+  `common/common.just` file that `justfile` imports; a clone without it
+  initialized must fail the `justfile` import rather than run with the shared
+  recipes missing.
+- **SPEC-1.11.6**: `renovate.json` must set a distinct bot author identity for
+  its commits, and every `packageRules` entry must carry a `description`
+  stating why the package is grouped or restricted.
+
 ## 2. Repository check scripts
 
-Scope: every file under `scripts/`: the 35 `check-*.sh` lint/invariant scripts
-and `config-docs.nu`, the configuration-documentation generator. Each
+Scope: every file under `scripts/`: the 37 `check-*.sh` lint/invariant scripts,
+`config-docs.nu`, the configuration-documentation generator, and
+`classify-diff.nu`, the diff classifier. Each
 `check-*.sh` script is a standalone, repeatable guard against one named
 regression (most carry an issue id in their header comment); each is invoked
 from `justfile` and, for the ones `just check` depends on, from
@@ -903,6 +999,2585 @@ those files' own behavior belongs to the sections that own them.
   SPEC-2.8.3); no retained artifact of a `check-types-pin.sh` run may
   persist outside the restored `Cargo.lock` itself.
 
+### 2.10 Settings-surface admin-gate guard
+
+- **SPEC-2.10.1**: `check-admin-gate.sh` must accept either `--self-test` or
+  one optional repository-root path as its first argument (default `.`), and
+  must read `src/pages/settings.rs` and `src/lib.rs` under that root.
+- **SPEC-2.10.2**: `check-admin-gate.sh` must select every `SettingsSurface {
+  .. }` block in `src/pages/settings.rs` whose text contains
+  `SurfaceVisibility::StaffAdmin` and a `route: Route::<Name>` field, and
+  evaluate no other surface; a surface with any other visibility must never
+  be reported.
+- **SPEC-2.10.3**: For each selected route `<Name>`, `check-admin-gate.sh`
+  must resolve the page component as the first `module::Component {` call in
+  the body of `fn <Name>(` in `src/lib.rs` (the file `src/pages/<module>.rs`
+  or `src/pages/<module>/mod.rs`), or `<Name>` itself in `src/lib.rs` when
+  that body names no such call.
+- **SPEC-2.10.4**: `check-admin-gate.sh` must accept a page only when the
+  page component's body, or the body of one component it delegates to in the
+  same file (any capitalized `Name {` call in the body), contains one of
+  `use_is_admin`, `is_admin()`, `NoFinancePermission` or `PermissionRequired`;
+  it must not judge whether that gate is the correct one.
+- **SPEC-2.10.5**: On a violation `check-admin-gate.sh` must print one line
+  per route, `<Name>: no router component in src/lib.rs`, `<Name>: <module>
+  is not a file under src/pages`, `<Name>: <component> is not defined in
+  <file>`, or `<Name>: <file>::<component> renders its body to a non-admin`,
+  then a block explaining that the early return belongs above the body and
+  below every hook, and exit 1 after the line `admin-gate guard: FAIL`; with
+  no violation it must print `admin-gate guard: OK` and exit 0.
+- **SPEC-2.10.6**: `check-admin-gate.sh --self-test` must build a fixture tree
+  proving that an ungated `StaffAdmin` page reached through a delegating body
+  is reported, that an `Always` surface is not reported, and that the same
+  page gated by `use_is_admin` is accepted, and must also fail if the real
+  repository does not pass; it must print `admin-gate guard: self-test OK`
+  and exit 0 only if every case held, otherwise print a `SELF-TEST FAIL`
+  line per failed case and exit 1.
+
+### 2.11 Confirmed-toggle guard
+
+- **SPEC-2.11.1**: `check-confirmed-toggle.sh` must accept either
+  `--self-test` or one optional root path as its first argument (default
+  `src`), and must scan every `*.rs` file under it.
+- **SPEC-2.11.2**: `check-confirmed-toggle.sh` must treat a line containing
+  `Checkbox {` (not preceded by an identifier character) as the start of a
+  block that ends at the first later line starting with `}` at the opener's
+  own indentation, and must report `<file>:<line>` of the opener when the
+  block both asks for confirmation and renders no intent.
+- **SPEC-2.11.3**: A checkbox block asks for confirmation, for
+  `check-confirmed-toggle.sh`, when a non-comment line in it matches
+  `confirm<identifier>.set(true)` (text after `//` is ignored), and renders
+  intent when a `checked:` line in it contains `wanted()`; a checkbox that
+  never opens a confirmation must never be reported.
+- **SPEC-2.11.4**: On a violation `check-confirmed-toggle.sh` must print
+  `confirmed-toggle guard: FAIL`, the `<file>:<line>` list, and guidance to
+  render `checked: wanted().unwrap_or(<server value>)` and drop the intent on
+  cancel and on a failed save, and exit 1; with no violation it must print
+  `confirmed-toggle guard: OK` and exit 0.
+- **SPEC-2.11.5**: `check-confirmed-toggle.sh --self-test` must prove it
+  reports a confirming checkbox bound to the server value, accepts the same
+  block rendering `wanted()`, accepts a write-through checkbox whose only
+  confirmation mention is in a comment, and must also fail if `src` does not
+  pass; it must print `confirmed-toggle guard: self-test OK` and exit 0 only
+  if every case held, otherwise print a `SELF-TEST FAIL` line per failed case
+  and exit 1.
+
+### 2.12 Diff classifier (classify-diff.nu)
+
+- **SPEC-2.12.1**: `classify-diff.nu <base-ref> <head-ref>` must print exactly
+  one of `code`, `comments-only` or `non-code` on stdout and exit 0; with
+  either ref missing it must print a usage line to stderr and exit 2, and
+  with `--self-test` it must run its own tests instead of classifying.
+- **SPEC-2.12.2**: `classify-diff.nu` must treat a changed path as a code file
+  when it ends in one of the C-family suffixes (`.rs .ts .tsx .js .jsx .mjs
+  .cjs .css .scss .sql .c .cpp .cc .h .hpp .java .go .kt`) or one of the
+  hash-family suffixes (`.nu .py .sh .bash .zsh .yml .yaml .toml .just
+  .justfile Dockerfile`), or when its base name is `Dockerfile` or starts with
+  `Dockerfile.`; every other path must be ignored.
+- **SPEC-2.12.3**: `classify-diff.nu` must judge each `+`/`-` content line of
+  a code file, skipping `+++`, `---` and `@@` lines, as a comment when it is
+  blank, starts with `#` in a hash-family file, or starts with `//`, `/*`,
+  `*/`, `*` or `--` in a C-family file, after trimming whitespace.
+- **SPEC-2.12.4**: `classify-diff.nu` must return `code` as soon as any
+  changed line of any code file is not a comment, `comments-only` when at
+  least one code file changed and every changed line was a comment, a blank,
+  or the file changed with no content lines, and `non-code` when no code file
+  changed.
+- **SPEC-2.12.5**: When `git diff --name-only` between the two refs fails
+  (invalid ref, no merge base), `classify-diff.nu` must write git's stderr to
+  its own stderr and answer `code` with exit 0, so a classifier failure never
+  causes a gate to be skipped.
+- **SPEC-2.12.6**: `classify-diff.nu --self-test` must create a throwaway git
+  repository and assert six cases (C-family comment-only change, code change,
+  docs-only change, hash-family comment-only change, whitespace-only change,
+  mixed comment and code change), print `ok: <case> -> <verdict>` per case,
+  print `classify-diff.nu self-test passed` at the end, and exit nonzero with
+  the expected and actual verdicts in the message on the first mismatch.
+
+## 3. Modules and platform layer
+
+### 3.1 Audit log entry DTO
+- **SPEC-3.1.1**: The audit row type (`AuditLogEntry`, decoded from each element of the audit log read endpoint `GET /api/v1/audit-log`) must require `id`, `tenant_id` and `timestamp`; a row missing any of the three must fail decoding instead of receiving a default value.
+- **SPEC-3.1.2**: The audit row type must decode an absent `user_id`, `user_name`, `entity_id`, `entity_name`, `old_values`, `new_values`, `ip_address` or `user_agent` key to `None`, and an absent `action` or `entity_type` key to the empty string, so one sparse row does not fail the whole response.
+- **SPEC-3.1.3**: The audit row type must ignore keys it does not declare, so the server can add columns without breaking decoding.
+- **SPEC-3.1.4**: The audit row type must decode `id`, `tenant_id`, `user_id` and `entity_id` as UUIDs and `timestamp` as a UTC instant; a malformed UUID or timestamp must fail decoding of the response.
+- **SPEC-3.1.5**: The audit row type must carry `user_name` and `entity_name` exactly as the server resolved them (`None` when the server sent none, such as a system-issued row or a deleted entity), so the audit page can tell "no name" apart from an empty or substituted name and choose its own fallback.
+
+### 3.2 Entity change-history formatting
+- **SPEC-3.2.1**: `action_label` must map the action codes `create` and `created` to "Created", `update` and `updated` to "Updated", and `delete` and `deleted` to "Deleted".
+- **SPEC-3.2.2**: `action_label` must render any other action code by replacing every `_` with a space and upper-casing the first ASCII letter (for example `credential_revealed` becomes "Credential revealed", `status_changed` becomes "Status changed"); it must not collapse an unknown code to a generic label such as "Changed".
+- **SPEC-3.2.3**: `title_field` must strip one trailing `_id` from a field name before sentence-casing it, so a foreign-key column such as `project_manager_id` reads "Project manager", without a per-column allow-list.
+- **SPEC-3.2.4**: Sentence-casing must replace `_` with a space and upper-case only the first character when it is ASCII; a name that is empty or begins with a non-ASCII character must be returned with its underscores replaced and its first character unchanged, without panicking.
+- **SPEC-3.2.5**: `fields_label` must title each changed field with `title_field` and join them with a comma and one space, in the order given.
+- **SPEC-3.2.6**: `headline` must return the action label alone when the changed-field list is empty, and otherwise "<action label>: <fields label>" (for example "Updated: Description").
+- **SPEC-3.2.7**: `looks_like_uuid` must be true only for a string of exactly 36 bytes whose bytes at index 8, 13, 18 and 23 are `-` and whose other bytes are ASCII hexadecimal digits of either case.
+- **SPEC-3.2.8**: `fmt_change_value` must render an absent value, a JSON null, and a string that is empty after trimming as the text "(empty)".
+- **SPEC-3.2.9**: `fmt_change_value` must render a string that parses, after trimming, as a `YYYY-MM-DD` date in the form "Mon D, YYYY" (abbreviated month, day without leading zero, for example "Mar 1, 2026"), and this check must run before the UUID check.
+- **SPEC-3.2.10**: `fmt_change_value` must render a string that passes `looks_like_uuid` as the text "(reference)" and must render any other string as its trimmed text.
+- **SPEC-3.2.11**: `fmt_change_value` must render a boolean as `true` or `false`, a number as its JSON text, and an array or an object as the text "(updated)".
+- **SPEC-3.2.12**: `fmt_change_value` must not truncate its output, so a before/after pair reaches the word diff whole; a long unchanged prefix must never be reported as a change caused by truncation.
+- **SPEC-3.2.13**: `shorten` must return a string of at most `VALUE_CHARS` (160) characters unchanged, and must cut a longer string to its first 160 characters followed by one ellipsis character (U+2026), counting Unicode scalar values and never splitting a character.
+- **SPEC-3.2.14**: `action_label`, `title_field`, `fields_label`, `fmt_change_value`, `looks_like_uuid` and the history date formatter must be defined only in the shared audit formatting module, and the project, asset and ticket pages must not define a function with any of those names, so all four change-history panes render an audit row identically.
+
+### 3.3 Advisory IP enrichment display
+- **SPEC-3.3.1**: The enrichment type (`IpEnrichment`, decoded from `GET /api/v1/ip-enrichment?ip=`) must decode every absent field to its default (empty string for `ip`, `category` and `vpn`; `false` for `is_anonymizing` and `advisory`; `None` for `asn`, `organization`, `isp`, `proxy_type`, `provider` and `threat`) instead of failing the lookup.
+- **SPEC-3.3.2**: A JSON `null` response body must decode as `Option<IpEnrichment>` of `None` and must be presented as "nothing to report for this address", not as a failed lookup.
+- **SPEC-3.3.3**: `humanize_label` must trim the label, replace every `-` and `_` with a space, and upper-case the first character, leaving the rest unchanged (`data-center` becomes "Data center"); an empty label must yield the empty string, and a label value this build has never seen must still render as words instead of "Unknown".
+- **SPEC-3.3.4**: `enrichment_rows` must emit rows in this order, skipping any that do not apply: "ASN", "Organization", "ISP", "Network", "VPN likelihood", "Proxy type", "Provider", "Threat".
+- **SPEC-3.3.5**: The "ASN" row value must be the trimmed ASN prefixed with `AS` (for example "AS15169"), and the row must be omitted when the ASN is absent or blank.
+- **SPEC-3.3.6**: The "Organization" row must show the trimmed organization, and the "ISP" row must show the trimmed ISP only when it is non-blank and differs (exact string comparison after trimming) from the organization, so an identical name is not shown twice.
+- **SPEC-3.3.7**: The "Network" and "VPN likelihood" rows must show the humanized `category` and `vpn` labels, each omitted when blank after trimming.
+- **SPEC-3.3.8**: The "Proxy type" and "Threat" rows must show the humanized trimmed value and the "Provider" row the trimmed value as sent, each omitted when absent or blank.
+- **SPEC-3.3.9**: `enrichment_rows` must omit a field the server did not send or sent blank, and must never render an empty value, an empty row or a placeholder such as "-" for it.
+- **SPEC-3.3.10**: `enrichment_rows` must not read `is_anonymizing`, `advisory` or `ip`: flipping `is_anonymizing` must not change the rows, and no row, wording or severity may state a verdict such as suspicious, blocked, malicious, denied or risk, because a VPN signal is context for a human reviewer and never an automatic classification.
+
+### 3.4 Authentication DTOs and role predicates
+- **SPEC-3.4.1**: The authentication wire types (`AuthState`, `CurrentUser`, `User`, `UserResponse`, `UserRole`, `UserStatus`, `LoginRequest`, `RefreshTokenRequest`) must be the shared types crate's definitions re-exported from the auth module, and the module must not redeclare any of them; a redeclaration must fail the build.
+- **SPEC-3.4.2**: `UserRole::is_admin` must be true only for `SuperAdmin` and `Admin`; `can_manage_users` only for `SuperAdmin`, `Admin` and `Manager`; `can_view_financials` only for `SuperAdmin`, `Admin`, `Manager` and `Finance`; `can_manage_billing` only for `SuperAdmin`, `Admin` and `Finance`.
+- **SPEC-3.4.3**: `UserRole::as_str`, `Display` and `from_str` must use the snake_case wire names (for example `super_admin`, `admin`, `technician`, `manager`), and `from_str` must return `None` for an unknown name; `UserStatus::from_str` must accept `active`, `inactive` and `pending` and return `None` otherwise.
+- **SPEC-3.4.4**: A default `AuthState` must be unauthenticated with no user, no tenant and `deleted` false; `AuthState::authenticated(user, tenant_id)` must be authenticated with both set; `AuthState::deleted()` must be unauthenticated with `deleted` true, so a tombstoned account (HTTP 410) is distinguishable from an expired session (HTTP 401).
+- **SPEC-3.4.5**: `AuthState::require_user` and `require_tenant` must return the `AuthRequired` marker, not the application error type, when no user or tenant is present, and callers must map it to their own error at the call site.
+- **SPEC-3.4.6**: `AuthState::has_role(role)` must be true only when a user is present with exactly that role, and `AuthState::is_admin` only when the user's role satisfies `UserRole::is_admin`.
+- **SPEC-3.4.7**: `CurrentUser::full_name` must be the first name, one space and the last name, and `initials` must be the upper-cased first characters of the first and last names (for example "JD").
+
+### 3.5 Sign-out sequences
+- **SPEC-3.5.1**: Sign-out must navigate to the URL from `logout_redirect_url`: when an OIDC issuer is configured, `<issuer without trailing slash>/v1/auth/logout?url=<percent-encoded target>`; when no issuer is configured, the target itself, never an origin-relative `/v1/auth/logout` URL.
+- **SPEC-3.5.2**: The sign-out target must be this application's origin followed by `/` (trailing slashes on the origin collapsed to one), or the hub root URL when no origin is available.
+- **SPEC-3.5.3**: `sign_out` must perform, in this order and awaiting each: revoke the application session, revoke the identity provider refresh token, clear the stored authentication bundle (including any standalone session), drop the in-memory access token, and only then navigate to the logout URL.
+- **SPEC-3.5.4**: The application-session revoke must do nothing when no agent access token is held; otherwise it must send an authenticated `POST /auth/logout`, and on failure must log at error level "sign-out: revoking the mokosh session failed, signing out anyway: <cause>" and continue signing out.
+- **SPEC-3.5.5**: The provider refresh-token revoke must do nothing when the stored bundle holds no refresh token; otherwise it must revoke the token at the provider, and on failure must log at error level "sign-out: revoking the refresh token at the OP failed, signing out anyway: <cause>" and continue signing out.
+- **SPEC-3.5.6**: A failed revoke must never block the redirect: leaving the user signed in because revocation failed is not permitted.
+- **SPEC-3.5.7**: On the desktop build (application feature enabled, not WebAssembly) `sign_out`, `sign_out_everywhere` and `sign_out_portal` must raise the session-ended flag after clearing tokens, so the window clears its authentication context instead of continuing to render the signed-in application.
+- **SPEC-3.5.8**: `sign_out_everywhere` must send an authenticated `POST /auth/logout-all` when an agent access token is held (logging at error level "sign-out-everywhere: revoking every mokosh session failed, signing out anyway: <cause>" on failure), must still revoke the provider refresh token, and must then clear state and navigate exactly as `sign_out` does.
+- **SPEC-3.5.9**: `portal_login_url` must be this application's origin followed by `/portal/login`, or the origin-relative `/portal/login` when no origin is available, and must never be the identity provider logout URL, because a portal contact has no provider account.
+- **SPEC-3.5.10**: The portal session revoke must do nothing when no portal token is held; otherwise it must send an authenticated `POST /portal/auth/logout` with the portal token and, on failure, log at error level "sign-out: revoking the portal session failed, signing out anyway: <cause>" and continue.
+- **SPEC-3.5.11**: `sign_out_portal` must revoke the portal session, then clear the portal token holder, then navigate to `portal_login_url`, and must never call `logout_redirect_url`.
+- **SPEC-3.5.12**: The caller, not the presence of a portal token, must choose between `sign_out` and `sign_out_portal`, because one tab can hold both an agent token and a portal token.
+- **SPEC-3.5.13**: Every component that ends an agent session must call `modules::auth::sign_out::sign_out` and must not build the provider logout URL itself, so no sign-out path skips the application-session revoke.
+
+### 3.6 OIDC configuration
+- **SPEC-3.6.1**: The compile-time configuration (`OidcConfig::from_env`) must read `MOKOSH_OIDC_ISSUER` (default empty string), `MOKOSH_OIDC_CLIENT_ID` (default none, with no placeholder value), `MOKOSH_OIDC_REDIRECT_URI` (default none), `MOKOSH_OIDC_SCOPES` (default `openid email offline_access`), `MOKOSH_HUB_BASE_URL` (default `http://localhost:4400`) and `MOKOSH_DOCS_BASE_URL` (default empty string).
+- **SPEC-3.6.2**: `OidcConfig::for_current_origin` must resolve the configuration once per session and return the memoized result on every later call.
+- **SPEC-3.6.3**: Each field must resolve in this priority: a non-empty runtime configuration value (`oidc_issuer`, `oidc_client_id`, `oidc_redirect_uri`, `hub_base_url`, `docs_base_url`, `oidc_scopes`), then host derivation, then the compile-time value; host derivation applies only to the issuer, hub and docs fields.
+- **SPEC-3.6.4**: When the host name begins with `msp.`, host derivation with the remainder `<rest>` must set the issuer to `https://api.<rest>`, the hub base URL to `https://<rest>` and the documentation base URL to `https://docs.<rest>`; a host without that prefix, and the desktop build (which has no host), must derive nothing.
+- **SPEC-3.6.5**: When no documentation base URL resolves, the resolver must log one warning (once per session) stating that the Documentation menu entry and footer link render nothing and naming the configuration key that sets it.
+- **SPEC-3.6.6**: `has_issuer` must be true only when the issuer is non-empty after trimming, and `has_client_id` only when a client id is set and non-empty after trimming; `has_docs` must be true only when the documentation base URL is non-empty after trimming.
+- **SPEC-3.6.7**: `require_client_id` must return the client id, or the error text "no OIDC client id is configured" when it is unset or blank.
+- **SPEC-3.6.8**: `hub_url(path)` and `docs_url(path)` must return the base URL with trailing slashes removed followed directly by `path`, adding no separator of their own.
+- **SPEC-3.6.9**: `resolve_redirect_uri` must return a configured redirect URI verbatim; otherwise in the browser `<origin>/auth/callback`, or the error "this build has no origin to derive a redirect URI from" when no origin exists; on the desktop `http://127.0.0.1:<port>/auth/callback` for the bound loopback listener, or the error "no loopback listener is bound; the sign-in flow has not started" when none is bound.
+- **SPEC-3.6.10**: `is_standalone` must be true when no issuer is configured or no client id is configured, so the application shows the local username and password sign-in instead of redirecting to a provider that would reject the request.
+- **SPEC-3.6.11**: `log_auth_error` must write the message to the platform error log, because no tracing subscriber is wired in the browser build and the console is the only place an operator can read an authentication failure the user is not shown.
+
+### 3.7 Runtime configuration and feature flags
+- **SPEC-3.7.1**: `runtime_config::get(field)` must return the field's value or `None` when it is absent or empty; in the browser it reads `window.__MOKOSH_CONFIG__.<field>`, and on the desktop it reads the environment variable `MOKOSH_<FIELD upper-cased>` first and the per-user `config.json` second.
+- **SPEC-3.7.2**: `runtime_config::flag_enabled(field)` must be true only when the value is present and equals `true` (case-insensitive) or `1`, and false in every other case including absence.
+- **SPEC-3.7.3**: `kb_attachment_max_bytes` must return the `kb_attachment_max_bytes` value parsed as a byte count, or `None` when it is absent, empty or not a non-negative integer, so the caller applies its compile-time default.
+- **SPEC-3.7.4**: `portal_host` must return the non-empty runtime value `portal_host`, else the non-empty compile-time `MOKOSH_PORTAL_HOST`, else `None`; the value is a bare host with no scheme.
+- **SPEC-3.7.5**: `portal_url_for_portal_id(id)` must return `<scheme>://<host>/portal/<id>/login`, and `portal_root_url` must return `<scheme>://<host>`, where the scheme is `http` when the host contains `localhost` and `https` otherwise; both must return `None` when no portal host is configured.
+- **SPEC-3.7.6**: `organizations_enabled` must read the `organizations_enabled` configuration key and be true only when its value, trimmed and ASCII-lower-cased, is exactly `1`, `true` or `yes`; an absent key, an empty value and any other text (including near misses such as `flase`) must yield false.
+- **SPEC-3.7.7**: The organizations surface (the tenant switcher and the create-team action) must be hidden, not disabled, whenever `organizations_enabled()` is false, must be rendered from exactly one site each, and each site must sit directly inside an `organizations_enabled()` check.
+- **SPEC-3.7.8**: The container entrypoint must not write the retired `team_enabled` configuration key, and the self-hosting document must not document `MOKOSH_TEAM_ENABLED`, because nothing reads them.
+
+### 3.8 OIDC login start
+- **SPEC-3.8.1**: The login flow must be the authorization code flow with PKCE using the S256 method and no client secret.
+- **SPEC-3.8.2**: `generate_code_verifier` must return 32 cryptographically random bytes encoded base64url without padding (43 characters), and `s256_challenge` must return the base64url, unpadded encoding of the SHA-256 digest of the verifier's ASCII bytes.
+- **SPEC-3.8.3**: `random_opaque` must return a fresh 32-byte random value encoded base64url without padding, and `state` and `nonce` must each come from a separate call.
+- **SPEC-3.8.4**: `authorize_url` must resolve the redirect URI, then the client id (each failure returned as `FlowError::Config` with the cause text), then persist the pending flow (a failure returned as `FlowError::Storage`), and must return no URL when any step fails.
+- **SPEC-3.8.5**: The authorize URL must be `<issuer without trailing slash>/oauth2/authorize?` followed by these parameters in this order, each value percent-encoded with spaces as `+`: `response_type=code`, `client_id`, `redirect_uri`, `scope` (the configured scopes), `state`, `nonce`, `code_challenge`, `code_challenge_method=S256`.
+- **SPEC-3.8.6**: The browser `start_login` must navigate the document to the authorize URL, and a failed navigation must return `FlowError::Redirect` with the text "could not hand off to the identity provider: <cause>".
+- **SPEC-3.8.7**: The desktop `start_login` must allow at most one flow waiting at a time: a call made while one waits must return success without binding a port or opening a browser, and must log at debug level that a loopback sign-in is already waiting.
+- **SPEC-3.8.8**: The desktop `start_login` must read the router context before binding or opening anything, and when none exists must release the in-progress flag and return `FlowError::Redirect("no router to return to after signing in")`.
+- **SPEC-3.8.9**: The desktop flow must clear any previously captured authorization response, bind the loopback listener before building the authorize URL, and open the URL in the user's own browser, never an embedded web view; a bind failure must return `FlowError::Network`, and a failure to open the browser must return `FlowError::Redirect` with the text "could not open the identity provider in a browser: <cause>".
+- **SPEC-3.8.10**: When the desktop flow fails to start, it must release the in-progress flag, store the failure as the query string `?error=loopback_failed&error_description=<percent-encoded cause>`, and navigate to the `/auth/callback` route from a spawned task (not from inside the render that called `start_login`), so the user sees the reason instead of "Signing you in" forever.
+- **SPEC-3.8.11**: The desktop loopback listener must serve one request and wait at most 5 minutes for it, a duration that must stay shorter than the 10-minute pending-flow lifetime.
+- **SPEC-3.8.12**: When the listener returns a query, the desktop flow must store it as the authorization response; when it fails or times out, it must log "loopback sign-in failed: <cause>" and store the `loopback_failed` error query; in both cases it must release the in-progress flag and navigate to `/auth/callback`, logging "loopback sign-in could not reach /auth/callback: <cause>" if that navigation fails.
+- **SPEC-3.8.13**: The captured authorization response must be process-wide state whose lock is recovered after a poisoning panic, so a successful sign-in is not lost to an unrelated panic.
+- **SPEC-3.8.14**: `snapshot_initial_search` must record the window's query string once, before the router mounts, because the router rewrites the URL; `initial_search` must return that snapshot verbatim, or the empty string when none was taken.
+- **SPEC-3.8.15**: The authorization response read by `complete_login` must be, in order: the desktop's captured response when present, the boot-time snapshot when non-empty, the live window query string, else the empty string.
+
+### 3.9 OIDC callback completion and recovery
+- **SPEC-3.9.1**: `complete_login` must first check the callback query for `error` and, when present, return `FlowError::TokenEndpoint` with that error and its `error_description` (empty when absent), before looking for `code`, because an error redirect carries no code.
+- **SPEC-3.9.2**: `complete_login` must return `FlowError::MissingCallbackParam("code")` when `code` is absent and `MissingCallbackParam("state")` when `state` is absent, checking `code` first.
+- **SPEC-3.9.3**: `complete_login` must take the pending flow exactly once (a failure returned as `FlowError::Storage`) and return `FlowError::StateMismatch` when the callback `state` differs from the pending flow's `state`.
+- **SPEC-3.9.4**: `complete_login` must return `FlowError::Config` when the redirect URI or the client id cannot be resolved, and must send the token request to `<issuer without trailing slash>/oauth2/token` as `POST` with `Content-Type: application/x-www-form-urlencoded` and `Accept: application/json`, body fields in this order: `grant_type=authorization_code`, `code`, `redirect_uri`, `code_verifier`, `client_id`.
+- **SPEC-3.9.5**: A request that cannot be built or sent must return `FlowError::Network` with the cause; a non-success response must return `FlowError::TokenEndpoint` with the body's `error` and `error_description` (empty when absent), using the error code `token_endpoint_failed` when the body is not a decodable error object; a success body that does not decode must return `FlowError::Network` with the text "token body: <cause>".
+- **SPEC-3.9.6**: A success response without an `id_token` must return `FlowError::TokenEndpoint` with error `invalid_response` and description "id_token missing from authorization_code response".
+- **SPEC-3.9.7**: `complete_login` must decode the ID token claims without signature verification (a malformed token returns `FlowError::Network` with the decode error) and must return `FlowError::NonceMismatch` when the token's `nonce` is absent or differs from the pending flow's `nonce`.
+- **SPEC-3.9.8**: When the granted scope omits any requested scope, `complete_login` must log a warning "OP granted a narrower scope than requested; dropped: <space-separated scopes>" naming every omitted scope, and must continue.
+- **SPEC-3.9.9**: `complete_login` must return the tokens with `expires_at` equal to the current time plus `expires_in` seconds (a negative `expires_in` counts as 0), `scope` equal to the granted scope (empty when absent), and the `return_to` saved with the pending flow.
+- **SPEC-3.9.10**: `classify_flow_error` must return `Restart` for `Storage`, for `MissingCallbackParam`, and for `TokenEndpoint` errors `login_required`, `interaction_required`, `consent_required` and `account_selection_required`, and `Show` for every other error (including `StateMismatch`, `NonceMismatch`, `Config`, `Network`, `Redirect`, `loopback_failed` and every other token endpoint code); it must match on the variant, never on message text, and the match must be exhaustive.
+- **SPEC-3.9.11**: `current_return_to` must return the current pathname followed by the preserved boot-time query string, or the empty string when there is no pathname or when the path is empty, `/`, or begins with `/login`, `/client/login`, `/platform/login` or `/auth/callback`.
+- **SPEC-3.9.12**: `classify_return_to` must return `Restore` (hard navigation to the exact path) only for a same-origin absolute path that begins with a single `/`, is not exactly `/dashboard`, and is not empty, `/` or an authentication route; it must return `Dashboard` (soft push) for the empty string, `/`, `/dashboard`, a protocol-relative `//host` value, a cross-origin URL or a scheme such as `javascript:`.
+
+### 3.10 OIDC token refresh, revoke and claims
+- **SPEC-3.10.1**: `refresh_tokens` must `POST` `<issuer>/oauth2/token` form-encoded with `grant_type=refresh_token`, `refresh_token` and `client_id`, map failures exactly as SPEC-3.9.4 and SPEC-3.9.5 do (including `FlowError::Config` when no client id is configured), and return tokens whose `refresh_token` is the one in the response (none when the response omits it).
+- **SPEC-3.10.2**: `refresh_tokens` must keep the previously issued ID token when the response carries none, take `expires_at` as now plus `expires_in` seconds (negative counted as 0), and set `scope` to the response value or the empty string.
+- **SPEC-3.10.3**: `revoke_refresh_token` must `POST` `<issuer>/oauth2/revoke` form-encoded with `token`, `token_type_hint=refresh_token` and `client_id`, return `FlowError::Config` when no client id is configured and `FlowError::Network` when the request cannot be sent, and otherwise return success.
+- **SPEC-3.10.4**: `issuer_get_authed` and `issuer_post_authed` must return `FlowError::Network("not signed in")` when no in-memory access token is held, send it as a bearer token to `<issuer><path>`, return `FlowError::Network("HTTP <status>")` (GET) or `FlowError::Network(<raw body text>)` (POST) on a non-success status, and `FlowError::Network("body: <cause>")` on an undecodable body; no production code may call them while the provider's resource server rejects tokens minted for this application's audience.
+- **SPEC-3.10.5**: Form bodies and authorize query strings must percent-encode both names and values with spaces written as `+`.
+- **SPEC-3.10.6**: `Tokens::is_expired(now)` must be true when `expires_at` is at or before `now`.
+- **SPEC-3.10.7**: `IdTokenClaims` must require `sub`, `exp` and `iat`, and treat `email`, `email_verified`, `mokosh_tenant_id` (exposed as `tenant_id`) and `nonce` as optional; the user's role and active tenant must not be read from the token.
+- **SPEC-3.10.8**: `IdTokenClaims::parse_unverified` must split the compact token on `.`, require a header and a payload segment, base64url-decode the payload without padding and parse it as JSON, returning the errors "malformed jwt: missing header", "malformed jwt: missing payload", "payload base64: <cause>" or "payload json: <cause>"; it must not verify the signature.
+
+### 3.11 OIDC session storage
+- **SPEC-3.11.1**: Authentication state must be stored only in the tab-scoped session store (browser `sessionStorage`, in-process map on the desktop) and never in `localStorage`, under the keys `mokosh_oidc_flow_v1` (pending flow), `mokosh_auth_bundle_v1` (token bundle), `mokosh_standalone_session_v1` (standalone session) and `mokosh_oidc_callback_retry_v1` (restart counter).
+- **SPEC-3.11.2**: The stored token bundle (`StoredTokens`) must hold `access_token`, `id_token`, an optional `refresh_token`, `expires_at` and `scope`, and a rehydrated bundle must be treated as an unconfirmed cache that the identity provider confirms before the signed-in shell renders.
+- **SPEC-3.11.3**: `save_auth` must write the bundle as JSON and update the in-process cache; `load_auth` must return the cached value (including a cached "nothing persisted") and read and parse the store only on a cache miss, returning `None` when the entry is absent or does not parse.
+- **SPEC-3.11.4**: `clear_auth` must remove the token bundle, record "nothing persisted" in the cache, and also clear the standalone session, so a sign-out is complete whichever path signed the user in.
+- **SPEC-3.11.5**: The token and standalone caches must be visible across threads on the desktop (a process-wide lock, recovered after poisoning) and may be thread-local in the single-threaded browser build, so a save or clear on one thread is never masked by a stale cache on another.
+- **SPEC-3.11.6**: A standalone session (`StandaloneSession`) must hold `access_token`, an optional `refresh_token`, `expires_at` and the `CurrentUser`, with `save_standalone`, `load_standalone` and `clear_standalone` following the same write, cache and clear rules as the token bundle.
+- **SPEC-3.11.7**: `save_pending` must stamp `issued_at_ms` with the current epoch milliseconds when it is 0 and persist the flow as JSON, returning "sessionStorage write failed" on a storage failure.
+- **SPEC-3.11.8**: `take_pending` must return "no pending OIDC flow" when none is stored, "sessionStorage read failed" when the read fails, and must remove the stored entry before validating it, so a flow is single-use even when it is corrupt or expired.
+- **SPEC-3.11.9**: `take_pending` must return "corrupt flow state: <cause>" when the entry does not parse, and "pending OIDC flow expired (age <n> ms > 600000 ms)" when the flow is older than 10 minutes (`PENDING_FLOW_TTL_MS`); a flow whose `issued_at_ms` is 0 must count as expired.
+- **SPEC-3.11.10**: `bump_callback_retry` must increment the persisted restart counter (absent counts as 0, saturating add) and return the new count, and must return an error ("sessionStorage read failed", "corrupt callback retry counter <value>: <cause>" or "sessionStorage write failed") when the counter cannot be read, parsed or written, so the caller never restarts the login flow without a working loop guard.
+- **SPEC-3.11.11**: `MAX_CALLBACK_RETRIES` must be 2, and `clear_callback_retry` must remove the counter after a successful token exchange, returning "sessionStorage delete failed" on failure.
+
+### 3.12 Calendar and scheduling DTOs
+- **SPEC-3.12.1**: `AppointmentResponse` must require `id`, `title`, `assigned_to_id`, `start_time` and `end_time` (instants in UTC) and default every other field when absent (empty string for `appointment_type`, `timezone` and `status`, `false` for `all_day`, `None` for the optional links, description, location, recurrence fields and timestamps).
+- **SPEC-3.12.2**: `AppointmentResponse::is_recurring_instance` must be true exactly when `recurrence_parent_id` is set, and the calendar must not offer edit or delete on such an expanded occurrence because mutating endpoints are keyed to the series master.
+- **SPEC-3.12.3**: `CreateAppointmentRequest` must always serialize `title`, `appointment_type`, `assigned_to_id`, `start_time`, `end_time`, `all_day` and `timezone`, and must omit `description`, `ticket_id`, `task_id`, `site_id`, `project_id`, `company_id`, `contact_id`, `location` and `recurrence_rule` when they are `None`.
+- **SPEC-3.12.4**: `UpdateAppointmentRequest` must omit every field that is `None` (partial update) except `recurrence_rule`, which must always be serialized and sent as JSON `null` when empty so that emptying the input clears an existing recurrence.
+- **SPEC-3.12.5**: `SchedulingTemplateResponse` must require `id`, `name` and `duration_minutes`, and default `kind` and `appointment_type` to the empty string, both travel buffers to 0, and the optional defaults, notes and timestamps to `None`; durations and buffers are 32-bit integers of minutes.
+- **SPEC-3.12.6**: `CreateSchedulingTemplateRequest` must always serialize `name`, `kind`, `appointment_type`, `duration_minutes`, `travel_before_minutes` and `travel_after_minutes`, and omit `default_title`, `default_location`, `default_ticket_id` and `notes` when `None`; `UpdateSchedulingTemplateRequest` must omit every `None` field.
+- **SPEC-3.12.7**: `UserAvailabilityResponse` must require `id`, `user_id`, `day_of_week` (0 is Sunday through 6 is Saturday), `start_time` and `end_time` (times of day), and default `is_available` to false when absent.
+- **SPEC-3.12.8**: `TimeOffResponse` must read the wire key `type` into `kind`, require `id`, `user_id`, `start_date`, `end_date` and `type`, and default `status` to the empty string and the approver, notes and creation time to `None`.
+- **SPEC-3.12.9**: `OnCallNowResponse` must require `schedule_id` and `schedule_name`, and a missing `on_call_user_id` must decode to `None`, meaning the schedule has no one on call.
+- **SPEC-3.12.10**: `DispatchResponse` must decode a bare object (not a paginated envelope) with the lists `appointments`, `availability`, `time_off` and `on_call`, each defaulting to an empty list when its key is absent.
+- **SPEC-3.12.11**: Every calendar DTO must ignore unknown keys, and every response DTO must derive equality because it crosses component property boundaries.
+
+### 3.13 Contract and rate card DTOs
+- **SPEC-3.13.1**: Money, quantity, hour and rate fields in contract DTOs must be decimals that decode losslessly from the JSON strings the server sends and serialize back as strings, never as floating-point numbers.
+- **SPEC-3.13.2**: `ContractResponse` must require `id`, `name`, `company_id`, `start_date`, `created_at` and `updated_at`, and default `contract_type`, `status` and `billing_cycle` to the empty string, `auto_renew` to false, and every other field to `None`.
+- **SPEC-3.13.3**: `CreateContractRequest` must always serialize `name`, `company_id`, `contract_type`, `status`, `start_date`, `auto_renew` and `billing_cycle`, and omit `contract_number`, `end_date`, `billing_amount`, `sla_id`, `signed_date`, `signed_by_contact_id` and `notes` when `None`.
+- **SPEC-3.13.4**: `UpdateContractRequest` must default to all fields `None` and omit every `None` field, so only the keys the user changed are sent.
+- **SPEC-3.13.5**: `ContractItemResponse` must require `id`, `contract_id`, `name`, `quantity`, `unit_price` and `total_price`, default `sort_order` to 0, `rollover_enabled` to false, text type fields to the empty string and the remaining fields to `None`, and `product_id` must only identify the catalog product while the price stays on the item.
+- **SPEC-3.13.6**: `UpsertContractItemRequest` must always serialize `name`, `item_type`, `quantity`, `unit_price`, `billing_frequency`, `rollover_enabled` and `sort_order`, and omit `description`, `work_type_id`, `included_hours`, `overage_rate`, `max_rollover_hours` and `product_id` when `None`.
+- **SPEC-3.13.7**: `ContractHourBalanceResponse` must require every field (`id`, `contract_id`, `contract_item_id`, `period_start`, `period_end`, `hours_included`, `hours_used`, `hours_remaining`, `rollover_hours`).
+- **SPEC-3.13.8**: `RateCardResponse` must require `id` and `name` and default `is_default` to false; `UpsertRateCardRequest` must always serialize `name` and `is_default` and omit `description` when `None`.
+- **SPEC-3.13.9**: `RateCardItemResponse` must require `id`, `rate_card_id`, `work_type_id` and `hourly_rate`, and default `work_type_name`, `after_hours_rate` and `emergency_rate` to `None`; `UpsertRateCardItemRequest` must always serialize `work_type_id` and `hourly_rate` and omit the other two rates when `None`.
+
+### 3.14 Request form DTOs and presentation
+- **SPEC-3.14.1**: The form wire types must be the shared types crate's definitions, with `UpsertFormField`, `FormDefinition`, `FormField` and `RequestLink` as aliases of the shared create-field request, definition response, field response and request-link response, never separate copies.
+- **SPEC-3.14.2**: `FieldTypeExt::ALL` must list exactly `Text`, `Textarea`, `Email`, `Date`, `Select`, `Boolean`, in that order, and must not list `Unknown`, because the server refuses it on write.
+- **SPEC-3.14.3**: `FieldType::label` must return "Short text", "Long text", "Email address", "Date", "Choice list" and "Yes / no" for the six pickable types, and "Unsupported type" for `Unknown`, which the builder renders read-only.
+- **SPEC-3.14.4**: `needs_options` must be true only for `Select`, so the builder blocks a choice list with no options before the server rejects it; `honours_length` must be true only for `Text`, `Textarea` and `Email`.
+- **SPEC-3.14.5**: `RequestLinkExt::status(now)` must evaluate in this order: `Submitted` when `used_at` is set; `Expired` when `expires_at` is at or before `now`; `PartlySubmitted` when `submissions_remaining` is less than `people`; otherwise `Awaiting`.
+- **SPEC-3.14.6**: `RequestLinkStatus::label` must return "Awaiting reply", "Awaiting the rest", "Submitted" and "Expired" for `Awaiting`, `PartlySubmitted`, `Submitted` and `Expired`.
+- **SPEC-3.14.7**: `RequestLinkExt::progress` must return `None` when `people` is 1 or fewer, and otherwise "<people minus submissions_remaining> of <people> submitted".
+
+### 3.15 Knowledge base DTOs
+- **SPEC-3.15.1**: `KbTemplateVariable` must require `name` and `label`, default `allowed_values` to an empty list and `default` to `None`; a variable with a non-empty `allowed_values` is picked from a dropdown and otherwise typed as free text, and `default` seeds the value.
+- **SPEC-3.15.2**: `RenderKbArticleRequest` must serialize as an object with one key `values` mapping variable names to strings in sorted key order (an empty map serializes as an empty object), and `RenderKbArticleResponse` must require `id` and default `content` to the empty string.
+- **SPEC-3.15.3**: `KbCategory` must require `id` and `name` and default `slug` and `visibility` to the empty string, `sort_order` to 0 and `description` and `parent_id` to `None`.
+- **SPEC-3.15.4**: `KbArticle` must require only `id`; every other field must default when absent (empty string, 0, empty list or `None`), because the contact (portal) projection omits author, editor and version fields; `current_version` is 0 for a contact read.
+- **SPEC-3.15.5**: `KbArticle` must carry author and editor as server-resolved display names (`author_name`, `updated_by_name`) alongside their ids, and `company_names` in the same order as `company_ids`.
+- **SPEC-3.15.6**: `KbArticle.parent_article_id` must be `None` for a generic article and, for a company-specific version, the id of a top-level article only; the SPA must render a flat list of company versions under the parent, not a tree.
+- **SPEC-3.15.7**: A `client_specific` article with an empty `company_ids` must be treated as visible to no client.
+- **SPEC-3.15.8**: `KbComment` must require `id`, `article_id`, `author_id` and `created_at`, default `author_name` and `body` to the empty string, `deleted` to false and `replies` to an empty list (replies nest recursively); a deleted comment keeps its place with `deleted` true and an empty body.
+- **SPEC-3.15.9**: `CreateKbCommentRequest` must always serialize `body` and omit `parent_id` and `anchor` when `None`; `UpdateKbCommentRequest` must serialize only `body`.
+- **SPEC-3.15.10**: `KbArticleTicket` must require `id` and default the other fields (empty string, false or `None`); `relation` is `source` for a ticket opened from the article and `procedure` for a ticket the article says how to work.
+- **SPEC-3.15.11**: `KbArticleVersion` must require `id`, `article_id` and `version_number`, default text fields to the empty string and the editor name, change note, restored-from version and timestamp to `None`; `change_kind` is one of `create`, `edit` or `restore`.
+- **SPEC-3.15.12**: `RestoreKbArticleVersionRequest` must omit `change_note` when `None` (an empty object body) and send it otherwise.
+- **SPEC-3.15.13**: `KbArticleFeedback` must require `id`, default the counts to 0, and carry `my_vote` as `helpful`, `not_helpful` or `None` (no vote or cleared).
+- **SPEC-3.15.14**: `CreateKbCategoryRequest` must serialize `name`, `slug`, `description`, `parent_id`, `visibility` and `sort_order` always (a `None` as JSON null), with `slug` a required string; `UpdateKbCategoryRequest` must serialize all six fields always, a `None` as JSON null.
+- **SPEC-3.15.15**: `CreateKbArticleRequest` must always serialize `title`, `slug`, `content`, `summary`, `category_id`, `visibility`, `status`, `tags` and `company_ids` (a `None` as JSON null), omit `parent_article_id` and `template_variables` when `None`, and carry a non-empty `company_ids` when `visibility` is `client_specific` and `None` for any other visibility.
+- **SPEC-3.15.16**: `UpdateKbArticleRequest` must serialize its core fields always (a `None` as JSON null) and omit `parent_article_id`, `change_note` and `template_variables` when `None`; a `Some` `template_variables` replaces the whole declared set, `None` leaves it unchanged, and the edit path must never send an explicit clear of the parent.
+- **SPEC-3.15.17**: `KbAttachmentResponse` must require `id`, `article_id`, `file_name`, `mime_type`, `file_size` and `url`; `url` is relative to the page and must be inserted into the article Markdown unchanged.
+- **SPEC-3.15.18**: `TopTicketDrivingArticle` must require `id`, `title` and `ticket_count`.
+- **SPEC-3.15.19**: `ArticleMeasuredDuration` must require `from` and `to` (the window the figure covers) and decode `ticket_count`, `total_minutes` and `average_minutes` as optional values that are all `None` together when no tracked time exists; `None` must be presented as "no data yet" and never as zero minutes.
+
+### 3.16 Quote DTOs and status rules
+- **SPEC-3.16.1**: Quote monetary fields (`subtotal`, `tax_amount`, `total`, line `unit_price` and `total`) must decode from JSON strings into decimals, and request quantities, unit prices and `tax_amount` must be sent as strings so no precision is lost.
+- **SPEC-3.16.2**: `QuoteLineResponse` must require `id`, `quantity`, `unit_price` and `total` and default `line_type` and `description` to the empty string and `sort_order` to 0.
+- **SPEC-3.16.3**: `QuoteResponse` must require `id`, `company_id`, `subtotal`, `tax_amount`, `total`, `created_at` and `updated_at`, default `title` and `status` to the empty string, and decode every other field as optional (`None` when absent); `lines` is `Some` on a single-quote read and `None` on list rollups.
+- **SPEC-3.16.4**: `QuoteLineRequest` must serialize all of `line_type`, `description`, `quantity`, `unit_price` and `sort_order`; `CreateQuoteRequest` must always serialize `company_id`, `title` and `lines` and omit `billing_contact_id`, `summary`, `description`, `valid_until` and `tax_amount` when `None`.
+- **SPEC-3.16.5**: `UpdateQuoteRequest` must default to all fields `None` and omit every `None` field, so omitted fields keep their stored value, and a `Some` `lines` replaces the whole set of lines; `status` carries only internal-workflow statuses because the server answers 409 for any other.
+- **SPEC-3.16.6**: `ConvertQuoteRequest` and `PortalQuoteDecisionRequest` must default to all fields `None` and omit them when `None`, so a conversion with no scheduling detail is an empty object.
+- **SPEC-3.16.7**: `quotes::status::label` must return "Draft", "Submitted", "Approved", "Rejected", "Sent", "Accepted", "Declined", "Expired", "Converted" and "Cancelled" for the ten status tags `draft`, `submitted`, `approved`, `rejected`, `sent`, `accepted`, `declined`, `expired`, `converted`, `cancelled`, and "Unknown" for any other value.
+- **SPEC-3.16.8**: `allows_content_edit` and `can_submit` must be true only for `draft` and `rejected`; `can_approve` only for `submitted`; `can_send` only for `approved`; `can_convert` only for `accepted`; `can_cancel` only for `draft`, `submitted`, `approved` and `rejected`; `awaiting_client` only for `sent`.
+- **SPEC-3.16.9**: The client must not offer a quote action in a status where its predicate is false, because the server would answer 409 for that transition.
+
+### 3.17 Module surface for client DTOs
+- **SPEC-3.17.1**: The modules tree must expose `audit`, `auth`, `calendar`, `contacts`, `contracts`, `feature_flags`, `forms`, `kb`, `oidc`, `quotes`, `runtime_config`, `sla`, `system`, `tenant_settings`, `tenants`, `theme`, `tickets` and `time_tracking` as public modules, and the DTO modules must carry client-side shapes only, with the server owning routes and services.
+- **SPEC-3.17.2**: The contacts module must re-export the shared types crate's `Company`, `Contact`, `Site`, `Address` and `CompanyType` rather than hand copies, and `CompanyType::Internal` must round-trip as the text `internal`.
+- **SPEC-3.17.3**: The audit, calendar, contracts, kb, quotes and sla modules must re-export their model types so callers import them from the module path.
+
+### 3.18 SLA client data shapes
+
+- **SPEC-3.18.1**: The SLA policy response type must decode a JSON object that carries a UUID `id` and must default an absent `name` to the empty string, an absent `description` and `business_hours_id` to none, and an absent `is_default` to false. A body without a valid `id` must fail to decode.
+- **SPEC-3.18.2**: The SLA policy upsert request must always serialize `name` and `is_default`, and must omit the `description` and `business_hours_id` keys entirely (not send null) when they are none.
+- **SPEC-3.18.3**: The SLA target response type must require `id`, `sla_policy_id` and `priority_id` as UUIDs, must default absent `first_response_hours` and `resolution_hours` to none and an absent `operational_hours` to the empty string, and must decode the two hour values as exact decimals from their JSON string form without loss of precision.
+- **SPEC-3.18.4**: The SLA target upsert request must always serialize `priority_id` and `operational_hours`, and must omit `first_response_hours` and `resolution_hours` when they are none. `operational_hours` is sent exactly as given; the client type does not validate it, and the two values the server accepts are `business_hours` and `24x7`.
+- **SPEC-3.18.5**: The business-hours response type must require a UUID `id` and must default an absent `name` and `timezone` to the empty string, an absent `schedule` to JSON null, and an absent `is_default` to false. The `schedule` value must be carried as opaque JSON and not interpreted by this type.
+- **SPEC-3.18.6**: The business-hours upsert request must always serialize `name`, `timezone`, `schedule` (verbatim opaque JSON) and `is_default`.
+- **SPEC-3.18.7**: The holiday-calendar response type must require a UUID `id` and must default an absent `name` to the empty string and an absent `holidays` to JSON null. The `holidays` value must be carried as opaque JSON and not interpreted by this type.
+- **SPEC-3.18.8**: The holiday-calendar upsert request must always serialize `name` and `holidays` (verbatim opaque JSON).
+- **SPEC-3.18.9**: The ticket-priority option type used to label SLA targets must decode only `id` (required UUID) and `name` (default empty string) and must ignore every other field of the server priority object.
+- **SPEC-3.18.10**: Every SLA response type must implement equality comparison, clone and debug formatting and be deserialize-only; every SLA upsert request type must implement equality comparison, clone and debug formatting and be serialize-only, so that both kinds can travel through component props.
+
+### 3.19 Client and server version skew
+
+- **SPEC-3.19.1**: The version check must request the path `/version` (relative to the API base) through the authenticated GET helper and must return the helper's failure unchanged as an `Err` string when the request or decode fails. It is available only when the `app` feature is enabled.
+- **SPEC-3.19.2**: The version response type must require a string `version` and must ignore every other field of the response body.
+- **SPEC-3.19.3**: Every version string read from the server must have exactly one leading `v` removed, so `v0.2.0` becomes `0.2.0` and `vv1.0` becomes `v1.0`. A string without a leading `v` must be unchanged.
+- **SPEC-3.19.4**: A version pair must require `running` (normalized as above) and must read `latest` as none when it is absent or null and as the normalized string otherwise.
+- **SPEC-3.19.5**: A successful check must return a pair for the server whose `running` is the server's reported version and whose `latest` is none, and a pair for the client whose `running` is the compile-time package version of the SPA and whose `latest` is the server's reported version.
+- **SPEC-3.19.6**: The update-available test must return true only when both `running` and `latest` parse as versions and the `(major, minor)` of `latest` is strictly greater than that of `running`. The patch component must be ignored.
+- **SPEC-3.19.7**: The running-ahead test must return true only when both versions parse and the `(major, minor)` of `running` is strictly greater than that of `latest`. The patch component must be ignored.
+- **SPEC-3.19.8**: Both tests must return false when `latest` is none or when either side fails to parse, and must return false for both when the two versions share a `(major, minor)` regardless of patch difference. The two tests must never both be true for one pair.
+- **SPEC-3.19.9**: A version must parse only when it is exactly three dot-separated non-negative integers. Two components, four components, a non-numeric component, a leading `v` and the empty string must be rejected. Components must compare numerically, so minor `10` is greater than minor `7`.
+
+### 3.20 Reading one tenant setting
+
+- **SPEC-3.20.1**: A tenant-setting row must decode from a JSON object with a required string `key` and a `value` that defaults to JSON null when absent, and must ignore every other field of the row.
+- **SPEC-3.20.2**: Looking a key up among decoded rows must return the value of the first row whose `key` equals the requested key exactly (case-sensitive), and must return none when no row matches or the list is empty.
+- **SPEC-3.20.3**: A matching row whose value is JSON null, or whose `value` field was absent, must yield a present null value and not none.
+- **SPEC-3.20.4**: Reading `category/key` must issue an authenticated GET to `/settings/{category}` (the category listing, with the category inserted verbatim) and not to a per-key route, so that an unset key does not produce a 404 console error. It is available only when the `app` feature is enabled.
+- **SPEC-3.20.5**: The read must return `Ok(None)` when the category listing succeeds but has no row for the key, `Ok(Some(value))` when it has one, and `Err` with the fetch layer's API error only when the listing request or decode fails. A failed read must never be reported as an unset key.
+
+### 3.21 Shared wire types and the ticket activity model
+
+- **SPEC-3.21.1**: The tenants module must re-export `CreateTenantRequest`, `Tenant`, `TenantBranding`, `TenantResponse`, `TenantStatus` and `UpdateTenantRequest` from the shared types crate and must not declare local copies. The shared tenant usage type must not be re-exported.
+- **SPEC-3.21.2**: The tickets module must re-export every public item of the shared tickets types module and must not redeclare `Ticket`, `TicketFilter`, `UpdateTicketRequest`, `TicketStatus`, `TicketPriority`, `TicketType`, `TicketQueue`, `TicketSource`, `BillingStatus`, `NoteType`, `SlaStatus`, `CreateNoteRequest`, `TicketAttachment`, `AutomationRule` or `AutomationTrigger`.
+- **SPEC-3.21.3**: The ticket update request's `asset_id` must be a doubly optional UUID so that an absent field leaves the ticket's asset unchanged and an explicit null clears it.
+- **SPEC-3.21.4**: The ticket filter must carry an optional boolean `my_teams` and an optional UUID `asset_id`, and the ticket must carry an optional `procedure_kb_article_id`.
+- **SPEC-3.21.5**: The shared enums must parse these wire strings to the matching variant and parse any other string to none: ticket source `portal`, `email`, `phone`, `api`, `rmm`; billing status `not_billed`, `ready_to_bill`, `billed`; note type `internal`, `public`, `resolution`, `time_entry`; automation trigger `on_create`, `on_update`, `on_sla_breach`. Formatting must return the same strings for source `portal`, `email`, `phone`, `rmm`, every billing status, note types `internal`, `public`, `resolution`, and every automation trigger.
+- **SPEC-3.21.6**: A ticket's SLA status must be not-applicable when it has no SLA due date and when it has a resolution time or a closed time; breached when the due date is in the past and it is neither resolved nor closed; warning when it is inside the final part of its window (a ticket with 40 minutes left of a 3 hour 40 minute window is warning); and on-track when time left is well clear of that band (9 hours left of a 10 hour window). The warning band must be proportional to the window and not a flat two hours.
+- **SPEC-3.21.7**: The ticket activity model must serialize as an object tagged by `type` with snake_case variant names `created`, `status_changed`, `assigned`, `note_added`, `priority_changed` and `time_logged`, each carrying `user_id`, `user_name` and `timestamp`. It is a client view model, not a server wire contract.
+- **SPEC-3.21.8**: The time-tracking module must re-export every public item of the shared time-tracking types module and must not declare local copies. The time entry's `billing_status` and `approval_status` must be the shared enum types and not strings, and the entry must carry `worked_minutes` (i32), `task_id` (optional UUID) and `ticket_number` (optional string).
+
+### 3.22 Accent catalog
+
+- **SPEC-3.22.1**: The accent catalog must contain exactly fourteen accents in this order: red, orange, amber, lime, green, emerald, teal, cyan, blue, indigo, violet, fuchsia, pink, slate. Each accent's display name must be its id with a capital first letter, and ids must be unique.
+- **SPEC-3.22.2**: Each accent must carry an eleven-step ramp for the steps 50, 100, 200, 300, 400, 500, 600, 700, 800, 900 and 950, and a light and a dark variant each with a `fill` and an `on_accent` color. Every ramp step and every fill must be a valid `#rrggbb` color.
+- **SPEC-3.22.3**: Every light variant must use a dark fill with `#ffffff` as its `on_accent`, and every dark variant must use a bright fill with a near-black `on_accent`, so the accent reads correctly on either base.
+- **SPEC-3.22.4**: For every accent and both bases, `on_accent` on `fill` must meet the WCAG AA normal-text contrast ratio of 4.5.
+- **SPEC-3.22.5**: The default accent id must be `teal`, whose light variant is fill `#0f766e` with `#ffffff` and whose dark variant is fill `#2dd4bf` with `#042f2e`. The default accessor must return the entry whose id is the default id and must return the first catalog entry if that id is ever absent, and must not panic.
+- **SPEC-3.22.6**: Looking an accent up by id must match the id exactly (case-sensitive) and return none for an unknown id.
+- **SPEC-3.22.7**: Resolving an id must return the matching accent and must return the default accent for an unknown, removed or empty id.
+
+### 3.23 Contrast math
+
+- **SPEC-3.23.1**: The contrast module must define the WCAG AA threshold for normal text as 4.5 and for large text and component boundaries as 3.0.
+- **SPEC-3.23.2**: Hex parsing must accept a color with or without a leading `#` that has exactly six ASCII hexadecimal digits (either letter case) and return its 0..=255 red, green and blue values, and must return none for any other shape (three digits, seven digits, non-hex characters, the empty string).
+- **SPEC-3.23.3**: Relative luminance must follow WCAG 2.x: each channel divided by 255 and linearized as `c / 12.92` when `c <= 0.03928` and `((c + 0.055) / 1.055) ^ 2.4` otherwise, then weighted `0.2126` red, `0.7152` green, `0.0722` blue.
+- **SPEC-3.23.4**: The contrast ratio of two hex colors must be `(L_high + 0.05) / (L_low + 0.05)`, must be symmetric in its arguments (black on white is 21.0, identical colors 1.0), and must return none when either color fails to parse.
+- **SPEC-3.23.5**: The AA check must return true only when the ratio is computable and at least 4.5, and must return false when either color fails to parse.
+- **SPEC-3.23.6**: The dark-mode state hues `#ffa2a2` (red-300), `#ff6467` (red-400) and `#05df72` (green-400) must each reach at least 4.5 on both dark bases `#1e293b` and `#0f172a`, and the light-mode hues `#fb2c36`, `#e7000b` and `#c10007` (red-500, red-600, red-700) must stay below 4.5 on `#1e293b`, which is why every light state color needs a `dark:` pair.
+
+### 3.24 Section colors
+
+- **SPEC-3.24.1**: The section color palette must have exactly ten hues, each tied to one sidebar section: blue to Service Desk, indigo to Projects, cyan to CRM, emerald to Operations, teal to Assets, amber to Contracts and Billing, fuchsia to Knowledge, rose to Analytics, violet to Admin and sky to Platform.
+- **SPEC-3.24.2**: The heading class of a hue must be `text-<hue>-600 dark:text-<hue>-400`.
+- **SPEC-3.24.3**: The card border class of a hue must be `border-l-<hue>-500 hover:border-l-<hue>-400 dark:border-l-<hue>-400 dark:hover:border-l-<hue>-300`.
+- **SPEC-3.24.4**: Every heading class and border class must contain a light-mode class and a `dark:` class, and no two hues may share a heading class. Class names must be spelled as complete literals so the stylesheet generator can see them.
+- **SPEC-3.24.5**: The theme module must expose `by_id`, `default_accent`, `resolve`, `Accent`, `Variant`, `ACCENTS`, `DEFAULT_ACCENT_ID` and `SectionColor` at its top level, and must contain no browser or DOM dependency.
+
+### 3.25 Document root appearance
+
+- **SPEC-3.25.1**: On the browser the window title must be set by writing the document title directly and not through the Dioxus document evaluation path, because the page's content security policy forbids `unsafe-eval` and the blocked call panics the application. It must do nothing when there is no document.
+- **SPEC-3.25.2**: On the desktop the window title must be set through the Dioxus document and must do nothing when no Dioxus runtime is current.
+- **SPEC-3.25.3**: Setting the root dark mode on the browser must add the class `dark` to the `<html>` element when true and remove it when false, and must do nothing when there is no document element.
+- **SPEC-3.25.4**: When adding or removing the `dark` class fails on the browser, the application must log an error that reads `could not apply the dark class to <html>`.
+- **SPEC-3.25.5**: On the desktop, setting the root dark mode must run a script in the webview that adds or removes the class `dark` on the document element.
+- **SPEC-3.25.6**: Setting root CSS variables on the browser must set each `(name, value)` pair as an inline custom property on `<html>` so inline values override the stylesheet defaults.
+- **SPEC-3.25.7**: If `<html>` is not an HTML element, setting root CSS variables must apply none of them and must log the error `<html> is not an HtmlElement; accent colours not applied`.
+- **SPEC-3.25.8**: If setting one CSS variable fails on the browser, the application must log `could not set {name} on <html>` and must continue with the remaining variables.
+- **SPEC-3.25.9**: On the desktop all CSS variables of one call must be applied in a single webview script, and if the pairs cannot be encoded as JSON the application must log `could not encode the accent variables: {error}` and apply none.
+- **SPEC-3.25.10**: The system dark preference on the browser must be the result of the `(prefers-color-scheme: dark)` media query and must be false when there is no window or the query cannot be evaluated.
+- **SPEC-3.25.11**: The system dark preference on the desktop must be the last value the webview reported through the system-theme watcher once one has arrived, and before that the window theme reported by the OS, true only for a dark theme.
+- **SPEC-3.25.12**: The desktop window theme must be false when no desktop window context is available and in a build without the `desktop` feature.
+- **SPEC-3.25.13**: Watching the system theme on the desktop must do nothing without a Dioxus runtime. Otherwise it must install one `(prefers-color-scheme: dark)` listener per window (a second call installs nothing), report the current value immediately and again on every change, store each reported value as the webview preference and then call the change callback.
+- **SPEC-3.25.14**: If the system-theme channel fails, the application must log `stopped following OS dark-mode changes: {error}` and stop listening.
+
+### 3.26 Foreground visibility
+
+- **SPEC-3.26.1**: On the browser, the hidden test must be true only while the document visibility state is hidden and false when there is no window or document. On the desktop it must always be false, even for a minimized window.
+- **SPEC-3.26.2**: Notifying that the app is visible again must advance a wrapping generation counter and wake every parked waiter exactly once, leaving no waiters registered.
+- **SPEC-3.26.3**: The future returned by waiting for visibility must resolve when the generation differs from the one captured at its creation, so a notification between creation and the first poll is not lost, and must stay pending otherwise.
+- **SPEC-3.26.4**: A pending visibility future must register its waker under a unique waiter id, replace its own waker on repeated polls without adding a second entry, and remove its registration when dropped.
+- **SPEC-3.26.5**: Starting the browser visibility watcher must be idempotent. It must record the current hidden state, install one `visibilitychange` listener on the document, and notify only on the transition from hidden to visible, never when the page becomes hidden.
+- **SPEC-3.26.6**: If there is no document, the watcher must log `no document to watch for a return to the foreground; the auth loops keep their 30s poll cadence` and stay uninstalled. If registering the listener fails, it must log `could not listen for a return to the foreground: {error}; the auth loops keep their 30s poll cadence` and stay uninstalled.
+- **SPEC-3.26.7**: On the desktop the visibility watcher must install nothing, so a visibility wait resolves there only if the notification function is called explicitly.
+
+### 3.27 Focus, selection and scroll helpers
+
+- **SPEC-3.27.1**: Focusing an element by id on the browser must focus the HTML element with that id, must do nothing when it is absent or not an HTML element, and must log a warning `focusing #{id} failed: {error}` when the focus call fails. On the desktop it must run `document.getElementById(id)?.focus()` in the webview.
+- **SPEC-3.27.2**: Capturing focus on the browser must record the currently focused HTML element (or nothing), and restoring must focus it again, ignoring a failure because the opener may have been unmounted.
+- **SPEC-3.27.3**: Capturing focus on the desktop must park `document.activeElement` in the webview under a unique token drawn from a process-wide counter starting at 0, without reading it back. Restoring must focus the parked element if it exists and can take focus, and must always delete the parked entry.
+- **SPEC-3.27.4**: Reading a textarea selection on the browser must return its `(selectionStart, selectionEnd)` in UTF-16 code units. It must return `(fallback_end, fallback_end)` when the element is absent or not a textarea, use `fallback_end` as the start when the start is unavailable, and use the start as the end when the end is unavailable.
+- **SPEC-3.27.5**: Reading a textarea selection on the desktop must return the last selection the webview pushed for that id, and `(fallback_end, fallback_end)` for an id that is not watched.
+- **SPEC-3.27.6**: Watching a textarea selection on the desktop must do nothing without a Dioxus runtime. Otherwise it must install once per element, post `[selectionStart || 0, selectionEnd || 0]` on `keyup`, `mouseup`, `input`, `select` and `focus` and on document `selectionchange` while that element is active, post once immediately, and store each post by element id.
+- **SPEC-3.27.7**: If the selection channel fails, the application must log `stopped following the selection in #{id}: {error}` and stop listening.
+- **SPEC-3.27.8**: Setting a textarea selection must focus the textarea and set its selection range in UTF-16 code units, and must do nothing when the textarea is absent. A failure of either call is not reported.
+- **SPEC-3.27.9**: Reading a scroll offset on the desktop must return the element's `scrollTop` rounded to a whole pixel, none when the element is absent or the script answers null, none plus a warning `the webview answered {value} for the scroll offset of #{id}` for any other answer, none plus a warning `could not read the scroll offset of #{id}: {error}` when the round trip fails, and none without a Dioxus runtime. On the browser it must return the element's `scrollTop` or none when the element is absent.
+- **SPEC-3.27.10**: Setting a scroll offset must set the element's `scrollTop` to the given whole number of pixels and must do nothing when the element is absent.
+- **SPEC-3.27.11**: Scrolling an element into view must align its top when the flag is true and its bottom when false, and must do nothing when the element is absent.
+- **SPEC-3.27.12**: Scrolling to a fraction must set `scrollTop` (vertical) or `scrollLeft` (horizontal) to the rounded product of the element's `scrollHeight` or `scrollWidth` and the fraction, without clamping the fraction, and must do nothing when the element is absent.
+
+### 3.28 Desktop webview bridge
+
+- **SPEC-3.28.1**: The runtime check must be true only when a Dioxus runtime is current, and every desktop function that evaluates a script or reads the Dioxus document must test it first and do nothing (or return none) when it is false, so that host-side tests do not panic.
+- **SPEC-3.28.2**: The script runner must send a script to the webview, discard the result handle, and do nothing without a Dioxus runtime.
+- **SPEC-3.28.3**: Every id or string interpolated into a webview script must be encoded as a JSON string literal so a quote cannot end the literal, and if encoding ever failed the literal must be the empty string.
+- **SPEC-3.28.4**: Watching markdown task toggles on the desktop must do nothing without a runtime or when the container is missing. Otherwise it must install one click listener per container, and for a click whose target carries a `data-ti` attribute it must send that attribute as a number to the caller's handler.
+- **SPEC-3.28.5**: If the task-toggle channel fails, the application must log `stopped listening for markdown task toggles: {error}` and stop listening.
+- **SPEC-3.28.6**: Every browser DOM listener that reports into the application must be given an `EventHandler` by its caller and never a bare closure.
+
+### 3.29 Article heading tracking
+
+- **SPEC-3.29.1**: The headings followed for a table of contents must be selected with `h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]`, so a heading without an id is ignored.
+- **SPEC-3.29.2**: A heading is current while it is inside the top 30% of the viewport, observed with the root margin `0px 0px -70% 0px` on both hosts.
+- **SPEC-3.29.3**: Watching the active heading must report to the caller's handler the DOM id of the first heading in document order that is inside the band, each time the observer reports and at least one heading is inside it. When none is inside the band nothing is reported.
+- **SPEC-3.29.4**: Watching a container that is absent or has no headings must install nothing. Installing again for the same container must disconnect the previous observer first, so a re-rendered body does not produce two reporters.
+- **SPEC-3.29.5**: If the browser cannot create the observer, the application must log `could not observe the article headings for #{container_id}` and leave the table of contents without a current mark.
+- **SPEC-3.29.6**: On the desktop, watching the active heading must do nothing without a Dioxus runtime. If its channel fails, the application must log `stopped following the article headings: {error}` and stop listening.
+
+### 3.30 Inline comment marks in a rendered article
+
+- **SPEC-3.30.1**: A mark's class must always include `kb-mark`, an underline and a visible focus ring so it never relies on color alone, and must step with the number of covering threads: one thread (or zero) a dotted 2-wide underline on `amber-200/60`, two threads a dotted 4-wide underline on `amber-300/70`, three or more a double 4-wide underline on `amber-400/70`.
+- **SPEC-3.30.2**: A mark's accessible label must be `Inline comment` for one thread and `{n} inline comments` for any other count.
+- **SPEC-3.30.3**: Reading the article text must return the container's text content, and none when the container is absent. On the desktop it must return none without a runtime and none plus the warning `article text read failed on the desktop: {error}` when the round trip fails.
+- **SPEC-3.30.4**: Applying highlights must wrap each fragment of the given non-overlapping, document-ordered specs in a `<mark>` element that has attributes `data-comment` (the owner ids joined by `,`), the class of requirement 3.33.1, `tabindex="0"`, `role="button"` and the label of requirement 3.33.2. A fragment that crosses several text nodes must get one mark per piece.
+- **SPEC-3.30.5**: Fragment offsets must be `char` indices into the container's text content, and a text node must be cut at the UTF-16 unit count of the characters before the cut.
+- **SPEC-3.30.6**: Clearing highlights must replace every `mark[data-comment]` in the container by its children and then normalize the container, so applying again starts from the original text nodes and is idempotent. It must do nothing when the container is absent.
+- **SPEC-3.30.7**: Reporting mark positions must return one entry per distinct owner list, in document order, with the owner ids split on `,` and empty parts dropped, and `top` as the mark's top minus the container's top in CSS pixels. It must return an empty list when the container is absent.
+- **SPEC-3.30.8**: Reading the reader's selection must return the `char` range of the selection inside the container, with the start counted from the container start, and must return none when there is no selection, the selection is collapsed, its common ancestor is outside the container, or its length is zero.
+- **SPEC-3.30.9**: Clearing the selection must remove all ranges from the document selection.
+- **SPEC-3.30.10**: Watching mark activation must install one delegated `click` listener and one delegated `keydown` listener per container, a second call installing nothing. It must report the owner ids of the nearest enclosing `mark[data-comment]` of the event target to the caller's handler, must respond to the keys `Enter` and space only, and must suppress the key's default action only when the target is inside a mark.
+- **SPEC-3.30.11**: On the desktop, watching mark activation must do nothing without a runtime, and if its channel fails the application must log `stopped listening for inline comment marks: {error}` and stop listening.
+- **SPEC-3.30.12**: Focusing a mark must scroll the first mark whose comma-separated owner list contains the exact comment id into view with its top aligned, and focus it. It must do nothing when no mark owns the id or the container is absent.
+- **SPEC-3.30.13**: Marks must be applied after the sanitizer has run, by splitting and wrapping text nodes, so no attribute has to survive the sanitizer and the stored article is unchanged.
+
+### 3.31 Clipboard image paste
+
+- **SPEC-3.31.1**: Installing the paste handler must attach a `paste` listener to the element with the given id. It must do nothing when the element is not yet in the document, and must mark the element so a second call installs no second listener.
+- **SPEC-3.31.2**: On a paste, the handler must scan the clipboard items in order for the first item of kind `file` whose type starts with `image/` and that yields a file. When there is none, the paste must be left completely untouched, including its default action.
+- **SPEC-3.31.3**: When an image is found, the handler must prevent the paste's default action only after finding it, read the file's bytes and call the caller's `EventHandler` with `(file name, mime type, bytes)`.
+- **SPEC-3.31.4**: If the browser cannot read the pasted image's bytes, the application must log a warning `pasted image could not be read: {error}`, show an error toast `The pasted image could not be read.` and must not call the handler.
+- **SPEC-3.31.5**: If attaching the listener fails, the application must log the error `could not attach the paste listener` and remove the install marker so a later call can retry.
+- **SPEC-3.31.6**: The paste callback must be an `EventHandler` and not a bare closure, because a bare closure invoked from a raw listener has no Dioxus scope and panics.
+- **SPEC-3.31.7**: On the desktop, the paste handler must do nothing without a runtime, and otherwise inject a script that attaches the listener once per element, applies the same image-selection rule, prevents the default only when an image is found, reads it as a data URL, and sends `{name, mime, data}` back, with name `pasted-image` when the file has none and data the base64 part after the first comma (empty when absent).
+- **SPEC-3.31.8**: On the desktop, the received base64 data must be decoded with the standard alphabet and passed to the caller's handler as `(name, mime, bytes)`. If decoding fails, the application must log `a pasted image arrived undecodable: {error}`, show the error toast `The pasted image could not be read.`, and keep listening.
+- **SPEC-3.31.9**: If the desktop paste channel fails, the application must log `stopped listening for pasted images: {error}` and stop listening.
+- **SPEC-3.31.10**: On the desktop, a file reader failure inside the webview must write `the pasted image could not be read` and the reader error to the webview console and must send nothing to the application.
+
+### 3.32 Clock, error log and runtime configuration
+
+- **SPEC-3.32.1**: The millisecond clock must return the number of milliseconds since the Unix epoch from the system clock, and must return 0 for a clock before the epoch so a stored expiry comparison never sees a wrapped value.
+- **SPEC-3.32.2**: The error log helper must write the message to the browser console as an error on the browser, and as a `tracing` error event on the desktop. It is for failures the user is not shown.
+- **SPEC-3.32.3**: Reading a config field on the browser must return the string property `field` of `window.__MOKOSH_CONFIG__`, and none when the global is undefined or null, the field is missing, the value is not a string, or the string is empty.
+- **SPEC-3.32.4**: Reading a config field on the desktop must return the environment variable `MOKOSH_<FIELD>` (the field name in upper case) when it is set and non-empty, and otherwise the non-empty value of that field in the per-user `config.json`, and otherwise none.
+- **SPEC-3.32.5**: The desktop config file path must be `config.json` inside the per-user config directory, and none when no such directory exists.
+- **SPEC-3.32.6**: The desktop config file must be read once per process and never re-read, and must be a JSON object whose values are all strings.
+- **SPEC-3.32.7**: If there is no per-user config directory, the application must log the warning `no per-user config directory; using built-in defaults`. A missing file is silent. A file that is not valid JSON of that shape must log the error `{path} is not valid JSON: {error}`, and any other read failure must log `could not read {path}: {error}`. In every one of these cases the configuration is empty.
+
+### 3.33 Browser-locale currency
+
+- **SPEC-3.33.1**: The region of a language tag must be the first subtag after the language that is exactly two ASCII letters, in upper case, so `en-US` gives `US`, `zh-Hant-HK` gives `HK` and `en-au` gives `AU`. A tag with only a language or only script or variant subtags must have no region.
+- **SPEC-3.33.2**: The currency for a language tag must be the currency mapped to its region, matched case-insensitively, and must be none when the tag has no region or the region is not in the table.
+- **SPEC-3.33.3**: The region table must map exactly these 60 regions: US to USD, CA to CAD, MX to MXN, BR to BRL, AR to ARS, CL to CLP, CO to COP, PE to PEN; AT, BE, CY, DE, EE, ES, FI, FR, GR, HR, IE, IT, LT, LU, LV, MT, NL, PT, SI, SK to EUR; GB to GBP, CH to CHF, SE to SEK, NO to NOK, DK to DKK, IS to ISK, PL to PLN, CZ to CZK, HU to HUF, RO to RON, BG to BGN, RU to RUB, UA to UAH, TR to TRY; AU to AUD, NZ to NZD, JP to JPY, KR to KRW, CN to CNY, TW to TWD, HK to HKD, SG to SGD, IN to INR, ID to IDR, MY to MYR, TH to THB, VN to VND, PH to PHP; AE to AED, SA to SAR, IL to ILS, ZA to ZAR.
+- **SPEC-3.33.4**: A region that is not in the table must produce no currency and therefore no warning, and the lookup must never guess a currency.
+- **SPEC-3.33.5**: On the browser the locale currency must be derived from the primary `navigator.language` only, and must be none when there is no window, no string language, or no mapped region. On the desktop it must always be none.
+
+### 3.34 Desktop webview origin
+
+- **SPEC-3.34.1**: The desktop origin constants must be exactly `https://dioxus.index.html` for Android, `http://dioxus.index.html` for Windows and `dioxus://index.html` for macOS, Linux and iOS, with no trailing slash, so an operator can copy the one for their platform verbatim into the server's exact-match origin allowlist.
+- **SPEC-3.34.2**: The desktop documentation must contain all three origin strings.
+
+### 3.35 File download and PDF preview
+
+- **SPEC-3.35.1**: Saving a file on the browser must build a blob from the bytes, create an object URL, append a hidden anchor with `download` set to the file name to the document body, click it, remove it, revoke the URL, and return `Ok(None)`.
+- **SPEC-3.35.2**: Saving on the browser must return one of these errors without continuing: `could not build the download blob`, `could not create the download URL`, `no document available for the download`, `could not create the download anchor`, `download anchor cast failed`, `no document body for the download`.
+- **SPEC-3.35.3**: Saving on the desktop must write into the per-user downloads directory, else the documents directory, else the home directory, and must return `Ok(Some(full path))` so the caller can show it. If none of the three exists it must return `could not find a directory to save into`.
+- **SPEC-3.35.4**: Saving on the desktop must create the target directory if needed (error `could not create {dir}: {error}`), write the bytes (error `could not write {path}: {error}`), run the blocking file work off the async worker pool, and report a panicked task as `the save task panicked: {error}`.
+- **SPEC-3.35.5**: The file name must be reduced to its final path component before use, so a `..` or absolute-path prefix cannot place the file outside the target directory, and a name with no final component must become `download`.
+- **SPEC-3.35.6**: When a file with the chosen name already exists, the save must add a numeric suffix before the extension, `name (1).ext`, `name (2).ext` and so on, up to `name (999).ext`, so an earlier file is not overwritten.
+- **SPEC-3.35.7**: Opening a preview tab on the browser must open a blank `_blank` tab synchronously and return it, and must return `no window available`, `could not open a new tab` or `the browser blocked the new tab` on failure so the caller can fall back to a download. On the desktop it must always succeed with a marker value.
+- **SPEC-3.35.8**: Closing a preview tab must close the browser tab and ignore a close error, and must do nothing on the desktop.
+- **SPEC-3.35.9**: Showing a PDF on the browser must build a blob of type `application/pdf`, navigate the preview tab to its object URL, and revoke the URL on the tab's `load` event and not before. Failures must read `could not build the preview blob`, `could not create the preview URL` or `could not show the PDF in the new tab`.
+- **SPEC-3.35.10**: Showing a PDF on the desktop must write the bytes to `mokosh-preview-{nanoseconds since epoch}.pdf` in the system temporary directory (nanoseconds 0 for a clock before the epoch) and open it with the system handler without waiting. Failures must read `could not write {path}: {error}`, `could not open the system PDF viewer: {error}` or `the preview task panicked: {error}`.
+
+### 3.36 HTTP client abstraction
+
+- **SPEC-3.36.1**: The HTTP module must expose `Request`, `RequestBuilder`, `Response`, `Error` and `MultipartExt` on both hosts, backed by the browser fetch client on the browser and by `reqwest` on the desktop.
+- **SPEC-3.36.2**: On the desktop `Request` must offer `get`, `post`, `put`, `patch` and `delete`, each returning a builder, and the builder must offer `header(key, value)`, `body(bytes)`, `json(value)` and `send()`. Headers must be appended in call order without replacing an earlier header of the same name.
+- **SPEC-3.36.3**: On the desktop `json(value)` must send the serialized JSON bytes with the header `Content-Type: application/json` added, and must return the error `could not encode the request body: {error}` when serialization fails. `body(bytes)` must send raw bytes and add no content type.
+- **SPEC-3.36.4**: Attaching a file must send a `multipart/form-data` body with one part named `file`, carrying the given file name and mime type. The client must leave the `Content-Type` header to the multipart encoder so the boundary is included.
+- **SPEC-3.36.5**: On the browser, a failed file attachment must return an error reading `could not prepare the upload (blob)`, `could not prepare the upload (form)` or `could not prepare the upload (part)` for the failing step. On the desktop an invalid mime type must return `could not prepare the upload: {error}`.
+- **SPEC-3.36.6**: On the desktop one HTTP client must be built once per process. If building it fails, every send must return `could not start the HTTP client: {error}` without panicking and without rebuilding.
+- **SPEC-3.36.7**: On the desktop a request that cannot be built must return `could not build the request: {error}`, and a transport failure or a failure reading the body must return an error whose text is the underlying failure message.
+- **SPEC-3.36.8**: On the desktop `send()` must return `Ok(Response)` for every HTTP status, with status errors left to the caller, and must read and buffer the whole body first.
+- **SPEC-3.36.9**: The desktop response must report `status()` as the numeric code and `ok()` as true only for 200 through 299. Its `headers().get(name)` must match the name case-insensitively and return the first value. Headers whose value is not valid UTF-8 must be dropped.
+- **SPEC-3.36.10**: The desktop response's `text()` must decode the body as lossy UTF-8 and never fail, `json()` must return the deserialization error when the body is not the requested type, and `binary()` must return a copy of the body. All three must be callable repeatedly on one response.
+
+### 3.37 Location and navigation
+
+- **SPEC-3.37.1**: On the browser, the current path, query string, origin and host must be read from `window.location` (`pathname`, `search` with the leading `?`, `origin`, `host`) and must be none when there is no window or the read fails.
+- **SPEC-3.37.2**: On the desktop, the browser search string, origin and host must always be none.
+- **SPEC-3.37.3**: On the desktop, the current path must be the router's current route string with any fragment and then any query removed, and none when it cannot be resolved. Resolution must log the warning `no Dioxus runtime to read the {what} from` when no runtime is current and `no router to read the {what} from` when no router is available.
+- **SPEC-3.37.4**: The current query of the route must be the text from the first `?` of the route with a leading `?`, cut at any `#`, and must be none when the route has no `?`, when the query is empty, or when the only `?` follows a `#` (it then belongs to the fragment).
+- **SPEC-3.37.5**: On the browser, reading the current query must log the warning `no window to read the current query string from` when there is no window and `the browser refused to report the current query string` when the read fails, and return none in both cases. On the desktop it must use the router route string with the same warnings, naming `current query string`.
+- **SPEC-3.37.6**: Replacing the address-bar URL on the browser must rewrite it without adding a history entry, with state null and an ignored failure. Stripping the query must call it with the current path and do nothing when the path is unavailable. Both must do nothing on the desktop.
+- **SPEC-3.37.7**: Replacing the document on the browser must call `location.replace(url)` and must log `no window to navigate to {url}` when there is no window and `navigation to {url} was refused` when the call fails.
+- **SPEC-3.37.8**: Replacing on the desktop must open the URL in the user's system browser, detached, and must log `could not open {url} in a browser: {error}` on failure. It must not navigate the window or clear any session state.
+- **SPEC-3.37.9**: Navigating to a URL while keeping history must set `location.href` on the browser and return `no window` or `navigation to {url} was refused` on failure. On the desktop it must always return the error `this build cannot follow a browser redirect`.
+- **SPEC-3.37.10**: Opening an external URL on the desktop must open it in the system browser and return the error `could not open {url} in a browser: {error}` when that fails. It is not available on the browser build.
+- **SPEC-3.37.11**: Reloading must return true after calling `location.reload()` on the browser, false when there is no window, and false with the logged error `reload was refused` when the call fails. On the desktop it must return false.
+
+### 3.38 Platform boundary
+
+- **SPEC-3.38.1**: The platform module must select its browser or OS implementation by `target_arch = "wasm32"`, not by a cargo feature, so the desktop build (which has the `app` feature on) uses the OS implementations.
+- **SPEC-3.38.2**: Browser-only crates (`web-sys`, `js-sys`, `gloo-net`, `gloo-timers`, `wasm-bindgen`) must be declared only as `wasm32` target dependencies, so a browser call that escapes the platform module fails to compile on a native target instead of panicking at run time.
+- **SPEC-3.38.3**: The loopback redirect listener module must be compiled on non-`wasm32` targets only; the browser build must never bind a socket.
+- **SPEC-3.38.4**: The desktop-origin module must be compiled on non-`wasm32` targets only.
+
+### 3.39 Loopback redirect listener: binding
+
+- **SPEC-3.39.1**: `bind` must bind a TCP listener on `127.0.0.1` (the IPv4 loopback address, never a hostname such as `localhost` and never a non-loopback interface) with port 0 so the OS assigns an ephemeral port.
+- **SPEC-3.39.2**: `bind` must put the listener in non-blocking mode before returning it, so that serving it inside the async runtime cannot stall the app.
+- **SPEC-3.39.3**: `bind` must record the assigned port in a process-wide value on every successful call, overwriting the previous port, and nothing may clear it afterwards, because the token exchange reads it after the listener is dropped.
+- **SPEC-3.39.4**: When the bind, the port read or the non-blocking switch fails, `bind` must return an `Err` string beginning with "could not bind a loopback listener on 127.0.0.1: ", "could not read the loopback listener's port: " or "could not put the loopback listener in non-blocking mode: " respectively, followed by the OS error, and must not update the recorded port.
+- **SPEC-3.39.5**: The module-level `redirect_uri` must return `None` when no listener has been bound in this process (recorded port 0) and otherwise `http://127.0.0.1:<port>/auth/callback` for the most recently bound port.
+- **SPEC-3.39.6**: `Listener::redirect_uri` must return `http://127.0.0.1:<port>/auth/callback` for its own port, and `Listener::port` must return that port.
+
+### 3.40 Loopback redirect listener: serving one request
+
+- **SPEC-3.40.1**: `Listener::serve_one` must consume the listener so the port is released when it returns, whether it returns a query, an error or a timeout.
+- **SPEC-3.40.2**: `serve_one` must accept exactly one connection and read only the request line of it; it must not accept a second connection.
+- **SPEC-3.40.3**: When no tokio runtime is current, `serve_one` must return the `Err` "no async runtime to serve the loopback redirect on: <cause>" and must not panic.
+- **SPEC-3.40.4**: When converting the std listener to a tokio listener fails, `serve_one` must return the `Err` "could not listen on 127.0.0.1:<port>: <cause>".
+- **SPEC-3.40.5**: When no connection arrives within the caller-supplied timeout, `serve_one` must return the `Err` "no redirect arrived on 127.0.0.1:<port> within <N> seconds" where N is the timeout in whole seconds, and must release the port.
+- **SPEC-3.40.6**: When accepting the connection fails, `serve_one` must return the `Err` "the loopback connection failed: <cause>".
+- **SPEC-3.40.7**: On success `serve_one` must return the request target's query string including the leading `?`, in the shape the web callback reads.
+- **SPEC-3.40.8**: The listener must read the request until the first CRLF and must return the line before it; headers and body after it must be ignored.
+- **SPEC-3.40.9**: When more than 8192 bytes (8 KiB) have been buffered without a CRLF, the listener must return the `Err` "the loopback request line exceeded 8192 bytes without ending" and must stop reading.
+- **SPEC-3.40.10**: When the peer closes the connection before a CRLF arrives, the listener must return the `Err` "the browser closed the loopback connection before sending a request".
+- **SPEC-3.40.11**: When reading the request fails, the listener must return the `Err` "could not read the loopback request: <cause>"; when the request line is not valid UTF-8 it must return "the loopback request line was not UTF-8: <cause>".
+- **SPEC-3.40.12**: The timeout must bound only the wait for the connection; reading the request line after a connection is accepted has no timeout.
+
+### 3.41 Loopback redirect listener: request parsing and response
+
+- **SPEC-3.41.1**: The request line must be split on whitespace into method and target; the method value must not be validated and the path of the target must not be compared with `/auth/callback`.
+- **SPEC-3.41.2**: An empty request line must yield the `Err` "the loopback request line was empty", and a line with a method but no target must yield "the loopback request line named no target (<line>)".
+- **SPEC-3.41.3**: A target with a non-empty query after `?` must yield `?<query>` unmodified (no decoding), including error responses such as `?error=access_denied`.
+- **SPEC-3.41.4**: A target with no `?`, or with `?` followed by nothing, must yield the `Err` "the loopback request carried no authorization response (<target>)" rather than an empty string, so a stray request (for example a favicon fetch) ends the flow with an error instead of being treated as the OP's answer.
+- **SPEC-3.41.5**: After a query is extracted, the listener must answer with `HTTP/1.1 200 OK`, `Content-Type: text/html; charset=utf-8`, an exact `Content-Length`, `Cache-Control: no-store` and `Connection: close`.
+- **SPEC-3.41.6**: The response body must be an unstyled HTML page titled "Signed in" containing the heading "Signed in" and the text "You can close this window and go back to the app."
+- **SPEC-3.41.7**: When the listener cannot parse the request into a query, it must return the error without writing any response.
+- **SPEC-3.41.8**: A failed write or flush of the response must return `Err` "could not answer the loopback request: <cause>" or "could not flush the loopback response: <cause>" respectively.
+- **SPEC-3.41.9**: A failed connection shutdown after a flushed response must be logged at debug level as "loopback connection did not shut down cleanly: <cause>" and must not fail the sign-in.
+
+### 3.42 Durable preference storage
+
+- **SPEC-3.42.1**: `prefs::get`, `set` and `remove` must store durable per-user string key/value pairs: in `localStorage` in the browser, and in a JSON object file named `prefs.json` in the app's per-user configuration directory on desktop.
+- **SPEC-3.42.2**: The per-user configuration directory must be the OS config directory joined with `mokosh-apps`, and `config_dir` must return `None` when the OS reports no config directory.
+- **SPEC-3.42.3**: Tokens must never be stored through this module; they belong to the session store.
+- **SPEC-3.42.4**: On desktop, the preferences must be loaded from disk once per process on first access and then served from an in-memory map guarded by a mutex; a poisoned mutex must be recovered, not propagated.
+- **SPEC-3.42.5**: On desktop, `set` and `remove` must update the in-memory map and then rewrite the whole file as pretty-printed JSON before returning.
+- **SPEC-3.42.6**: On desktop, a flush must create the configuration directory if missing; when the directory cannot be created, the file cannot be written or the map cannot be encoded, it must log at error level with the path and cause, and the in-memory value must stay set for the run.
+- **SPEC-3.42.7**: When there is no configuration directory, loading must log at warn level "no per-user config directory; preferences will not persist across runs", start with an empty map, and flushes must write nothing.
+- **SPEC-3.42.8**: A missing preferences file must be treated as a first run (empty map, no log).
+- **SPEC-3.42.9**: A preferences file that fails to parse as a string-to-string JSON object must be logged at error level as "preferences at <path> are unreadable: <cause>" and replaced in memory by an empty map; the file on disk is overwritten at the next `set` or `remove`.
+- **SPEC-3.42.10**: A preferences file that cannot be read for a reason other than not found must be logged at error level as "could not read preferences at <path>: <cause>" and treated as an empty map.
+- **SPEC-3.42.11**: `get` must return `None` for an unset key and, in the browser, also when the window or `localStorage` is unavailable; callers supply the default.
+- **SPEC-3.42.12**: In the browser, a failed `set_item` (quota exceeded or storage disabled) must log at warn level "could not persist preference <key>" and a failed `remove_item` must log "could not clear preference <key>"; neither may raise to the caller.
+
+### 3.43 Session storage
+
+- **SPEC-3.43.1**: `session()` must return a `Store` with `get_item`, `set_item` and `remove_item`, each returning `Result`, mirroring the browser storage interface.
+- **SPEC-3.43.2**: In the browser, the store must be backed by `sessionStorage` (tab-scoped, cleared when the tab closes).
+- **SPEC-3.43.3**: In the browser, `session()` must return an `Err` with one of "no window", "no sessionStorage handle" or "sessionStorage disabled" when the store is unavailable, instead of an empty store.
+- **SPEC-3.43.4**: In the browser, a failed read, write or delete must return the `Err` "sessionStorage read failed", "sessionStorage write failed" or "sessionStorage delete failed" respectively.
+- **SPEC-3.43.5**: On desktop, the store must be a single process-wide in-memory map that is never written to disk, so tokens do not outlive the run; `session()` must always succeed.
+- **SPEC-3.43.6**: On desktop, `get_item` must return `Ok(None)` for an unset key, and `set_item` must overwrite an existing value.
+- **SPEC-3.43.7**: On desktop, a poisoned mutex must be recovered rather than failing the call.
+
+### 3.44 Timer
+
+- **SPEC-3.44.1**: `sleep_ms(ms)` must complete after at least `ms` milliseconds, using `setTimeout` in the browser and the tokio timer on desktop.
+- **SPEC-3.44.2**: `sleep_ms(0)` must complete without an error.
+
+### 3.45 Local timezone
+
+- **SPEC-3.45.1**: `local_iana` must return the host's IANA zone name (for example `America/Chicago`), read in the browser from `Intl.DateTimeFormat().resolvedOptions().timeZone` and on desktop from the operating system.
+- **SPEC-3.45.2**: `local_iana` must return `None`, never a guessed UTC, when the host does not report a zone.
+- **SPEC-3.45.3**: On desktop, a failure to read the system timezone must be logged at warn level as "could not read the system timezone: <cause>".
+- **SPEC-3.45.4**: The value must be used only to pre-fill the timezone picker, so `None` must leave the picker on its own default.
+
+### 3.46 Desktop window close guard
+
+- **SPEC-3.46.1**: On a desktop build, `use_close_guard` must be mounted once at the app root and must register a window-event handler that runs before the desktop runtime acts on a close request.
+- **SPEC-3.46.2**: The desktop window must be launched with the `WindowHides` close behaviour, so a close request cannot destroy the webview and unsaved edits before the guard decides.
+- **SPEC-3.46.3**: On a close request with the shared unsaved-changes flag clear and the confirmation not showing, the guard must switch the window to `WindowCloses` and let the event through, so the window closes with no prompt.
+- **SPEC-3.46.4**: On a close request with the unsaved-changes flag set, the guard must raise the close-confirmation flag if not already raised and must schedule a re-show of the window.
+- **SPEC-3.46.5**: On a close request while the confirmation is already showing, the guard must keep it showing (no second modal, no close) and schedule a re-show.
+- **SPEC-3.46.6**: On the first window event after a refused close request, the guard must make the window visible again, so a refused close leaves the window open.
+- **SPEC-3.46.7**: The guard must read the unsaved-changes flag and the confirmation flag without subscribing the root component to them.
+- **SPEC-3.46.8**: The close guard must read the same app-wide unsaved-changes flag the browser's unload prompt reads; there must not be a second copy of the flag.
+- **SPEC-3.46.9**: `close_confirm_open` must be reactive and return true while the confirmation is raised.
+- **SPEC-3.46.10**: `cancel_close` must lower the confirmation flag and leave the window open with its edits.
+- **SPEC-3.46.11**: `confirm_close` must lower the confirmation flag, switch the window to `WindowCloses` and close the window, discarding unsaved edits.
+- **SPEC-3.46.12**: Without the `desktop` feature, `use_close_guard`, `cancel_close` and `confirm_close` must do nothing and `close_confirm_open` must return false, because the browser prompts through `beforeunload`.
+
+### 3.47 Split-view scroll sync: linking
+
+- **SPEC-3.47.1**: `link(source_id, preview_id)` must make the two elements' scroll positions proportional: when one scrolls, the other must be set to `round(other_extent * (scrollTop / own_extent))` with the fraction clamped to 0.0..1.0, where extent is `scrollHeight - clientHeight`.
+- **SPEC-3.47.2**: `link` must do nothing when either element id is not found in the document.
+- **SPEC-3.47.3**: `link` must be idempotent per pair: when the source element already carries the `data-scroll-synced` marker it must return without attaching listeners; otherwise it must mark both elements with `data-scroll-synced="1"`.
+- **SPEC-3.47.4**: `link` must attach one scroll listener per direction, sharing one echo flag across both.
+- **SPEC-3.47.5**: A scroll event caused by the module's own write to the other pane must be swallowed (the echo flag cleared, no write back), so the pane the author drives keeps their position.
+- **SPEC-3.47.6**: A scroll event that follows a programmatic sync-to-cursor jump must be swallowed before the echo flag is considered.
+- **SPEC-3.47.7**: A pane whose extent is zero or negative must have no scroll position: its scroll events must not move the other pane, and it must not be driven when it is the target.
+- **SPEC-3.47.8**: In the browser, a failure to attach a scroll listener must be logged at error level "could not attach the split-view scroll listener" and stop linking the remaining direction.
+- **SPEC-3.47.9**: On desktop, `link` must perform the same behavior by running one script inside the webview, keeping the programmatic flag on `window.__mokoshScrollProgrammatic`, and must then start the caret reporter for the source pane.
+
+### 3.48 Split-view scroll sync: sync to cursor
+
+- **SPEC-3.48.1**: `scroll_to_block(preview_id, index, expected)` must scroll the preview box so that the `index`th child of its first child (the rendered document) is at the top, using the bounding-rect difference plus the current `scrollTop`, rounded and not less than 0.
+- **SPEC-3.48.2**: It must do nothing and return false when the preview element, its first child, or the `index`th block is missing.
+- **SPEC-3.48.3**: It must do nothing and return false when the rendered document's child-element count differs from `expected`, so it never scrolls to a mismatched block.
+- **SPEC-3.48.4**: In the browser it must return false without raising the programmatic flag when the computed position equals the current `scrollTop`, and otherwise raise the flag immediately before writing `scrollTop` and return true.
+- **SPEC-3.48.5**: On desktop it must return false without evaluating anything when no desktop runtime is present, and otherwise dispatch the equivalent script to the webview and return true; the return value reports dispatch, not movement.
+- **SPEC-3.48.6**: On desktop, the script must apply the same missing-element, count-mismatch and unchanged-position checks as the browser and must set the programmatic flag immediately before writing `scrollTop`.
+- **SPEC-3.48.7**: The desktop preview id must be embedded in the script as a quoted JavaScript string literal produced by the shared escaping function, and `index` and `expected` as integers.
+
+## 4. Hooks and utils
+
+### 4.1 Auth context and role predicates
+
+- **SPEC-4.1.1**: The default `AuthContext` must hold no user, `is_loading` false, no error, no tokens, no active tenant, an empty membership list, `memberships_loaded` false, `server_loaded` false and `confirmation` `Confirmed`.
+- **SPEC-4.1.2**: `AuthContext::is_authenticated` must return true if and only if the context holds a user.
+- **SPEC-4.1.3**: `AuthContext::may_render_signed_in` must return true only when the context is authenticated and `is_loading` is false.
+- **SPEC-4.1.4**: `AuthContext::has_role` must return true only when a user is present and the user's role equals the given role exactly, and false when no user is present.
+- **SPEC-4.1.5**: `AuthContext::is_admin` must return true only when a user is present and `UserRole::is_admin` is true for the user's role, and false when no user is present.
+- **SPEC-4.1.6**: `AuthContext::can_manage` must return true only when a user is present and `UserRole::can_manage_users` is true for the user's role. A control whose server route requires the manager floor must be gated with `can_manage`, not `is_admin`, because `is_admin` excludes the manager role.
+- **SPEC-4.1.7**: `AuthContext::is_org_tenant` must return true when the user's `tenant_kind` is `org` or the empty string, and when no user is present, and false for every other `tenant_kind` value.
+- **SPEC-4.1.8**: `AuthContext::is_personal_tenant` must return true only when a user is present and `tenant_kind` equals `personal`, and false otherwise (including the empty string and no user).
+- **SPEC-4.1.9**: `AuthContext::active_membership` must return the membership whose `tenant_id` equals the string form of `active_tenant_id`, and `None` when no active tenant is set or no membership matches.
+- **SPEC-4.1.10**: `AuthContext::active_org_name` must return the `tenant_name` of the active membership and `None` when there is no active membership.
+- **SPEC-4.1.11**: `AuthContext::set_active_org_name` must trim the given name, and when the trimmed name is empty it must change nothing and return false.
+- **SPEC-4.1.12**: `AuthContext::set_active_org_name` must return false and change nothing when no active tenant is set or when no membership matches the active tenant. It must never add a membership row.
+- **SPEC-4.1.13**: When a membership matches the active tenant, `AuthContext::set_active_org_name` must replace only that row's `tenant_name` with the trimmed name and return true. Rows for other tenants must stay unchanged.
+- **SPEC-4.1.14**: `MembershipView` must deserialize `tenant_id` and `tenant_name` as required fields and `mokosh_bunyip_grant_id` as an optional field that is `None` when absent. A present grant id must mean the seat can be left; `None` must mean it cannot.
+- **SPEC-4.1.15**: `use_auth` must return the application's shared `Signal<AuthContext>` from the Dioxus context.
+- **SPEC-4.1.16**: `use_require_auth` must, whenever the context is neither loading nor authenticated, navigate to the login route (`Route::Login`), and must do nothing while the context is loading.
+- **SPEC-4.1.17**: `SessionConfirmation` must have exactly the states `Confirmed` (default; nothing outstanding), `Unconfirmed` (rebuilt from a persisted bundle and not yet checked against the identity provider) and `Ended` (the check answered negatively and the persisted bundle was cleared).
+
+### 4.2 Session rehydration at boot
+
+- **SPEC-4.2.1**: At boot `initial_auth_context` must build the context from the persisted OIDC bundle in `sessionStorage` first, then from the persisted standalone session, and otherwise use the default context.
+- **SPEC-4.2.2**: The development admin bypass must exist only in builds compiled with `debug_assertions` and the `dev_admin_bypass` feature. In such a build, when the compile-time environment variables `ADMIN_EMAIL` and `ADMIN_PASSWORD` are both set and non-empty, the context must start authenticated with a nil-UUID user, the given email, first name `Admin`, last name `User`, role `Admin`, timezone `UTC`, `profile_completed` true, no tokens, `is_loading` false, `server_loaded` true and `confirmation` `Confirmed`. When either variable is missing or empty the normal rehydration order must apply.
+- **SPEC-4.2.3**: OIDC rehydration must produce no context (so the next source is tried) when no bundle is stored or when the bundle's id_token claims cannot be parsed.
+- **SPEC-4.2.4**: An OIDC-rehydrated user must take `id` from the `sub` claim parsed as a UUID and `tenant_id` from the `tenant_id` claim parsed as a UUID. It must carry the `email` claim or the empty string, empty first and last names, the default `UserRole`, timezone `UTC`, `profile_completed` true, no avatar, no theme preferences, no own-company id and an empty `tenant_kind`.
+- **SPEC-4.2.5**: An OIDC-rehydrated context must hold the stored tokens in `tokens`, set `active_tenant_id` to the home tenant, hold an empty membership list with `memberships_loaded` false, set `server_loaded` false and set `confirmation` `Unconfirmed`.
+- **SPEC-4.2.6**: Both rehydration paths must install the stored access token into the fetch layer before the context is returned.
+- **SPEC-4.2.7**: Standalone rehydration must use the stored `CurrentUser` unchanged, hold no OIDC tokens, set `active_tenant_id` to the stored user's tenant, hold an empty membership list with `memberships_loaded` false, set `server_loaded` false and set `confirmation` `Unconfirmed`.
+- **SPEC-4.2.8**: Both rehydration paths must set `is_loading` true when the stored access token has 60 seconds or less of life remaining (including an already expired token) and false when it has more than 60 seconds remaining. The 60-second window is `CONFIRMATION_WINDOW_SECS`.
+- **SPEC-4.2.9**: The route guard must show its loading state while `is_loading` is true, before it evaluates `is_authenticated`, so a restored session with a spent token never renders the signed-in shell before it is confirmed.
+
+### 4.3 Mount-time session confirmation
+
+- **SPEC-4.3.1**: `use_auth_provider` must create the context signal from `initial_auth_context`, provide it as the Dioxus context, and start `confirm_restored_session` once at mount rather than on a polling tick.
+- **SPEC-4.3.2**: `confirm_restored_session` must return without any request when the context's `confirmation` is not `Unconfirmed`.
+- **SPEC-4.3.3**: When the persisted session store no longer returns an expiry, confirmation must set `is_loading` false, leave `confirmation` `Unconfirmed`, and log a warning of the form `could not confirm the restored session, rendering it anyway: there is no persisted session to confirm`.
+- **SPEC-4.3.4**: When the persisted access token has more than 60 seconds of life remaining, confirmation must make no request of its own and must leave the answer to the `/auth/me` fetch issued by `use_current_user_loader`.
+- **SPEC-4.3.5**: When the persisted access token has 60 seconds or less of life remaining, confirmation must renew it through the fetch layer's single-flight `renew_access_token`, and must not call the token endpoint by any other path.
+- **SPEC-4.3.6**: When that renewal succeeds, confirmation must, for an OIDC session only, mirror the rotated bundle into the context, then set `confirmation` `Confirmed` and `is_loading` false, then run `refresh_user_from_me` so the cached user is reconciled against the renewal just performed.
+- **SPEC-4.3.7**: When that renewal fails with an unrecoverable error (SPEC-4.4.9), confirmation must end the session through `end_standalone_session` if no OIDC bundle is stored and through `end_oidc_session` otherwise.
+- **SPEC-4.3.8**: When that renewal fails with any other error, confirmation must set `is_loading` false, log a warning `could not confirm the restored session, rendering it anyway: {cause}`, keep the session and leave `confirmation` `Unconfirmed`.
+- **SPEC-4.3.9**: `mark_session_confirmed` must set `confirmation` `Confirmed` and `is_loading` false.
+- **SPEC-4.3.10**: `mirror_rotated_bundle` must copy the access token, id token, refresh token, expiry and scope from the persisted bundle into the context's `tokens`. When the store holds no bundle it must keep the context's copy and log a warning `the session store held no bundle right after a successful rotation; the context keeps the copy it had`.
+- **SPEC-4.3.11**: The only places that set `confirmation` to `Confirmed` must be `mark_session_confirmed`, the successful `/auth/me` reconcile and the development bypass.
+
+### 4.4 Token refresh loops and renewal classification
+
+- **SPEC-4.4.1**: `use_token_refresh`, `use_standalone_token_refresh` and `use_auth_heartbeat` must each install the visibility listener, then loop forever evaluating one tick first and waiting afterwards, so a tab restored from discard evaluates at mount rather than after the first wait.
+- **SPEC-4.4.2**: Each loop must wait with `sleep_or_wake(30_000)`, which must return at the earlier of 30,000 ms elapsing and the app returning to the foreground, and `sleep_or_wake` must be the only caller of the raw timer in `auth.rs`.
+- **SPEC-4.4.3**: `oidc_refresh_tick` must do nothing when no OIDC bundle is persisted. It must read the persisted bundle, not the context's copy, because a request-path renewal rotates the refresh token in storage.
+- **SPEC-4.4.4**: `oidc_refresh_tick` must do nothing when the access token has more than 60 seconds of life remaining.
+- **SPEC-4.4.5**: When the access token has 60 seconds or less remaining and the bundle has no refresh token, `oidc_refresh_tick` must end the session with cause `the stored OIDC session carries no refresh token` if the token is already expired, and otherwise do nothing.
+- **SPEC-4.4.6**: When a refresh token exists, `oidc_refresh_tick` must renew through the fetch layer's single-flight `renew_access_token`. On success it must mirror the rotated bundle, mark the session confirmed and run `refresh_user_from_me`.
+- **SPEC-4.4.7**: When the renewal fails unrecoverably, `oidc_refresh_tick` must call `end_oidc_session`. When it fails otherwise, it must keep the session and log a warning `token refresh failed transiently; keeping the session: {e}`.
+- **SPEC-4.4.8**: `standalone_refresh_tick` must do nothing when an OIDC bundle is persisted or no standalone session is persisted, and must do nothing when the access token has more than 60 seconds remaining. With 60 seconds or less remaining and no refresh token it must end the session with cause `the stored standalone session carries no refresh token` if the token is already expired and otherwise do nothing. With a refresh token it must renew through `renew_access_token`, mark the session confirmed on success, call `end_standalone_session` on an unrecoverable failure, and otherwise keep the session and log a warning `standalone token refresh failed transiently; keeping the session: {e}`.
+- **SPEC-4.4.9**: `renewal_is_unrecoverable` must return true for an error containing `carries no refresh token` or `no persisted session to renew`. It must return true for an error starting `token endpoint: ` whose first word is `invalid_grant`, `invalid_client`, `unauthorized_client` or `unsupported_grant_type`. It must return true for an error starting `http ` whose status is 400 to 499. It must return false for every other message, including `token_endpoint_failed`, 5xx statuses, network and decode errors and unrecognised text.
+
+### 4.5 Session end and sign-out redirect
+
+- **SPEC-4.5.1**: `end_oidc_session` must log a warning `token refresh failed unrecoverably; signing out: {cause}`, set `user` and `tokens` to none, set `confirmation` `Ended` and `is_loading` false, clear the fetch layer's access token, clear the persisted OIDC session and redirect to the login screen.
+- **SPEC-4.5.2**: `end_standalone_session` must log a warning `standalone token refresh failed unrecoverably; signing out: {cause}`, set `user` and `tokens` to none, set `confirmation` `Ended` and `is_loading` false, clear the persisted standalone session, clear the fetch layer's access token and redirect to the login screen.
+- **SPEC-4.5.3**: In a browser build `redirect_to_login` must hard-navigate to `/client/login`, and when the navigation fails it must log a warning `redirect to /client/login after sign-out failed: {e}`. In a non-browser build it must not navigate, because the cleared context moves the user to the login screen.
+- **SPEC-4.5.4**: In a desktop (app, non-wasm) build `use_session_end_watch` must, whenever the fetch layer raises `SESSION_ENDED`, set `user` and `tokens` to none, set `confirmation` `Ended` and `is_loading` false, then lower `SESSION_ENDED` so a later sign-in is not torn down. In every other build it must do nothing.
+- **SPEC-4.5.5**: In a browser (app, wasm) build `use_bfcache_invalidator` must register a `pageshow` listener that reloads the page when the event's `persisted` property is true and does nothing on a normal load. In every other build it must do nothing.
+
+### 4.6 Current-user reconcile and organisation loading
+
+- **SPEC-4.6.1**: The `GET /auth/me` body must require `id`, `email`, `timezone` and `role`. `first_name`, `last_name`, `avatar_url`, `date_format_string` and `own_company_id` must be optional (absent is none), `profile_completed` must default to true when absent, and `tenant_kind` must default to the empty string when absent.
+- **SPEC-4.6.2**: `apply_me_response` must overwrite the cached user's `email`, `timezone`, `avatar_url`, `profile_completed`, `date_format_string`, `own_company_id` and `tenant_kind` with the response values, and set `first_name` and `last_name` to the response value or the empty string when null.
+- **SPEC-4.6.3**: `apply_me_response` must replace the user's `id` only when the response `id` parses as a UUID.
+- **SPEC-4.6.4**: `apply_me_response` must take the role from the response when it is a recognised role. For an unrecognised role it must keep the cached role and log a warning `unrecognized role {role:?} from /api/v1/auth/me; keeping cached role`.
+- **SPEC-4.6.5**: `refresh_user_from_me` must request `GET /auth/me` with the bearer token. On a 401 when the context holds no OIDC tokens (a standalone session) it must clear the persisted session and the fetch access token and replace the context with the default context carrying `confirmation` `Ended`. On a 401 with OIDC tokens it must change nothing, because the fetch layer handles that case.
+- **SPEC-4.6.6**: When `GET /auth/me` fails with any other error, `refresh_user_from_me` must keep the cached user, set `is_loading` false, leave `confirmation` unchanged and log a warning `/api/v1/auth/me failed; keeping cached user: {e:?}`.
+- **SPEC-4.6.7**: When `GET /auth/me` succeeds, `refresh_user_from_me` must apply the response to the cached user, then set `server_loaded` true, `confirmation` `Confirmed` and `is_loading` false, and clear the membership list and `memberships_loaded` so the organisation loader runs again.
+- **SPEC-4.6.8**: `use_current_user_loader` must, once per mount lifetime, run `refresh_user_from_me` the first time the context becomes authenticated.
+- **SPEC-4.6.9**: `use_memberships_loader` must run when the context is authenticated and `memberships_loaded` is false. It must request `GET /auth/memberships`, and a non-empty list must be stored as `memberships` with `memberships_loaded` true.
+- **SPEC-4.6.10**: When `GET /auth/memberships` returns an empty list the loader must log at debug level `mokosh /auth/memberships returned no rows; falling back to /tenants/current`. When it fails the loader must log a warning `mokosh /auth/memberships load failed: {e}; falling back to /tenants/current`. In both cases it must then request `GET /tenants/current`.
+- **SPEC-4.6.11**: When `GET /tenants/current` returns a non-blank name, the loader must set `memberships` to exactly one row carrying that id and name with no grant id, set `active_tenant_id` when the id parses as a UUID, and set `memberships_loaded` true.
+- **SPEC-4.6.12**: When `GET /tenants/current` returns a blank name the loader must log a warning `organisation load returned no name; leaving it unset`. When it fails the loader must log a warning `organisation load failed, leaving it unset: {e}`. In both cases it must leave the membership list empty and set `memberships_loaded` true so the load is not retried on every render.
+- **SPEC-4.6.13**: The organisation name must come only from the server's own membership list or tenant row. The loader must never derive a name from the user's email or any other fabricated value, and must never request an identity-provider-hosted memberships endpoint.
+- **SPEC-4.6.14**: `memberships_loaded` must be cleared to false in exactly one place, the successful `/auth/me` reconcile.
+- **SPEC-4.6.15**: In builds without the `web` feature the loader must set `memberships_loaded` true without any request.
+- **SPEC-4.6.16**: `use_active_org_loader` must delegate to `use_memberships_loader`.
+
+### 4.7 Auth heartbeat
+
+- **SPEC-4.7.1**: `heartbeat_tick` must make no request when `ACCOUNT_DELETED` is already set, when the fetch layer holds no access token, or when the window is hidden.
+- **SPEC-4.7.2**: Otherwise `heartbeat_tick` must send an authenticated `GET /auth/me` and discard the response body. The 410 account-deleted case and the 401 renew-or-end-session case must be handled by the fetch layer.
+- **SPEC-4.7.3**: `tab_is_hidden` must report the platform's hidden state in `app` builds and false otherwise. In builds without the `app` feature `heartbeat_tick` must do nothing.
+
+### 4.8 Contact-portal capability gating
+
+- **SPEC-4.8.1**: When a contact session is active, `use_capability` must return true only if the contact capability snapshot contains the requested capability exactly, and false when the snapshot is `None`. The staff and platform bypasses must not apply.
+- **SPEC-4.8.2**: When no contact session is active, `use_capability` must return true if the fetch layer holds a staff access token, true if a platform-admin bearer is stashed, and false otherwise.
+- **SPEC-4.8.3**: `use_any_capability` must follow the same plane precedence as `use_capability`, returning true for a contact session only when at least one requested capability is in the snapshot.
+- **SPEC-4.8.4**: A platform-admin bearer must count as present only when `sessionStorage` key `mokosh:platform_token` holds a value that is non-empty after trimming. In builds that are not wasm32 it must report absent.
+- **SPEC-4.8.5**: The contact capability snapshot must be kept per thread in memory only and never mirrored to `localStorage`. `set_contact_capabilities` must overwrite it, `current_contact_capabilities` must return a copy or `None` before any contact login, and `clear_contact_capabilities` must set it to `None`.
+- **SPEC-4.8.6**: The sentinel `STAFF_ONLY` (`__staff_only__`) must evaluate true for staff and platform-admin sessions and false for every contact session, and the server's capability catalogue must not contain it.
+- **SPEC-4.8.7**: `use_is_contact_session` must return true only when a contact session is active, and false for a staff-only session and when there is no session.
+- **SPEC-4.8.8**: `contact_has_no_capabilities` must return true only when a contact session is active and the snapshot is `None` or empty, and false when no contact session is active.
+- **SPEC-4.8.9**: In builds without the `web` feature `use_capability`, `use_any_capability`, `use_is_contact_session` and `contact_has_no_capabilities` must return false, and `current_contact_capabilities` must return `None`.
+
+### 4.9 Contact session refresh
+
+- **SPEC-4.9.1**: `refresh_contact_session` must send `POST /contact/auth/refresh` with a JSON body `{"refresh_token": <in-memory refresh token or empty string>}`, letting the browser attach the HttpOnly contact cookie, so a cold load with no in-memory token still works when the server accepts the cookie.
+- **SPEC-4.9.2**: The refresh response must require `access_token` and `refresh_token` and treat `contact` as optional. Within `contact`, `caps` must default to an empty list, `portal_id`, `company_id` and `contact_id` to none, `portal_slug` to the empty string and `effective_branding` to the empty branding block.
+- **SPEC-4.9.3**: On success `refresh_contact_session` must store the new access and refresh tokens, set the capability snapshot to `Some(caps)` (an empty list when `contact` is absent), and return `Ok(())`.
+- **SPEC-4.9.4**: On success with a `contact` snippet `refresh_contact_session` must store the last portal slug only when non-empty, the last portal id (as a decimal string) when present, the company id, the contact id and the effective branding.
+- **SPEC-4.9.5**: On any failure `refresh_contact_session` must clear the contact session (both tokens), clear the capability snapshot, reset the effective branding to the default, and return `Err` carrying the error text.
+- **SPEC-4.9.6**: In builds without the `web` feature `refresh_contact_session` must return `Err("contact refresh unavailable outside web")`.
+- **SPEC-4.9.7**: In wasm32 builds `use_contact_auto_refresh` must loop forever, waiting 120,000 ms before each iteration and calling `refresh_contact_session` only while a contact session is held. In other builds the future must return immediately.
+- **SPEC-4.9.8**: In wasm32 builds `use_contact_auto_refresh` must register at most one `window` `focus` listener per page lifetime, which spawns `refresh_contact_session` when a contact session is held, and when registering fails it must log a warning `use_contact_auto_refresh: focus listener install failed`.
+
+### 4.10 Branding data and global signal
+
+- **SPEC-4.10.1**: `EffectiveBranding` must carry exactly these optional string fields, each defaulting to none when absent: `logo_url`, `logo_mime`, `favicon_url`, `favicon_mime`, `primary_color`, `secondary_color`, `background_color`, `background_url`, `background_mime`, `display_name`, `company_name`, `legal_name`, `postal_address`, `tax_id`, `invoice_template`, `support_email`, `support_phone`, `support_contact_name` and `portal_domain`.
+- **SPEC-4.10.2**: `EffectiveBranding` must omit every `None` field when serialized, so that a save leaves absent keys untouched on the server. A caller that wants to clear a key must emit an explicit JSON null itself.
+- **SPEC-4.10.3**: `TenantBranding` and `CompanyBranding` must have the same shape as `EffectiveBranding`.
+- **SPEC-4.10.4**: `ContactOwnCompanyBranding` must deserialize `tenant`, `company` and `effective`, each defaulting to the empty branding block when absent.
+- **SPEC-4.10.5**: `EFFECTIVE_BRANDING` must start as the default (empty) block. `set_effective_branding` must replace it wholesale, and `clear_effective_branding` must reset it to the default and, in wasm32 builds, remove the brand CSS variables.
+
+### 4.11 Branding asset URLs
+
+- **SPEC-4.11.1**: `versioned_asset_url` must return the empty string for an empty URL and the URL unchanged when it already contains `v=`.
+- **SPEC-4.11.2**: Otherwise `versioned_asset_url` must append `v=<hex hash of the whole branding block>`, joined with `?` when the URL has no `?` and `&` when it does, so an unchanged block yields an identical URL and a changed block yields a new one.
+- **SPEC-4.11.3**: `absolute_versioned_asset_url` must return the empty string when the URL is empty or whitespace only.
+- **SPEC-4.11.4**: `absolute_versioned_asset_url` must version the URL, return it unchanged when it already starts with `http://` or `https://`, and otherwise in `app` builds prefix it with the API origin and in other builds return the versioned path.
+
+### 4.12 Branding presentation in the browser
+
+- **SPEC-4.12.1**: In wasm32 builds `apply_brand_css_vars` must, when `primary_color` is non-empty, set CSS variables `--accent` and `--brand-primary` on the root element to it, and otherwise remove only `--brand-primary`.
+- **SPEC-4.12.2**: `apply_brand_css_vars` must, when `secondary_color` is non-empty, set `--secondary` and `--brand-secondary`, and otherwise remove both.
+- **SPEC-4.12.3**: `apply_brand_css_vars` must, when `background_color` is non-empty, set `--bg` and `--brand-bg`, and otherwise remove only `--brand-bg` and leave `--bg` to the theme.
+- **SPEC-4.12.4**: `apply_brand_css_vars` must, when `background_url` is non-empty, set on `<body>` a `background-image` of `url("<absolute versioned URL>")` with any `"` encoded as `%22`, `background-size` `cover`, `background-position` `center`, `background-attachment` `fixed` and `background-repeat` `no-repeat`, and otherwise remove those five properties.
+- **SPEC-4.12.5**: `clear_brand_css_vars` must remove `--brand-primary`, `--brand-secondary`, `--secondary`, `--brand-bg` and `--bg` from the root element and the five background properties from `<body>`, then re-apply the theme so `--accent` returns to the user's chosen accent.
+- **SPEC-4.12.6**: In builds that are not wasm32 `apply_brand_css_vars`, `clear_brand_css_vars`, `apply_favicon`, `apply_document_title` and `use_apply_brand` must do nothing.
+- **SPEC-4.12.7**: In wasm32 builds `use_apply_brand` must re-run `apply_brand_css_vars`, `apply_favicon` and `apply_document_title` whenever `EFFECTIVE_BRANDING` changes, reading the signal with a tracked read.
+- **SPEC-4.12.8**: `apply_document_title` must set `document.title` to the brand's non-empty `display_name`, else its non-empty `company_name`, else `Mokosh Platform`.
+- **SPEC-4.12.9**: `apply_favicon` must, for every `link[rel~="icon"]` element, set `href` to the absolute versioned `favicon_url` and remove its `type` attribute when `favicon_url` is non-empty. When it is empty it must restore the first link to `/favicon.svg` with type `image/svg+xml` and the second to `/favicon.ico` with type `image/x-icon`, and leave any further links untouched.
+
+### 4.13 Runtime feature toggles
+
+- **SPEC-4.13.1**: `PublicConfig` must deserialize `features` as a map of string to bool, defaulting to empty when absent.
+- **SPEC-4.13.2**: `FEATURE_MAP` must be `None` until a read succeeds, and `FEATURES_GENERATION` must start at 0 and be incremented by the admin page after a successful toggle flip.
+- **SPEC-4.13.3**: `refresh_feature_map` must request `GET /public/config` and, on success, replace `FEATURE_MAP` with `Some(features)`.
+- **SPEC-4.13.4**: When `refresh_feature_map` fails it must keep the previous map (or `None` before the first success) and log a warning `feature-map refresh failed: {err}`.
+- **SPEC-4.13.5**: In `app` builds `use_feature_map_refresh` must, once on mount, run `refresh_feature_map` immediately and then every 60 seconds.
+- **SPEC-4.13.6**: `feature_enabled` must return the stored bool for a present key and false for a missing key and for an unloaded (`None`) map.
+- **SPEC-4.13.7**: `use_feature_enabled` must subscribe the calling component to both `FEATURES_GENERATION` and `FEATURE_MAP` and return `feature_enabled` for the key.
+
+### 4.14 Shared session caches
+
+- **SPEC-4.14.1**: The asset-types endpoint path must be `/asset-types`, and every list, create, update and delete call for asset types must reference the `ENDPOINT` constant rather than repeating the literal.
+- **SPEC-4.14.2**: `AssetTypeRow` must require `id` as a UUID and default `name` to the empty string when absent.
+- **SPEC-4.14.3**: `use_asset_types_provider` must register one shared list named `asset types` against `/asset-types` at the application root, and `use_asset_types(enabled)` must return the shared resource, where a single caller passing `true` triggers the one underlying fetch for all callers.
+- **SPEC-4.14.4**: `DashboardReportLite` must deserialize `open_by_priority` (default empty), `sla_warnings` (default 0) and `sla_breached` (default 0), and each `ReportBucket` must default `label` to the empty string and `count` to 0.
+- **SPEC-4.14.5**: `provide_dashboard_report` must provide a `wanted` flag starting false and a shared resource that reads `SERVER_REACHABLE` and the active-tenant generation before awaiting, so a change in either re-runs it.
+- **SPEC-4.14.6**: The shared dashboard-report resource must resolve to `None` while no consumer has asked for it. Once asked, in `app` builds it must resolve to the outcome of an authenticated `GET /reports/dashboard`, and in other builds to `Some(Ok(default report))`.
+- **SPEC-4.14.7**: `use_dashboard_report` must set `wanted` true if not already, and return the shared outcome classified by `classify_remote` with the current server-reachable state, so a failed fetch stays distinguishable from an empty report.
+- **SPEC-4.14.8**: The literal `/reports/dashboard` must appear in the shared hook only, and the dashboard widgets must read the report through `use_dashboard_report`.
+
+### 4.15 Debounced text signal
+
+- **SPEC-4.15.1**: `use_debounced_signal(source, ms)` must return a signal whose initial value is the source's value at first render.
+- **SPEC-4.15.2**: Each change to `source` must increment a generation counter, wait `ms` milliseconds, and write the captured value to the returned signal only if the counter is still the one taken at the change, so only the last value in a burst is written.
+- **SPEC-4.15.3**: The returned signal must never be written once per keystroke in a burst, and must settle on the value of the last keystroke.
+
+### 4.16 Dropdown keyboard contract
+
+- **SPEC-4.16.1**: `step_index` must return `None` for an empty list. With nothing highlighted, both directions must return row 0. Otherwise it must clamp an out-of-range index to the last row, then move one row, clamped at both ends and never wrapping.
+- **SPEC-4.16.2**: `commit_index` must return `None` for an empty list and otherwise the highlighted index when it is within range, else row 0.
+- **SPEC-4.16.3**: `NavRows::new(results, has_create)` must set `len` to `results` plus one when a create action exists and set `create_index` to `Some(results)` only when it exists, so the create action is the last row and the only row when there are no results.
+- **SPEC-4.16.4**: `decide` must map ArrowDown and ArrowUp to `Open` with the `step_index` result in both modes, whether the list is open or closed.
+- **SPEC-4.16.5**: In combobox mode with the list open, `decide` must map Enter to `Commit` with `prevent_default` true. When `enter_takes_first` is set the index must be `commit_index` (first row when nothing is highlighted or the highlight is stale). When it is not set, the index must be the highlighted row only when in range, otherwise Enter must be ignored.
+- **SPEC-4.16.6**: In combobox mode with the list open and Shift not held, `decide` must map Tab to `Commit` with `prevent_default` false using `commit_index`, and to `Ignore` when the list has no rows.
+- **SPEC-4.16.7**: `decide` must ignore Tab with Shift held, Tab and Enter when the list is closed, and Tab and Enter in menu mode, leaving them to the browser.
+- **SPEC-4.16.8**: `decide` must map Escape to `Close` in every state and mode, and every other key to `Ignore`.
+
+### 4.17 Dropdown state, handlers and ARIA
+
+- **SPEC-4.17.1**: `use_dropdown_nav` must start closed with no highlight, in combobox mode with `enter_takes_first` off, and assign each instance a process-unique sequence number so two dropdowns never share element ids.
+- **SPEC-4.17.2**: `DropdownNav::enter_takes_first_match` must turn on first-row Enter for that instance, and `DropdownNav::menu` must switch the instance to menu mode, without changing any signal state.
+- **SPEC-4.17.3**: `panel_id` must return `{base}-{seq}-listbox`, `row_id(index)` must return `{base}-{seq}-opt-{index}`, and `row_id_prefix` must return `{base}-{seq}-opt-`.
+- **SPEC-4.17.4**: `active_descendant` must return the highlighted row's id and `None` when nothing is highlighted. `expanded` must return `"true"` when open and `"false"` otherwise, and `row_selected` must return `"true"` only for the highlighted row.
+- **SPEC-4.17.5**: `row_class(index, base)` must append ` bg-surface-2` to `base` for the highlighted row and return `base` unchanged for every other row.
+- **SPEC-4.17.6**: `open` must show the panel and keep the highlight, `open_fresh` must show the panel and clear the highlight, and `close` must hide the panel and clear the highlight without committing.
+- **SPEC-4.17.7**: `is_open_untracked` must read the open state without subscribing the caller, and a `use_effect` must use it rather than `is_open`.
+- **SPEC-4.17.8**: On an `Open` action `keydown` must call `prevent_default`, open the panel, set the highlight to the given index and, when an index exists, scroll that row into view, aligned to the top for ArrowUp.
+- **SPEC-4.17.9**: On a `Commit` action `keydown` must call `prevent_default` only when the action asks for it, close the panel and then invoke the commit callback with the row index.
+- **SPEC-4.17.10**: On a `Close` action `keydown` must close the panel and reset the highlight, and it must return the action to the caller so the caller can add its own teardown.
+- **SPEC-4.17.11**: `keydown_menu` must behave as `keydown` with a commit callback that does nothing.
+- **SPEC-4.17.12**: In builds without the `app` feature the scroll-into-view call must do nothing.
+
+### 4.18 Offline edit queue
+
+- **SPEC-4.18.1**: `PendingEdit` must carry a submit-order `seq`, an API `path` relative to the API base, a `method` of `Post`, `Put`, `Patch` or `Delete`, and a serialized JSON `body` that is the empty string for bodiless verbs.
+- **SPEC-4.18.2**: In `app` builds `EDIT_QUEUE` must start empty and `enqueue_pending_edit` must append to it. In other builds `enqueue_pending_edit` must do nothing.
+- **SPEC-4.18.3**: In `app` builds `replay_pending_edits` must return at once when the queue is empty, and otherwise clear the queue without re-issuing any request. In other builds it must do nothing.
+- **SPEC-4.18.4**: `use_replay_pending_edits` must start no task and change no state in every build.
+
+### 4.19 Source-level invariants
+
+- **SPEC-4.19.1**: No `use_effect` call anywhere under `src` may call `.is_open()` on a dropdown, because the tracked read re-runs the effect when the dropdown opens and closes it in the same frame.
+- **SPEC-4.19.2**: No `use_effect` that writes `EFFECTIVE_BRANDING` (through `set_effective_branding`, `clear_effective_branding` or a direct write) may also read it with a tracked read, because its own write would re-run it indefinitely.
+- **SPEC-4.19.3**: `auth.rs` must contain exactly three polling loops, each evaluating before its first wait and each waiting on `sleep_or_wake(POLL_INTERVAL_MS)` after installing the visibility listener.
+
+### 4.20 Shared reference lists and hooks module surface
+
+- **SPEC-4.20.1**: The KB categories hook must read and share the list from `GET /kb/categories`, and the category create and update calls must target the same path through the exported `ENDPOINT` constant.
+- **SPEC-4.20.2**: `use_kb_categories_provider` must be called once at the App root and must register one shared list of `KbCategory` rows labelled "KB categories" against `/kb/categories`.
+- **SPEC-4.20.3**: `use_kb_categories(enabled)` must return the shared `Resource<Vec<KbCategory>>`, and passing `enabled = true` from any single mount must be enough to trigger the one underlying fetch that every consumer then shares.
+- **SPEC-4.20.4**: After a category create, update or delete, the caller must call `restart()` on the returned resource so every consumer re-fetches the list.
+- **SPEC-4.20.5**: The payment-terms hook must read and share the list from `GET /payment-terms`, and the settings admin create, update and delete calls must target the same path through the exported `ENDPOINT` constant.
+- **SPEC-4.20.6**: A `PaymentTermRow` must decode with `id` (UUID) required, and with `name` defaulting to "", `is_active` to false, `is_default` to false and `net_days` to none when absent.
+- **SPEC-4.20.7**: `use_payment_terms_provider` must be called once at the App root and must register one shared list of `PaymentTermRow` labelled "payment terms" against `/payment-terms`.
+- **SPEC-4.20.8**: `use_payment_terms(enabled)` must return the shared `Resource<Vec<PaymentTermRow>>`, and passing `enabled = true` from any single mount must trigger the one fetch that every consumer then shares.
+- **SPEC-4.20.9**: The `hooks::fetch` module must stay publicly visible, because code outside `hooks` (the OIDC callback and the login handler) sets and clears the global access-token holder through `fetch::api`.
+- **SPEC-4.20.10**: The `hooks` module must re-export the fetch helpers, the KB-categories hooks, the mention hooks, the payment-terms hooks, `RemoteData`, `classify_remote`, `use_remote_resource`, and the server-status hooks `use_server_reachable`, `use_server_status_monitor`, `use_update_pending` and `use_can_mutate`.
+
+### 4.21 Mention directory
+
+- **SPEC-4.21.1**: The mention directory must be read from `GET /auth/directory` (the endpoint open to any authenticated user) and must never be read from `/auth/users`, which is restricted to managers.
+- **SPEC-4.21.2**: The directory must be read with the paging helper `get_all_authed`, so every page of the list is requested until a short page arrives.
+- **SPEC-4.21.3**: `use_mention_directory_provider` must be called once at the App root and must provide a single shared resource of `Option<Vec<Mention>>` plus a separate `DirectoryWanted` flag that is false at start.
+- **SPEC-4.21.4**: The shared resource must make no request while the wanted flag is false, and must resolve to none in that state.
+- **SPEC-4.21.5**: `use_mention_directory(true)` must set the wanted flag to true, and the flag must never be set back to false; `use_mention_directory(false)` must not block or discard a directory that another consumer already requested.
+- **SPEC-4.21.6**: The shared resource must read the active-tenant generation before its wanted-flag check, so it re-fetches after an org switch or token change.
+- **SPEC-4.21.7**: Each directory row must become a `Mention` whose `id` is the UUID as text, whose `handle` is the row handle, and whose `display` is the row name, or the handle when the name is empty or whitespace only.
+- **SPEC-4.21.8**: A directory row without `name` or `handle` must decode with an empty string for the missing field, and a row without a valid `id` must fail the whole load.
+- **SPEC-4.21.9**: When the directory load fails, the hook must log a warning "mention directory load failed: {error}" and the resource must resolve to none, with no toast and no page error.
+- **SPEC-4.21.10**: `mention_people` must return an empty list while the directory is loading or after it failed, and the directory contents otherwise.
+- **SPEC-4.21.11**: Builds without the `app` feature must resolve the directory to none without any request.
+
+### 4.22 Gated module flags
+
+- **SPEC-4.22.1**: The client must list exactly these ten gated modules in this order, by name: `billing`, `projects`, `calendar`, `contracts`, `assets`, `knowledge_base`, `rmm_integration`, `reports`, `time_tracking`, `timesheets`.
+- **SPEC-4.22.2**: The labels of those modules must be, in order: "Billing", "Projects", "Calendar", "Contracts", "Assets", "Knowledge base", "RMM integration", "Reports", "Time tracking", "Timesheets".
+- **SPEC-4.22.3**: Each module must carry an "off means" sentence ending in a full stop, shown on the Modules page, with these meanings: billing "Invoices, payments, credit notes, statements and products answer not found."; projects "Projects and tasks answer not found."; calendar "Appointments, scheduling and dispatch answer not found."; contracts "Contracts and block hours answer not found; time is billed hourly."; assets "Assets and their RMM mappings answer not found."; knowledge_base "Articles, categories and their comments answer not found."; rmm_integration "RMM connections, device mappings and alert rules answer not found."; reports "Reports and saved reports answer not found."; time_tracking "Time entries, timers and mileage answer not found; timesheets and the work-day clock go with them."; timesheets "Submitting a week for approval, the work-day clock and breaks answer not found; the Timesheets pages and the clock-in strip are hidden."
+- **SPEC-4.22.4**: The flags must be read from `GET /settings/modules`, paged to the end with `get_all_authed_typed`, and each row must decode with `module_name` defaulting to "" and `is_enabled` defaulting to false.
+- **SPEC-4.22.5**: `enabled_in` must report a module as on only when a row with that exact `module_name` has `is_enabled` true, and a module with no row must read as off.
+- **SPEC-4.22.6**: A successful load must produce flags tagged with the generation it was requested for, holding only the names of enabled rows.
+- **SPEC-4.22.7**: A failed load must leave the cached flags untouched, and must not write an empty flag set, so a later mount or generation change retries instead of reading every module as off.
+- **SPEC-4.22.8**: On a failed load the client must log an error "module flags load failed, not caching every module as off: {error}" and must show an error toast "Could not load module settings: {user message of the error}".
+- **SPEC-4.22.9**: `refresh_module_flags` must start no second request while a load for the same generation is in flight, and must clear its in-flight marker when the load finishes, whether it succeeded or failed.
+- **SPEC-4.22.10**: `module_flags()` must return the cached flags only when their generation equals the active-tenant generation, and none otherwise, and reading it must subscribe the caller to the cache.
+- **SPEC-4.22.11**: `use_module_flags` must load flags only for a staff session, meaning an access token is held and no contact session exists, and must do so in an effect that re-runs when the generation or the staff state changes.
+- **SPEC-4.22.12**: `use_module_flags` must start a load only when the cache is missing or its generation differs from the active generation.
+- **SPEC-4.22.13**: `use_module_enabled(name)` must be false until the first load lands, false for a contact session, and false for a module with no row, so a switched-off feature is never listed.
+- **SPEC-4.22.14**: Builds without the `app` feature must report no flags and every module as off.
+- **SPEC-4.22.15**: The Modules page must call `refresh_module_flags` after a module toggle so the nav reflects the change.
+
+### 4.23 Pending login carrier
+
+- **SPEC-4.23.1**: The `PENDING_LOGIN` global signal must hold the state between `/login` and its downstream routes `/pick-tenant` and `/create-org`, and must start empty: no identity token and no memberships.
+- **SPEC-4.23.2**: The pending state must be held in memory only, never in sessionStorage or localStorage, so a full page reload discards it.
+- **SPEC-4.23.3**: The identity token field must hold the short-lived identity-typed token from the login response, and must be none when no flow is in flight.
+- **SPEC-4.23.4**: A picker membership row must require `tenant_id`, `tenant_name` and `role`, and must decode `tenant_slug`, `tenant_kind` and `status` as "" and `is_active` as false when absent.
+- **SPEC-4.23.5**: The downstream pages must clear the signal back to its empty default when their submit completes, and must send the operator back to `/login` when they mount with no identity token.
+
+### 4.24 Remote data loading
+
+- **SPEC-4.24.1**: `RemoteData<T>` must be one of `Loading` (first request in flight), `Ready(T)` (a payload, or the type default after a non-outage failure) and `Unavailable` (the request failed while the server is flagged unreachable).
+- **SPEC-4.24.2**: `classify_remote` must return `Loading` when the outcome is unresolved, regardless of reachability.
+- **SPEC-4.24.3**: `classify_remote` must return `Ready(value)` for a successful outcome, regardless of reachability.
+- **SPEC-4.24.4**: `classify_remote` must return `Unavailable` for a failed outcome while the server is flagged unreachable.
+- **SPEC-4.24.5**: `classify_remote` must return `Ready(T::default())` for a failed outcome while the server is flagged reachable, so a 4xx or decode error does not show the outage state, which the reconnect poll could never clear.
+- **SPEC-4.24.6**: `is_loading` and `is_unavailable` must be true only for their own variant, `ready` and `into_ready` must yield a value only for `Ready`, and `value_or_default` must return the type default for `Loading` and `Unavailable`.
+- **SPEC-4.24.7**: `use_remote_resource` must run the supplied fetcher, which must return the raw `Result<T, String>` and not swallow its failure.
+- **SPEC-4.24.8**: `use_remote_resource` must read `SERVER_REACHABLE` and the active-tenant generation before its first await, so the resource re-fetches when reachability flips and when the tenant changes.
+- **SPEC-4.24.9**: `use_remote_resource` must classify using the reachability value read at render time.
+- **SPEC-4.24.10**: Builds without the `app` feature must return `Ready(T::default())` from `use_remote_resource` and must not call the fetcher.
+- **SPEC-4.24.11**: A page whose primary resource is `Unavailable` must render the `ContentUnavailable` component in place of an empty body.
+
+### 4.25 Server reachability monitor and mutation gate
+
+- **SPEC-4.25.1**: `use_server_reachable` must return the live `SERVER_REACHABLE` flag and subscribe the calling component to it, and must return true in builds without the `app` feature.
+- **SPEC-4.25.2**: `use_update_pending` must return the live `UPDATE_PENDING` flag and subscribe the calling component to it, and must return false in builds without the `app` feature.
+- **SPEC-4.25.3**: `use_can_mutate` must equal `use_server_reachable`, so Save and submit controls are disabled while the server is flagged unreachable and re-enable on their own when the flag returns to true, and must return true in builds without the `app` feature.
+- **SPEC-4.25.4**: `use_server_status_monitor` must be mounted once at the App root and must make no network request while the server is flagged reachable.
+- **SPEC-4.25.5**: While the server is flagged unreachable, the monitor must wait 10 seconds (`RECOVERY_POLL_SECS`) and then issue `GET /ready` through the probe helper, repeating that cycle, with no probe before the first wait.
+- **SPEC-4.25.6**: The monitor must stop polling as soon as the flag is true after a probe, and must also stop when the flag flips to true through any other successful request.
+- **SPEC-4.25.7**: The monitor must discard the probe's result and must rely on the probe helper to classify its own response so a recovered server flips the flag back to true.
+- **SPEC-4.25.8**: Builds without the `app` feature must run no monitor.
+
+### 4.26 Reachability classification
+
+- **SPEC-4.26.1**: `SERVER_REACHABLE` must be true at startup.
+- **SPEC-4.26.2**: `note_response_status` must treat a status from 500 to 599 as a failure and every other status, including 4xx, as a success.
+- **SPEC-4.26.3**: Each response must be classified exactly once by the fetch layer, so one 5xx response never counts as two consecutive failures.
+- **SPEC-4.26.4**: Every completed response, 2xx included, from every request helper must be classified, so a successful request clears the unreachable state and resets the failure counter.
+- **SPEC-4.26.5**: The server must be flagged unreachable only after 2 consecutive failures (`CONSECUTIVE_FAILURES_FOR_DOWN`), and a single 5xx or transport failure must not raise the flag.
+- **SPEC-4.26.6**: `classify_failure(current, threshold)` must return the next count as `current + 1`, saturating at `u32::MAX`, and must report the down transition when that count is at least the threshold.
+- **SPEC-4.26.7**: A recorded success must reset the consecutive-failure counter to zero when it was not zero, and must set the flag to true.
+- **SPEC-4.26.8**: The reachability flag must be written only when its value changes, so a successful request does not wake every reader.
+- **SPEC-4.26.9**: A transport failure at a request send (no response, DNS failure, timeout) must count as one failure, and a request-body serialization failure or a response-body decode failure must not.
+- **SPEC-4.26.10**: Each classified status for which `is_version_skew_status` is true must also call `note_possible_version_skew`, so the update banner can appear in the same interaction.
+
+### 4.27 Session signals and generation counters
+
+- **SPEC-4.27.1**: `TENANT_GENERATION` must start at 0, and `active_tenant_generation()` must return it and, when called inside a resource closure, subscribe that resource to it; builds without the `app` feature must return 0.
+- **SPEC-4.27.2**: `set_access_token` must increment `TENANT_GENERATION` only when the stored token value actually changes, so setting the identical token twice at startup does not double every fetch.
+- **SPEC-4.27.3**: `bump_tenant_generation` must increment `TENANT_GENERATION` without changing the token, so every resource subscribed to it re-fetches.
+- **SPEC-4.27.4**: Where the `web` feature is on, `bump_portal_roles_generation` must increment `PORTAL_ROLES_GENERATION` by one and `active_portal_roles_generation` must read it; without `web` the read must return 0 and the bump must do nothing.
+- **SPEC-4.27.5**: `ACCOUNT_DELETED` must start false and must become true when any response is a 410 whose error envelope code is exactly "ACCOUNT_DELETED", through both the string-error and the typed-error response paths.
+- **SPEC-4.27.6**: `ACCOUNT_DELETED` must never return to false, and `note_account_deleted` must write the signal only on the first observation.
+- **SPEC-4.27.7**: On non-wasm builds, `SESSION_ENDED` must start false and `note_session_ended` must set it to true, writing only when it is not already true.
+
+### 4.28 API base URL resolution
+
+- **SPEC-4.28.1**: `api_base()` must resolve once per process and return the cached value on every later call.
+- **SPEC-4.28.2**: When the runtime configuration key `api_base` is set, it must be used first, with all trailing slashes removed.
+- **SPEC-4.28.3**: When the browser host without its port equals the configured portal host (case-insensitive) and that portal host is `localhost` or ends in `.localhost`, the base must be the same-origin `/api/v1`.
+- **SPEC-4.28.4**: When the host matches a non-local configured portal host, the base must be `https://api.<apex>/api/v1`, where `<apex>` is the portal host minus its leading label; if the portal host has no dot or the apex would be empty, resolution must continue to the next rule.
+- **SPEC-4.28.5**: When the host starts with `msp.`, the base must be `https://api.msp.<rest>/api/v1`, where `<rest>` is the host after that prefix (for example `msp.example.com` gives `https://api.msp.example.com/api/v1`).
+- **SPEC-4.28.6**: When no rule matches in a browser build, the base must be the same-origin `/api/v1`.
+- **SPEC-4.28.7**: When no rule matches in a desktop build, the base must be the build-time `MOKOSH_API_BASE` value (trailing slashes removed) when set and non-empty, and `http://localhost:8080/api/v1` otherwise.
+- **SPEC-4.28.8**: `normalize_api_base` must remove every trailing `/` from a configured base so joined paths never contain `//`.
+- **SPEC-4.28.9**: `strip_api_version` must remove a trailing `/api/v1` from a base and must return any other base unchanged, and `api_origin()` must apply it to `api_base()` (an empty string for the same-origin dev base).
+- **SPEC-4.28.10**: `post_typed`, `get_typed` and `post_typed_no_content` must send an `X-Forwarded-Host` header carrying the browser host including its port, and must omit the header when the host is unavailable or empty.
+
+### 4.29 Token holders and plane isolation
+
+- **SPEC-4.29.1**: The staff access token must be held in memory only by the fetch layer, must be none before sign-in, and must never be written to localStorage by this module.
+- **SPEC-4.29.2**: The portal access token, the portal refresh token, the contact access token and the contact refresh token must each be held in memory only, must be none until set, and setting any of them must not change `TENANT_GENERATION`.
+- **SPEC-4.29.3**: `has_portal_session` must be true exactly when a portal access token is held, and `has_contact_session` must be true exactly when a contact access token is held.
+- **SPEC-4.29.4**: The contact company id and the contact id must be held in memory only, must be none until a contact auth response supplies them, and a gate that needs the contact id must treat none as unknown and deny.
+- **SPEC-4.29.5**: `clear_contact_session` must clear the contact access token, refresh token, company id and contact id, and, in a browser build, must remove the localStorage keys `mokosh:contact_last_slug` and `mokosh:contact_last_portal_id`.
+- **SPEC-4.29.6**: `clear_staff_session_for_plane_switch` must set the staff token to none, must clear the stored OIDC and standalone sessions, and, in a browser build, must remove the sessionStorage key `mokosh:platform_token`.
+- **SPEC-4.29.7**: `on_staff_signin_clear_contact_side` must clear the contact session, the contact capabilities and the effective branding, and must be called on every path that lands a fresh staff access token.
+- **SPEC-4.29.8**: `on_contact_signin_clear_staff_side` must clear the staff session as in `clear_staff_session_for_plane_switch` and the effective branding, and must be called on every path that lands a fresh contact access token.
+- **SPEC-4.29.9**: The staff, portal, contact and platform request helpers must each read only their own plane's token and must never fall back to another plane's token.
+- **SPEC-4.29.10**: With no portal session, string-returning portal helpers must fail with "not signed in to the portal" and typed portal helpers must fail with a 401 status error with an empty message, without sending a request.
+- **SPEC-4.29.11**: With no contact session, contact helpers must fail with a 401 status error with the message "not signed in to the contact portal", without sending a request.
+- **SPEC-4.29.12**: With no platform token, string-returning platform helpers must fail with "not signed in as a platform admin" and typed platform helpers must fail with a 401 status error carrying that message, without sending a request.
+- **SPEC-4.29.13**: With no staff token, `put_authed`, `patch_authed`, `delete_authed`, `post_authed_no_content`, `put_authed_json_no_content` must fail with "not authenticated", `get_all_authed` and `get_all_authed_any` must fail with "not authenticated", the typed put, patch and delete helpers must fail with a 401 status error with an empty message, and `put_file_authed` and `post_file_authed` must fail with a network error "not authenticated".
+- **SPEC-4.29.14**: With no staff token, `get_authed`, `post_authed`, `get_authed_typed`, `post_authed_typed` and `get_authed_bytes` must still send the request without an `Authorization` header and let the server's response surface.
+- **SPEC-4.29.15**: `current_platform_access_token` must read the sessionStorage key `mokosh:platform_token` and return none when the key is missing, blank after trimming, or storage is unavailable, and must return none in non-browser builds.
+
+### 4.30 Access token renewal
+
+- **SPEC-4.30.1**: The held staff access token must be treated as stale when a token is held, a persisted expiry exists, and that expiry is at most 60 seconds away or already past (`REFRESH_WINDOW_SECS`); with no token or no persisted expiry it must not be stale.
+- **SPEC-4.30.2**: `persisted_expiry` must return the expiry of the stored OIDC tokens when present, else that of the stored standalone session, else none.
+- **SPEC-4.30.3**: `ensure_fresh_access_token` must do nothing when the token is not stale, and must otherwise renew it before the request is sent.
+- **SPEC-4.30.4**: When renewal before a request fails, `ensure_fresh_access_token` must log a warning "access-token renewal before a request failed: {error}", must not sign the user out, and must let the request go out so its 401 decides.
+- **SPEC-4.30.5**: Concurrent renewals must join the one renewal in flight, so a loop tick and a request-time renewal spend one refresh token between them.
+- **SPEC-4.30.6**: A caller must clear only its own renewal flight, and when it does clear it the outcome and the completion time must be recorded as the last renewal.
+- **SPEC-4.30.7**: Renewal must use the stored OIDC session first when one exists; if it has no refresh token the renewal must fail with "the stored OIDC session carries no refresh token".
+- **SPEC-4.30.8**: OIDC renewal must exchange the refresh token and the stored id token for new tokens, must persist them, and must set the new access token last, so resources re-driven by the generation bump see the persisted token.
+- **SPEC-4.30.9**: Without a stored OIDC session, renewal must use the stored standalone session; if it has no refresh token the renewal must fail with "the stored standalone session carries no refresh token".
+- **SPEC-4.30.10**: Standalone renewal must `POST /auth/refresh` with a body `{"refresh_token": ...}` and no bearer, must persist the new access token, the new refresh token and expiry while keeping the stored user, and must set the new access token last.
+- **SPEC-4.30.11**: With neither a stored OIDC session nor a stored standalone session, renewal must fail with "no persisted session to renew".
+- **SPEC-4.30.12**: A `_with_auth` helper must treat a request as agent-lane only when the bearer it was given equals the staff token currently held, and for an agent-lane request it must renew a stale token first and send the token held after renewal.
+- **SPEC-4.30.13**: A bearer that is not the held staff token (portal, contact, platform, or none) must be sent unchanged with no renewal.
+
+### 4.31 Agent 401 handling and session end
+
+- **SPEC-4.31.1**: An agent-lane response of 401 must run the agent-unauthorized handler before the error is returned to the caller, and the caller must still receive the error.
+- **SPEC-4.31.2**: When the last renewal completed less than 30 seconds ago (`RENEWAL_DEBOUNCE_SECS`) and succeeded, the handler must do nothing, because the 401 answered the replaced token.
+- **SPEC-4.31.3**: When the last renewal completed less than 30 seconds ago and failed, the handler must log a warning "agent bearer rejected and the last renewal failed: {error}" and end the session without a new renewal attempt.
+- **SPEC-4.31.4**: Otherwise the handler must attempt one renewal, and on failure must log a warning "agent bearer rejected and could not be renewed: {error}" and end the session.
+- **SPEC-4.31.5**: Ending the agent session must set the staff token to none and clear the stored OIDC and standalone sessions.
+- **SPEC-4.31.6**: In a browser build, ending the agent session must navigate to `/client/login` with a full page load, and if that navigation fails it must log a warning "could not redirect to /client/login after signing out: {error}".
+- **SPEC-4.31.7**: In a desktop build, ending the agent session must raise `SESSION_ENDED` so the app-root watcher clears the auth context and the route guard shows the login screen.
+- **SPEC-4.31.8**: A 401 on a request that sent no bearer (for example `POST /auth/login`), or the portal, contact or platform bearer, must not renew the token and must not end the agent session.
+- **SPEC-4.31.9**: The typed staff helpers must run the agent-unauthorized handler on a 401 only when a staff bearer was actually sent.
+- **SPEC-4.31.10**: `get_authed_bytes_typed` must send the contact token when one is held and otherwise the staff token, must renew the staff token only when no contact session is held, and must run the agent-unauthorized handler on a 401 only when a bearer was sent and no contact session is held.
+- **SPEC-4.31.11**: Every staff-bearer request helper, including the dual-plane `_any_` typed and bytes helpers when they send the staff token, must renew a stale token before sending and must run the agent-unauthorized handler on a 401.
+
+### 4.32 Error text for string-returning helpers
+
+- **SPEC-4.32.1**: On a non-2xx response, the string-returning helpers must classify the status, read the body, and return a user-facing message built by the rules below.
+- **SPEC-4.32.2**: A 429 must return "Too many requests. Try again {wait}." when the body yields a wait phrase from `retry_after_phrase`, and "Too many requests. Please wait a moment and try again." otherwise.
+- **SPEC-4.32.3**: When the body parses as the standard error envelope and the status is 422 with at least one field error, the message must be the field messages joined by "; ".
+- **SPEC-4.32.4**: When the status is 401 or 403 and the trimmed envelope message is empty or one of "Authentication required", "Access denied", "Access denied: Access denied", "Forbidden", "Unauthorized", the message must be the permission message instead.
+- **SPEC-4.32.5**: Otherwise a non-empty envelope message must be returned verbatim, and an empty one must fall back to the status-class message.
+- **SPEC-4.32.6**: When the body does not parse as the standard envelope, or cannot be read, the message must be the status-class message.
+- **SPEC-4.32.7**: The permission message in a browser build must be "You don't have permission to perform this action. Contact your administrator or support team if you think you should." when a staff or contact token is held, and "Your session has ended. Please sign in again." when none is held; in a desktop build it must be "You don't have permission to perform this action."
+- **SPEC-4.32.8**: The status-class message must be: 400 "The request was rejected. Please check the form and try again."; 401 and 403 the permission message; 404 "The requested resource was not found."; 409 "The change conflicts with another update. Please refresh and retry."; 422 "Validation failed. Please check the form fields."; 500 to 599 "The server hit an error. Please try again."; any other status "Request failed ({status}).".
+- **SPEC-4.32.9**: A transport failure on a string-returning helper must return the transport error text, and a 2xx body that fails to decode must return the decode error text.
+
+### 4.33 Typed API errors
+
+- **SPEC-4.33.1**: `ApiError` must be one of `Network(text)` (no response received), `Status` (a non-2xx response, carrying code, message, field errors, envelope code and raw envelope JSON) and `Decode(text)` (a 2xx response whose body could not be decoded).
+- **SPEC-4.33.2**: `handle_response` must classify the status, decode a 2xx body into the requested type, and map a decode failure to `Decode`.
+- **SPEC-4.33.3**: For a 429, `handle_response` must return a `Status` whose message is the rate-limit message from SPEC-4.32.2, with no field errors, an empty envelope code and no raw JSON.
+- **SPEC-4.33.4**: For another non-2xx response whose body parses as the standard envelope, the `Status` must carry the envelope message, the field errors (empty when absent), the envelope code, and the raw JSON of the body.
+- **SPEC-4.33.5**: For a non-2xx body that is not the standard envelope, or cannot be read, the `Status` must carry the first 200 characters of the body as its message, no field errors, an empty envelope code and no raw JSON.
+- **SPEC-4.33.6**: `user_message` must return "Network error. Check your connection and try again." for `Network`, and "The server's response could not be read. Please refresh and retry." for `Decode`.
+- **SPEC-4.33.7**: For `Status`, `user_message` must return a non-generic 401 or 403 message verbatim and the permission message for a generic or empty one, "The requested resource was not found." for 404, the message for 409 when non-empty, the joined field messages for 422 when field errors exist, the message for 422 when non-empty, the message for 429, and "The server hit an error. Please try again." for 500 to 599.
+- **SPEC-4.33.8**: For any other `Status`, `user_message` must return the message when non-empty and "Request failed ({code})." otherwise; this includes a 409 or 422 with an empty message and no field errors.
+- **SPEC-4.33.9**: `ApiError` must display as "network error: {text}", "http {code}: {message}" (or "http {code}" for an empty message) and "decode error: {text}".
+- **SPEC-4.33.10**: `status_code` must return the code only for `Status`, `field_errors` must return the field errors or an empty slice, and `field_message(field)` must return the message of the first field error whose field name equals the argument.
+- **SPEC-4.33.11**: Every typed helper that builds a `Status` from a non-2xx response, including the portal, contact, staff and platform no-content and bytes helpers, must return the SPEC-4.33.3 rate-limit message for a 429.
+
+### 4.34 Request helper families
+
+- **SPEC-4.34.1**: Every request must be sent to the resolved API base joined with the given path, which must start with `/`.
+- **SPEC-4.34.2**: The `_with_auth` helpers must send `Authorization: Bearer <token>` and, in the agent lane, must renew a stale token first and run the agent-unauthorized handler on a 401.
+- **SPEC-4.34.3**: The auto-authed staff helpers (`get_authed`, `post_authed`, `put_authed`, `patch_authed`, `delete_authed`, `post_authed_no_content`, `put_authed_json_no_content`, `get_all_authed`) must renew a stale token, then read the held token and delegate to the matching `_with_auth` helper.
+- **SPEC-4.34.4**: The `_any_` helpers (`get_authed_any`, `get_all_authed_any`, `get_authed_any_typed`, `post_authed_any_typed`, `patch_authed_any_typed`, `get_authed_any_bytes`) must use the contact token when held and otherwise the staff token; the typed, bytes and single-page string variants other than the paging one must send no `Authorization` header when neither exists, and `get_all_authed_any` must fail with "not authenticated".
+- **SPEC-4.34.5**: The unauthenticated helpers (`get`, `post`, `post_typed`, `get_typed`, `post_typed_no_content`) must send no `Authorization` header.
+- **SPEC-4.34.6**: The portal helpers must send only the portal token, the contact helpers only the contact token, and the platform helpers only the platform token.
+- **SPEC-4.34.7**: A JSON-body helper that cannot serialize its body must fail with the serialization error text (string helpers) or `ApiError::Network` (typed helpers), without sending a request.
+- **SPEC-4.34.8**: The string-returning JSON helpers must return the decoded body on a 2xx and the error text of SPEC-4.32 otherwise.
+
+### 4.35 Request helper behavior details
+
+- **SPEC-4.35.1**: `probe(path)` must send an unauthenticated GET and return the status and raw body for any HTTP status, including 503, must classify the status once for reachability, and must fail only on a transport failure or an unreadable body.
+- **SPEC-4.35.2**: A no-content helper (`delete_with_auth`, `post_no_content_with_auth`, `put_authed_json_no_content`, the `*_no_content` and `*_json_no_content` helpers) must return success on any 2xx without reading the body.
+- **SPEC-4.35.3**: A typed no-content helper must return a `Status` error carrying the parsed envelope on a non-2xx, as in SPEC-4.33.4 and SPEC-4.33.5.
+- **SPEC-4.35.4**: `put_file_authed` and `post_file_authed` must renew a stale token, require a staff token (else `Network("not authenticated")`), send the file as multipart form data under the part name `file` with the given file name and MIME type, must not set `Content-Type` themselves so the browser supplies the boundary, and must run the agent-unauthorized handler on a 401.
+- **SPEC-4.35.5**: The wasm-only FormData helpers (`post_portal_authed_multipart`, `put_authed_multipart`, `put_contact_authed_multipart`) must send the given form as the body without setting `Content-Type`.
+- **SPEC-4.35.6**: Bytes helpers must return the response bytes and the filename from the `Content-Disposition` header on a 2xx, an error on a non-2xx, and an error when the body cannot be read.
+- **SPEC-4.35.7**: The filename parser must find `filename=` case-insensitively, accept a double-quoted value or an unquoted value ended by `;`, trim whitespace, return none when the value is empty or the key is absent, and must not interpret the `filename*=` form.
+- **SPEC-4.35.8**: The portal, contact and platform no-content and bytes helpers must classify each response status for reachability.
+
+### 4.36 Paged list reads and list fallback
+
+- **SPEC-4.36.1**: `MAX_PER_PAGE` must equal the shared `PaginationParams::MAX_PER_PAGE`, and every page requested by the `get_all_*` helpers must ask for that `per_page`.
+- **SPEC-4.36.2**: `paged_path` must append `page=<n>&per_page=<MAX_PER_PAGE>` to a path, using `?` when the path has no query and `&` when it has one, preserving the caller's filters.
+- **SPEC-4.36.3**: A `get_all_*` caller must not put `page` or `per_page` in its own path.
+- **SPEC-4.36.4**: The `get_all_*` helpers (`get_all_with_auth`, `get_all_authed`, `get_all_portal_authed`, `get_all_authed_any`, `get_all_authed_typed`) must request pages 1 upward, append each page's rows in order, and stop on the first page with fewer than `MAX_PER_PAGE` rows.
+- **SPEC-4.36.5**: If 100 consecutive pages (`MAX_PAGES`) are all full, the helper must fail with "{path} returned more than 100 full pages of {MAX_PER_PAGE} rows; refusing to render a list that is silently short" (a `Decode` error for the typed variant) and must not return a partial list.
+- **SPEC-4.36.6**: If any page request fails, the helper must return that error and discard the rows already read.
+- **SPEC-4.36.7**: `list_or_empty(what, result)` must return the rows of an `Ok` unchanged, and must log at info level "{what} load succeeded and this tenant has none" when the list is empty.
+- **SPEC-4.36.8**: `list_or_empty` must, for an `Err`, log at error level "{what} load failed, falling back to an empty list: {error}" and return an empty list.
+
+### 4.37 Persisted contact and platform hints
+
+- **SPEC-4.37.1**: In a browser build, `set_contact_last_slug` must write the localStorage key `mokosh:contact_last_slug` (a legacy hint) and `set_contact_last_portal_id` must write the key `mokosh:contact_last_portal_id`.
+- **SPEC-4.37.2**: `current_contact_last_slug` and `current_contact_last_portal_id` must return none when the key is absent, empty or storage is unavailable, and must return none in non-browser builds.
+- **SPEC-4.37.3**: `clear_contact_last_portal_id` must remove only the `mokosh:contact_last_portal_id` key, so a visitor who chose a different portal is not sent back to the previous portal login.
+- **SPEC-4.37.4**: `set_platform_mfa_enabled` must write the sessionStorage key `mokosh:platform_mfa_enabled` as "true" or "false", and `current_platform_mfa_enabled` must return true only when the stored value is exactly "true".
+- **SPEC-4.37.5**: When the platform MFA key is absent or storage is unavailable, `current_platform_mfa_enabled` must make that state visibly distinguishable from a stored "false".
+
+### 4.38 Shared reference-list cache
+
+- **SPEC-4.38.1**: The App root must provide, for each cached reference list, exactly one `Wanted<T>` "a page asked" flag keyed by the list's row type `T`, so that two lists never share a flag. Asking for one list must set that list's flag and no other list's flag.
+- **SPEC-4.38.2**: The App root must provide one shared `Resource<Vec<T>>` per row type through context. Every consumer of the list, including a later mount of the same or another page, must read that same resource and must not start its own fetch.
+- **SPEC-4.38.3**: While no page has asked for the list (its flag is false), the shared resource must resolve to an empty list and must issue no request.
+- **SPEC-4.38.4**: `use_shared_list(enabled)` must set the list's flag to true when `enabled` is true and the flag is still false. It must never set the flag back to false, so a caller passing `enabled = false` does not hide a list that another page already caused to load.
+- **SPEC-4.38.5**: When the list is wanted but there is no access token (not signed in), the shared resource must resolve to an empty list without fetching and must log at debug level "reference list waits for sign-in before fetching". It must fetch once the session exists.
+- **SPEC-4.38.6**: The shared resource must re-run when the active-tenant generation changes (sign-in, token refresh, organization switch). It must read the generation before any early return so the resource is subscribed to it.
+- **SPEC-4.38.7**: The fetch must read the list from its endpoint with the authenticated all-pages GET (every page, not only the first).
+- **SPEC-4.38.8**: When the fetch succeeds with zero rows, the list must resolve to an empty list and log at info level "<what> load succeeded and this tenant has none", where `<what>` is the plural lowercase list name given to the provider.
+- **SPEC-4.38.9**: When the fetch fails with HTTP 403, the list must resolve to an empty list, log at warn level "<what> load refused for this role, its pickers stay empty: <error>", and show no toast.
+- **SPEC-4.38.10**: When the fetch fails with any status other than 403, or fails without a status, the list must resolve to an empty list, log at error level "<what> load failed, its pickers are empty: <error>", and push an Error toast "Could not load <what>: <user message>".
+- **SPEC-4.38.11**: In a build without the `app` feature the shared list must never fetch and must always resolve to an empty list.
+- **SPEC-4.38.12**: A consumer that changes the underlying data must call `restart` on the returned resource so every consumer re-fetches; the cache does not poll or expire.
+
+### 4.39 Reference-list wrappers
+
+- **SPEC-4.39.1**: The task-statuses list must be read from `GET /task-statuses`, named "task statuses" in logs and the error toast. Each row must decode `id` (UUID, required), `name` (string, default empty) and `is_completed` (bool, default false). The path constant `ENDPOINT` must also be the path used by the task-status admin table's create, update and delete calls.
+- **SPEC-4.39.2**: The tax-rates list must be read from `GET /tax-rates`, named "tax rates" in logs and the error toast. Each row must decode `id` (UUID, required), `name` (string, default empty), `rate` (decimal string, default empty), `is_default` (bool, default false) and `is_active` (bool, default false). The path constant `ENDPOINT` must also be the path used by the tax-rate admin table's create, update and delete calls.
+- **SPEC-4.39.3**: The work-types list must be read from `GET /work-types`, named "work types" in logs and the error toast. Each row must decode `id` (UUID, required) and `name` (string, default empty).
+- **SPEC-4.39.4**: The ticket saved-views list must be read from `GET /tickets/saved-views`, named "ticket saved views" in logs and the error toast, and its rows decode as the shared `TicketSavedView` type. The create, update and delete calls must use the same path, the latter two with `/{id}` appended.
+- **SPEC-4.39.5**: Each wrapper's provider (`use_task_statuses_provider`, `use_tax_rates_provider`, `use_work_types_provider`, `use_ticket_saved_views_provider`) must be called once at the App root, and each wrapper's `use_*(enabled)` must delegate to the shared list for its row type with the caller's `enabled` gate.
+
+### 4.40 User roster
+
+- **SPEC-4.40.1**: A roster row (`UserRow`) must decode `id` (UUID, required) and `full_name`, `first_name`, `last_name`, `email` (strings, each defaulting to empty).
+- **SPEC-4.40.2**: `UserRow::display_name` must return, in order: `full_name` when it is non-blank after trimming; else `first_name` and `last_name` joined by one space and trimmed, when non-empty; else `email` when non-blank after trimming; else `None`, so each caller supplies its own final fallback text.
+- **SPEC-4.40.3**: The roster provider must be called once at the App root and the roster must be fetched only after a page asks for it with `use_user_roster(true)`.
+- **SPEC-4.40.4**: When the signed-in user can manage (the manager floor or above, from the auth context), the roster must be read from `GET /auth/users` through the shared list fetch under the name "users". Any other user must read `GET /auth/directory` instead, so a technician is never sent to the manager-only endpoint.
+- **SPEC-4.40.5**: The role check must be read inside the resource's own fetch closure before its first await, so a role change during the session (for example a demotion picked up from `/auth/me`) re-fetches from the endpoint that now applies.
+- **SPEC-4.40.6**: Each `/auth/directory` entry (`id`, `name`, ignored `handle`) must map onto a `UserRow` with `id` and `full_name` (from `name`) set and `first_name`, `last_name` and `email` empty. An entry with no name must yield a row whose `display_name` is `None`.
+- **SPEC-4.40.7**: The directory lists active users only, so a non-manager must see a deactivated person's name fall back exactly as an unknown id does.
+- **SPEC-4.40.8**: When `/auth/directory` fails with HTTP 403, the roster must resolve to an empty list and log at warn level "directory load refused for this role, its pickers stay empty: <error>" with no toast.
+- **SPEC-4.40.9**: When `/auth/directory` fails with any other error, the roster must resolve to an empty list, log at error level "directory load failed, its pickers are empty: <error>", and push an Error toast "Could not load users: <user message>".
+- **SPEC-4.40.10**: In a build without the `app` feature the roster fetch must return an empty list.
+
+### 4.41 Sidebar state
+
+- **SPEC-4.41.1**: The per-section collapse state must be held in a signal owned by the App root, keyed by navigation-section title, so it survives the layout re-mount that occurs on every in-app navigation.
+- **SPEC-4.41.2**: A section with no entry in the collapse map (never toggled) must be reported as not collapsed (open).
+- **SPEC-4.41.3**: The last scroll offset of the desktop sidebar navigation, in pixels as `i32` defaulting to 0, must be held in an App-root signal of its own distinct newtype type, so a re-mounted sidebar restores its prior position instead of starting at 0.
+- **SPEC-4.41.4**: The collapsed state of the whole desktop sidebar rail must be held in an App-root signal of its own distinct bool-wrapping type, defaulting to false (expanded), so the choice survives re-mounts. It must be held in memory only: a page reload resets it to the default.
+
+### 4.42 Theme preference
+
+- **SPEC-4.42.1**: The theme preference must be stored as a string under the preference key `mokosh_theme` with values `light`, `dark` and `system`. When unset the preference must read as `system`.
+- **SPEC-4.42.2**: Parsing a stored theme string other than `light` or `dark` (including an empty or unknown string) must yield `system`.
+- **SPEC-4.42.3**: `theme::set` must persist the preference and immediately re-apply the resolved theme and accent to the document root without a reload.
+- **SPEC-4.42.4**: The resolved base mode must be dark for `dark`, light for `light`, and for `system` must follow the platform's `prefers-color-scheme: dark` answer.
+- **SPEC-4.42.5**: Applying the theme must set the dark class on the document root when the resolved base mode is dark and remove it when light.
+- **SPEC-4.42.6**: The accent preference must be stored under the key `mokosh_accent` as an accent id. When unset, or when the stored id is unknown, or in a build without the `app` feature, the accent must read as the default accent.
+- **SPEC-4.42.7**: `theme::set_accent` must persist the given id as is and immediately re-apply, so the whole app recolors without a reload.
+- **SPEC-4.42.8**: Applying the accent must set exactly these CSS variables on the document root from the current accent: the ramp `--accent-50`, `--accent-100`, `--accent-200`, `--accent-300`, `--accent-400`, `--accent-500`, `--accent-600`, `--accent-700`, `--accent-800`, `--accent-900`, `--accent-950`, plus `--accent` (fill) and `--on-accent` taken from the dark variant when the resolved mode is dark and the light variant otherwise. The base surface, text and line variables must be left to the stylesheet.
+- **SPEC-4.42.9**: `use_apply_theme` must be mounted once at the App root. It must apply the saved theme and accent on mount and subscribe, on both the browser and the desktop host, to OS dark-mode changes, re-applying on a change only when the stored preference is `system`.
+- **SPEC-4.42.10**: When the browser refuses the OS dark-mode listener, the app must log at error level "could not subscribe to OS dark-mode changes".
+
+### 4.43 Theme account sync
+
+- **SPEC-4.43.1**: `save_to_account` must send `PUT /auth/me` with a body containing only `theme_base_mode` (the current preference string) and `theme_accent_id` (the current accent id), so no other user field is changed. It must run in the background and must not block the caller.
+- **SPEC-4.43.2**: When the account push fails, the app must log at warn level "theme account sync failed: <user message>" and must not show a toast or revert the local value, because the local preference already holds it. In a build without the `app` feature the push must do nothing.
+- **SPEC-4.43.3**: `use_theme_sync` must be mounted once at the App root and must run its pull only when the auth state has finished loading, the user is authenticated, and no pull has yet been started in this mount of the hook. It must mark the pull as started before the request is sent.
+- **SPEC-4.43.4**: The pull must read `GET /auth/me`, using only the optional `theme_base_mode` and `theme_accent_id` fields. A present value must overwrite the local preference (the account wins over local storage) and a missing or null value must leave the local preference unchanged.
+- **SPEC-4.43.5**: Applying pulled values must go through the local setters, which write local storage and re-apply the theme, and must not push the values back to the account, so no save loop exists. When at least one field was present the theme must be re-applied once more after the setters.
+- **SPEC-4.43.6**: When the pull request fails, the failure must be logged and the local theme must stay in place; the person must not be told the account theme was applied.
+- **SPEC-4.43.7**: In a build without the `app` feature `use_theme_sync` must do nothing.
+
+### 4.44 TV-view preferences
+
+- **SPEC-4.44.1**: Whether the TV-view entry point is enabled must be stored as a boolean preference under the key `mokosh_tv_view`, defaulting to false when unset.
+- **SPEC-4.44.2**: The team the TV view is pinned to must be stored as a string preference under the key `mokosh_tv_team`. It must read as the empty string when unset, and the empty string means "no single team" (the viewer's own teams).
+- **SPEC-4.44.3**: Setting the pinned team must trim surrounding whitespace before storing, and setting the empty string must clear the pin. The stored value must not be validated as a UUID.
+
+### 4.45 Toast notifications
+
+- **SPEC-4.45.1**: The toast stack must be one global signal, `TOASTS`, writable from any code path without a context provider. `ToastRoot` must be mounted once inside the persistent app shell and not per page.
+- **SPEC-4.45.2**: Each pushed toast must append to the end of the stack and receive an id of the form `t-<n>`, where `<n>` comes from one process-wide counter starting at 0 and incremented for every toast, so ids are unique.
+- **SPEC-4.45.3**: A Success or Info toast must auto-dismiss after 5000 ms. A Warning or Error toast must have no auto-dismiss and stay until the user dismisses it.
+- **SPEC-4.45.4**: `push_toast_with_title` must behave like `push_toast` and additionally carry the given title above the message; `push_toast` must carry no title.
+- **SPEC-4.45.5**: `push_api_error` must push an Error toast whose message is the API error's user message.
+- **SPEC-4.45.6**: `push_api_error_with_retry` must push an Error toast with the API error's user message, no auto-dismiss, and the given retry handler attached. The caller must be responsible for pushing a new toast if the retried action fails again.
+- **SPEC-4.45.7**: `ToastRoot` must render nothing when the stack is empty. Otherwise it must render the whole stack, and dismissing a toast must remove only the toast with that id.
+
+### 4.46 Unsaved-changes guard
+
+- **SPEC-4.46.1**: There must be exactly one app-wide dirty flag, `UNSAVED_CHANGES` (a global signal, default false). Both the browser `beforeunload` prompt and the desktop window-close guard must read this flag so the two hosts cannot disagree.
+- **SPEC-4.46.2**: A form that opts in with `use_unsaved_guard(dirty)` must have the flag mirror its `dirty` signal for as long as the form is mounted, writing only when the value differs.
+- **SPEC-4.46.3**: When a guarded form is unmounted the flag must be set to false. If the flag's storage is already gone (app teardown), the hook must log at debug level and must not panic.
+- **SPEC-4.46.4**: On the browser host, a `beforeunload` listener on the window must set the event's return value to "You have unsaved changes." when the flag is true, and must set nothing when it is false, so the browser prompts only when dirty.
+- **SPEC-4.46.5**: The `beforeunload` handler must read the flag without panicking. When the flag is already dropped it must treat it as not dirty and log at debug level "beforeunload: shared flag already dropped".
+- **SPEC-4.46.6**: When the browser refuses to add the `beforeunload` listener, the hook must log at warn level "use_unsaved_guard: addEventListener failed" and install no handler.
+- **SPEC-4.46.7**: The guard must cover only browser unload and desktop window close; it must not intercept in-app router transitions.
+- **SPEC-4.46.8**: In a build without the `app` feature `use_unsaved_guard` must do nothing.
+
+### 4.47 New-build detection and reload
+
+- **SPEC-4.47.1**: The build baseline must be the compile-time `GIT_HASH` after trimming. A hash that is empty or equals `unknown` marks a dev build, and on a dev build the app must not poll, probe, register the visibility listener or show the update banner.
+- **SPEC-4.47.2**: `UPDATE_PENDING` (a global bool, default false) must be set to true when a live build id differs from the baseline, and must never be cleared afterwards, even if a later check sees the baseline again; only a reload resolves it.
+- **SPEC-4.47.3**: The live build id must be read from `GET /_mokosh_config.json`, field `build_sha`, fetched fresh on each check. A string value that is empty, or a missing or non-string field, must count as "no live id" for that round.
+- **SPEC-4.47.4**: When the config request fails, answers a non-success status, or its body is not JSON, the check must log at warn level ("update check could not fetch <path>: <error>", "update check got <status> from <path>, skipping this round", or "update check could not parse <path>: <error>") and treat the round as finding no newer build.
+- **SPEC-4.47.5**: On the desktop host the live build id must always be "none", so the update flag never flips there.
+- **SPEC-4.47.6**: The live build id emitted by the container entrypoint must be truncated to the same length (12 characters) as the baseline baked by the build script, because the two are compared for equality.
+- **SPEC-4.47.7**: The background poll must wait 300 seconds (5 minutes) between checks. When an update is already pending, a poll round must reload if the deferred cap has elapsed and otherwise must do nothing further; when none is pending it must compare the live id with the baseline.
+- **SPEC-4.47.8**: The first time a mismatch is confirmed, the app must log at info level "auto-update: new SPA build detected, scheduling reload at next safe boundary" with the baseline and live ids, record the detection time, and set `UPDATE_PENDING`. A repeated detection, such as a poll and a skew probe racing, must neither log again nor move the recorded time.
+- **SPEC-4.47.9**: When the tab becomes hidden while an update is pending, the app must reload the page. When the tab is visible with an update pending, it must reload only when at least 1800 seconds (30 minutes) have passed since detection.
+- **SPEC-4.47.10**: The 1800-second cap must also be evaluated in the poll loop, not only in the visibility listener, because a tab that is never hidden or re-shown fires no visibility event.
+- **SPEC-4.47.11**: When the tab becomes visible again and no update is yet pending, the app must probe the live build id immediately instead of waiting for the next poll.
+- **SPEC-4.47.12**: When the visibility listener cannot be added, the app must log at error level "could not subscribe to visibilitychange; auto-update will not reload".
+- **SPEC-4.47.13**: A failed request with HTTP status 404 or 500 through 599 must count as consistent with version skew; every other status, and every transport failure, must not.
+- **SPEC-4.47.14**: When the fetch layer reports a possible skew, the app must request one immediate probe of the live build id. It must do nothing when an update is already pending, when a probe is already requested or in flight, or on a dev build, so a burst of failing requests produces exactly one config fetch.
+- **SPEC-4.47.15**: After a requested probe finishes, whether or not it found a newer build, the probe request flag must be cleared.
+- **SPEC-4.47.16**: `reload_now` must perform a normal page reload (not a forced cache-bypassing reload). When the host cannot reload it must log at warn level "asked to reload for a new build, but this host cannot reload".
+- **SPEC-4.47.17**: In a build without the `app` feature the update check and the skew notification must do nothing.
+
+### 4.48 System-version cache
+
+- **SPEC-4.48.1**: The cached result of the latest system-version request must be held in an App-root signal of type `Option<Result<SystemVersion, String>>`, initially `None`, so the update banner re-mounted by a navigation starts from the cached result and does not reserve banner height again.
+- **SPEC-4.48.2**: `None` must mean no result has been seen yet (first cold mount, or a session that never fetches); `Some(Ok(version))` the latest version pair; `Some(Err(message))` that the latest fetch failed.
+
+### 4.49 Date and time rendering
+
+- **SPEC-4.49.1**: Every UTC instant shown to a user must be converted to the user's profile timezone before rendering, then rendered with the user's stored format string when it is non-blank after trimming.
+- **SPEC-4.49.2**: When the format is absent or blank, the instant must still render in the profile timezone. On the browser host it must use the en-US locale string with the profile timezone, falling back to `%Y-%m-%d %H:%M %Z` in that timezone when the locale string is empty. On other hosts it must use `%Y-%m-%d %H:%M %Z` in that timezone.
+- **SPEC-4.49.3**: The format grammar must recognize exactly these tokens, tried left to right with the longest match first in this order: `YYYY` (4-digit zero-padded year), `YY` (two digits of year modulo 100), `MMMM` (full English month), `MMM` (3-letter month), `MM` (2-digit month), `M` (month), `DD` (2-digit day), `Do` (day with ordinal suffix), `D` (day), `dddd` (full weekday), `ddd` (3-letter weekday), `HH` (2-digit 24-hour), `H` (24-hour), `hh` (2-digit 12-hour), `h` (12-hour), `mm` (2-digit minute), `m` (minute), `ss` (2-digit second), `s` (second), `a.m.` (`a.m.` before noon, `p.m.` otherwise), `A` (`AM` or `PM`) and `a` (`am` or `pm`).
+- **SPEC-4.49.4**: The 12-hour clock must show hour 12 for both midnight and noon (hour 0 renders as 12).
+- **SPEC-4.49.5**: The ordinal suffix must be `th` for days whose value modulo 100 is 11, 12 or 13, otherwise `st` for a last digit of 1, `nd` for 2, `rd` for 3, and `th` for all others.
+- **SPEC-4.49.6**: Any character that does not begin a token must be copied to the output unchanged, including multi-byte characters, without panicking. There is no escape syntax, so a letter that is a token is always expanded.
+- **SPEC-4.49.7**: The format presets offered in the picker must be, in this order: `MMM-DD-YYYY HH:mm`, `MMM DD, YYYY h:mm A`, `YYYY-MM-DD HH:mm`, `DD/MM/YYYY HH:mm`, `MM/DD/YYYY h:mm A`, `dddd, MMMM D, YYYY`, `ddd MMM DD, YYYY HH:mm:ss`, `DD MMM YYYY HH:mm`, each labelled with its own token string.
+- **SPEC-4.49.8**: A picker label for a format must be the format rendered against the current instant, followed by one space and the raw token string in parentheses.
+- **SPEC-4.49.9**: `token_warnings` must scan the format for contiguous runs of ASCII letters and return, in order of appearance, every run that the tokenizer cannot consume completely, returning the whole run; digits, punctuation, whitespace and non-ASCII characters must never produce a warning. A run made entirely of valid tokens (such as `mmYYYY`) must produce none.
+- **SPEC-4.49.10**: `fmt_user_dt(dt, style)` must render with the user's format preference when it is non-blank; otherwise with the strftime `style` in the profile timezone when given; otherwise with the locale rendering of SPEC-4.49.2. A whitespace-only preference must be treated as unset.
+- **SPEC-4.49.11**: `fmt_datetime_pref` must use the user's format when set and otherwise the strftime style `%b %d, %Y %H:%M` (for example "Jun 05, 2026 14:30").
+- **SPEC-4.49.12**: `month_name` must return the full English month name for 1 through 12 and the empty string for any other value.
+
+### 4.50 Relative time and user timezone
+
+- **SPEC-4.50.1**: `relative_label(dt, now)` must return "just now" when the absolute difference is under 45 seconds, in either direction.
+- **SPEC-4.50.2**: For a difference of 45 seconds or more, the label must use the first matching band: under 90 seconds is 1 minute; under 3600 seconds is whole minutes (floor); under 86400 seconds is whole hours; under 30 days is whole days; under 365 days is whole 30-day months; otherwise whole 365-day years. The count must be at least 1 and the unit must be plural unless the count is 1.
+- **SPEC-4.50.3**: A past instant (difference zero or positive from `now`) must render as "<n> <unit> ago" and a future instant as "in <n> <unit>".
+- **SPEC-4.50.4**: `fmt_relative` must evaluate `relative_label` against the current clock.
+- **SPEC-4.50.5**: `effective_timezone(saved)` must return the saved zone when it is a valid IANA name other than the placeholders `""`, `UTC` and `Etc/UTC`. For a placeholder, or a value that is not a valid IANA name, it must return the browser or operating-system detected zone, and UTC when detection fails or yields an invalid name. It must never panic.
+- **SPEC-4.50.6**: `user_timezone` must return UTC when called outside a running UI runtime. Otherwise it must resolve the signed-in user's saved timezone from the auth context via `effective_timezone`, treating no auth context or no user as an empty saved value.
+- **SPEC-4.50.7**: `user_format_pref` must return `None` outside a running UI runtime, when there is no auth context, or when there is no signed-in user; otherwise it must return the user's `date_format_string`.
+- **SPEC-4.50.8**: `user_timezone`, `user_format_pref`, `user_today` and `user_local_date` must read context without allocating a hook slot, so they are safe to call from loops, async futures and after early returns without shifting hook order.
+- **SPEC-4.50.9**: `user_today` must be the current date in the user's profile timezone. `user_local_date` must bucket a UTC instant onto a calendar date using the shared types crate's rule with the profile timezone name, so it agrees with the server's aggregates.
+
+### 4.51 Duration formatting and parsing
+
+- **SPEC-4.51.1**: The duration display preference must be stored under the key `mokosh_duration_format` with the default `decimal`. The value `hm` selects clock style; every other value, or unset, must select decimal.
+- **SPEC-4.51.2**: Clock style must render whole minutes as `H:MM` with hours unpadded and minutes zero-padded to two digits, clamping negative input to `0:00`.
+- **SPEC-4.51.3**: Decimal style must render minutes divided by 60 with exactly one decimal place and an `h` suffix (for example 90 gives `1.5h`, 0 gives `0.0h`).
+- **SPEC-4.51.4**: `fmt_duration` must read the stored preference on every call so a change takes effect on the next render.
+- **SPEC-4.51.5**: `parse_input_to_minutes` must trim the input and return `None` for empty input.
+- **SPEC-4.51.6**: Input containing a colon must parse as `H:MM`: exactly one colon, both sides non-empty integers after trimming, hours at least 0, minutes in 0 through 59 with one or two digits allowed, giving hours times 60 plus minutes. Any other colon form (`1:60`, `1:`, `:30`, `1:2:3`, `-1:30`, `1:-5`) must return `None`.
+- **SPEC-4.51.7**: Input without a colon must parse as decimal hours: a finite non-negative number, rounded to the nearest whole minute (`2.5` gives 150, `.25` gives 15, `8` gives 480). Negative, non-finite or non-numeric input must return `None`.
+- **SPEC-4.51.8**: Upper bounds (such as 24 hours) and rejection of zero must not be applied by the parser; they belong to each form so the form keeps its own error message.
+- **SPEC-4.51.9**: `fmt_input` must produce a value that parses back to the same whole minute: `H:MM` when the preference is `hm`, otherwise decimal hours with two decimals, trailing zeros and a trailing point trimmed, no `h` suffix, and negative input clamped to zero (90 gives `1.5`, 480 gives `8`, 15 gives `0.25`, 0 gives `0`).
+- **SPEC-4.51.10**: `parse_input_to_hours` must apply the same parsing and rejection rules as `parse_input_to_minutes` and return decimal hours (minutes divided by 60). `fmt_input_hours` must round hours to the nearest whole minute and then apply `fmt_input`.
+
+### 4.52 Inline-comment anchors
+
+- **SPEC-4.52.1**: A decoded anchor must carry `exact`, `prefix`, `suffix` and an optional position `hint` (character range). `Anchor::from_json` must return `None` when `exact` is missing, not a string, or empty after trimming. `prefix` and `suffix` must be trimmed and default to empty when missing or not strings.
+- **SPEC-4.52.2**: The hint must be taken from `refinedBy.start` and `refinedBy.end` (unsigned integers) only when both are present and `end >= start`; otherwise the hint must be absent.
+- **SPEC-4.52.3**: `Anchor::to_json` must emit `{"type":"TextQuoteSelector","exact","prefix","suffix"}` and, only when a hint exists, `"refinedBy":{"type":"TextPositionSelector","start","end"}`.
+- **SPEC-4.52.4**: `Anchor::capture(text, range)` must work in character indices, and must return `None` when the range is empty or reversed, when its end is past the text length, or when the selected text is blank after trimming.
+- **SPEC-4.52.5**: A captured anchor must hold the trimmed quote, up to 64 characters (`CONTEXT_CHARS`) of context before and after the selection, each trimmed, and the original untrimmed range as the hint.
+- **SPEC-4.52.6**: Anchors must be resolved against the rendered text on every render, never pinned to a DOM position or character offset, and the stored offsets must serve only as a hint.
+- **SPEC-4.52.7**: `resolve` must return `None` (orphan) when the quote is empty or longer than the text.
+- **SPEC-4.52.8**: When the quote occurs exactly once, `resolve` must return that occurrence.
+- **SPEC-4.52.9**: When the quote occurs more than once, `resolve` must choose the occurrence with the highest context score, which is the count of characters matching the stored prefix walking backwards plus the count matching the stored suffix walking forwards, with runs of whitespace folded into one space and edge whitespace dropped. A tie must go to the occurrence whose start is nearest the hint start; with no hint, a tie must go to the last occurrence.
+- **SPEC-4.52.10**: When the quote does not occur, `resolve` must search for the closest approximate match using an edit distance of at most `fuzzy_budget(quote length)`, which is one fifth of the quote length in characters, at least 2 and at most 20.
+- **SPEC-4.52.11**: Among approximate matches at the best distance, `approximate_find` must prefer the one whose start is nearest the hint start, and the first one when there is no hint. It must return `None` for an empty pattern or empty text, and when no match is within the budget.
+- **SPEC-4.52.12**: An anchor that resolves to `None` is an orphan. The comment must stay in the stream labelled as an orphan and quoting its original text; it must never be dropped and never attached to a candidate whose distance exceeds the budget.
+- **SPEC-4.52.13**: `split_overlaps` must split the given ranges at every start and end boundary into non-overlapping fragments in ascending document order. Each fragment must carry the ids, in input order, of every range that fully covers it. Gaps covered by no range, and zero-width spans, must produce no fragment.
+
+### 4.53 File download and preview helpers
+
+- **SPEC-4.53.1**: `save_bytes_as_file(bytes, filename)` must save bytes the caller already fetched (with the bearer token, since a plain link carries no authorization header) and must itself send no request.
+- **SPEC-4.53.2**: `save_bytes_as_file` must return `Ok(None)` when the host itself tells the user where the file went, `Ok(Some(path))` when it did not (the caller must then show the path), and `Err(message)` when saving failed (the caller must show the message).
+- **SPEC-4.53.3**: `open_preview_tab` must be called synchronously inside the click handler, before the file is fetched, so the pop-up blocker treats the tab as a direct result of the click. On the desktop host it must return a placeholder. An `Err` means no tab could be opened, and the caller must then fall back to downloading.
+- **SPEC-4.53.4**: `show_bytes_in_tab(tab, bytes)` must display the PDF in the given tab without saving a file on the browser host, and must open it in the system PDF viewer on the desktop host. It must return `Err(message)` on failure.
+
+### 4.54 Paginated list envelope
+
+- **SPEC-4.54.1**: The shared list envelope `Paginated<T>` must decode the server shape `{"data": [...], "meta": {"total": n}}`. A missing `data` must decode to an empty list and a missing `meta` to a zero total.
+- **SPEC-4.54.2**: `meta.total` must be an unsigned 64-bit integer defaulting to 0, and any other `meta` field must be ignored.
+- **SPEC-4.54.3**: `Paginated<T>` must have an empty `Default` (no rows, zero total) for every `T`, with no `T: Default` bound, and decoding must not require `T: Default`.
+
+### 4.55 Application error type
+
+- **SPEC-4.55.1**: `AppError` must map each variant to this Display text, HTTP status and error code: `Unauthorized` "Authentication required", 401, `UNAUTHORIZED`; `Forbidden(m)` "Access denied: <m>", 403, `FORBIDDEN`; `NotFound(r)` "<r> not found", 404, `NOT_FOUND`; `Validation` "Validation failed: <message>", 422, `VALIDATION_ERROR`; `Conflict(m)` "<m> already exists", 409, `CONFLICT`; `BadRequest(m)` "Bad request: <m>", 400, `BAD_REQUEST`; `RateLimited` "Rate limit exceeded. Please try again later.", 429, `RATE_LIMITED`.
+- **SPEC-4.55.2**: `AppError` must further map: `Database(m)` "Database error: <m>", 500, `DATABASE_ERROR`; `ExternalService` "External service error: <service> - <message>", 502, `EXTERNAL_SERVICE_ERROR`; `Internal(m)` "Internal error: <m>", 500, `INTERNAL_ERROR`; `Configuration(m)` "Configuration error: <m>", 500, `CONFIGURATION_ERROR`; `Tenant(m)` "Tenant error: <m>", 400, `TENANT_ERROR`; `File(m)` "File error: <m>", 400, `FILE_ERROR`; `Email(m)` "Email error: <m>", 500, `EMAIL_ERROR`; `Payment(m)` "Payment error: <m>", 402, `PAYMENT_ERROR`; `Integration(m)` "Integration error: <m>", 502, `INTEGRATION_ERROR`.
+- **SPEC-4.55.3**: `AppError::validation_field(field, message)` must build a `Validation` error with message "Validation failed" and one `FieldError` with that field and message and the code `invalid`. `AppError::validation(message, errors)` must keep the given message and list.
+- **SPEC-4.55.4**: An API error body must be `{"error": {"code", "message", "errors"}}` where `code` is the error code, `message` is the Display text, and `errors` is present only for a `Validation` error (carrying its field errors) and omitted from the JSON for every other variant.
+- **SPEC-4.55.5**: Converting `validator::ValidationErrors` must yield a `Validation` error with message "Validation failed" and one `FieldError` per failed rule carrying the field name, the rule's message (empty when the rule has none) and the rule's code. The order of field errors across fields is not specified.
+- **SPEC-4.55.6**: Converting a `serde_json::Error` must yield `BadRequest("JSON error: <error>")`, and converting a `std::io::Error` must yield `File(<error text>)`.
+- **SPEC-4.55.7**: The server-side conversions (the HTTP response rendering with the status falling back to 500 and the JSON error body, and the conversions from database, token, password-hash, mail and HTTP-client errors) are a mirror of the server repository and are compiled only under the `server` feature, which no build of this client enables. They must stay byte-identical to the server's copy until both repositories share one crate.
+- **SPEC-4.55.8**: In that mirror, a database row-not-found must map to `NotFound("Record")`; a unique-violation database code `23505` must map to `Conflict("Record already exists")`; any other database error must be logged at error level and map to `Database("Database operation failed")`; a token error must be logged at warn level and map to `Unauthorized`; a password-hash error must be logged at error level and map to `Internal("Password operation failed")`; mail errors must be logged at error level and map to `Email("Failed to send email: <error>")` or `Email("SMTP error: <error>")`; an HTTP-client error must be logged at error level and map to `ExternalService` with service `HTTP`.
+
+### 4.56 Submit-time form guard
+
+- **SPEC-4.56.1**: A `FormGuard` must be constructed once per submit, start valid, and accumulate validity across every field checked in that submit.
+- **SPEC-4.56.2**: `FormGuard::field(id, value, label, rules)` must validate the value against the rules and return the message of the first failing rule, or the empty string when valid so the caller clears any stale message. A failing field must mark the guard invalid and remember its `id` when it is the first failing field.
+- **SPEC-4.56.3**: A submit handler must run every required field through the guard before checking `blocked()`, so all failures are reported at once and not only the first. The `id` passed must equal the field's DOM id.
+- **SPEC-4.56.4**: `note_invalid(focus_id)` must mark the guard invalid for a failure with no inline slot, and must remember `focus_id` as the first invalid field only when no earlier failure was recorded and an id is given.
+- **SPEC-4.56.5**: The first failing field must keep focus priority: a later failing field or a later `note_invalid` must not replace it.
+- **SPEC-4.56.6**: `blocked()` must return true when any failure was recorded, and in that case must move keyboard focus to the first invalid field's DOM id when one was recorded. `is_valid()` must report validity without touching the DOM.
+
+### 4.57 Utility module root
+
+- **SPEC-4.57.1**: `crate::utils::default_true` must return `true`.
+- **SPEC-4.57.2**: `default_true` must be a public function with no parameters returning `bool`, so that a model struct can name it as `#[serde(default = "crate::utils::default_true")]` and a missing boolean field deserializes to `true`.
+- **SPEC-4.57.3**: The `crate::utils` root must re-export `Paginated`, `PaginatedMeta`, `AppError`, `AppResult`, `FormGuard`, `PaginatedResponse`, `PaginationParams`, `clean_strict`, `has_invisible`, `strip_invisible`, `unresolved`, `unresolved_by_key`, `validate`, `Rule`, `BUILD_DATE`, `GIT_HASH` and `VERSION`.
+- **SPEC-4.57.4**: The `crate::utils` root must declare `highlight`, `image_upload`, `line_diff`, `markdown`, `md_edit`, `mentions` and `money` as public modules.
+
+### 4.58 Money formatting
+
+- **SPEC-4.58.1**: `format_money` must round the amount to two decimal places with `Decimal::round_dp(2)` before formatting, so a value is never displayed with more or fewer than two decimals.
+- **SPEC-4.58.2**: `format_money` must render a leading `$`, the integer digits grouped in threes with `,` counted from the right, a `.`, and exactly two fraction digits (for example `$60,000.00`, `$150.00`, `$1,234,567.50`).
+- **SPEC-4.58.3**: `format_money` must render a negative amount with the `-` sign before the `$` (`-$50.00`), never as `$-50.00` and never in parentheses.
+- **SPEC-4.58.4**: `format_money` of zero must render `$0.00`.
+- **SPEC-4.58.5**: `format_money_minor` must treat its `i64` argument as minor units with two implied decimals (`Decimal::new(minor, 2)`) and render it through `format_money`, so `123456` renders `$1,234.56` and a negative value renders with the same sign rule as a decimal total.
+- **SPEC-4.58.6**: `format_money_opt` must render `None` as the single character `-` and `Some(d)` exactly as `format_money(d)`; an absent amount must not render as `$0.00`.
+- **SPEC-4.58.7**: `format_money_f64` must render `None` as `-`, must convert a present value with `Decimal::from_f64_retain` before formatting with `format_money`, and must render a value that cannot be converted (NaN or infinity) as `-`.
+- **SPEC-4.58.8**: `format_money_str` must trim surrounding whitespace first and render an empty or whitespace-only string as `-`.
+- **SPEC-4.58.9**: `format_money_str` must parse the trimmed text with `Decimal::from_str` and render it with `format_money`, and must render text that does not parse as a decimal as `-`.
+- **SPEC-4.58.10**: A caller that wants an absent server amount shown as zero must supply `"0"` itself before calling `format_money_str`; the function must not substitute zero for an empty value.
+
+### 4.59 Knowledge-base image upload: client-side checks
+
+- **SPEC-4.59.1**: `ALLOWED_MIME` must be exactly `image/png`, `image/jpeg`, `image/webp`, `image/gif`, in that order.
+- **SPEC-4.59.2**: `ALLOWED_MIME` must not contain `image/svg+xml`, because an SVG can carry script and the uploaded bytes are served from an unauthenticated URL.
+- **SPEC-4.59.3**: `accept_attribute` must return the `ALLOWED_MIME` values joined by `,` with no spaces (`image/png,image/jpeg,image/webp,image/gif`), so the file picker offers the same set `check` enforces.
+- **SPEC-4.59.4**: `DEFAULT_MAX_BYTES` must be `5 * 1024 * 1024` (5242880) bytes.
+- **SPEC-4.59.5**: `max_bytes` must return the runtime-config value `kb_attachment_max_bytes` when it is present and parses as a byte count, and `DEFAULT_MAX_BYTES` otherwise.
+- **SPEC-4.59.6**: `check` must match the MIME type against `ALLOWED_MIME` by exact, case-sensitive string equality, and for any other type must return `Err("That file is a <mime>. Images have to be PNG, JPEG, WebP or GIF.")` with `<mime>` replaced by the reported type.
+- **SPEC-4.59.7**: `check` must replace an empty MIME type with the words `unknown type` in that message, producing `That file is a unknown type. Images have to be PNG, JPEG, WebP or GIF.` rather than leaving a gap.
+- **SPEC-4.59.8**: `check` must, for an allowed type whose length exceeds `max_bytes()`, return `Err("That image is <size>. The limit is <limit>.")` with both numbers rendered by `human_size`.
+- **SPEC-4.59.9**: `check` must accept a file whose length equals `max_bytes()` exactly; only a strictly larger file is refused for size.
+- **SPEC-4.59.10**: `check` must, for an allowed type with length 0, return `Err("That file is empty.")`.
+- **SPEC-4.59.11**: `check` must evaluate the type first, then the size limit, then emptiness, and return the first failure only; it must return `Ok(())` when none applies.
+- **SPEC-4.59.12**: `alt_from_file_name` must drop everything from the last `.` of the file name onward (a name with no `.` is used whole), turn each `_` and `-` into a space, collapse every run of whitespace into one space, and trim the result.
+- **SPEC-4.59.13**: `alt_from_file_name` must return `Image` when the cleaned stem is empty (for example `.png`, `___.png` or an empty name), so the inserted Markdown never has empty alt text.
+- **SPEC-4.59.14**: `human_size` must render 1048576 bytes or more as the value in MiB with one decimal and the suffix ` MB` (`5.0 MB`), 1024 bytes up to just under 1 MiB as the integer-truncated KiB count with the suffix ` KB`, and anything smaller as the byte count with the suffix ` bytes`.
+
+### 4.60 Article version line diff
+
+- **SPEC-4.60.1**: `diff_lines` must split both bodies into lines that keep their trailing `\n`, and every `DiffLine.text` it returns must exclude that newline.
+- **SPEC-4.60.2**: `diff_lines` of two equal strings must return every line as `LineKind::Same` with `pieces` of `None`, `added` 0 and `removed` 0.
+- **SPEC-4.60.3**: `diff_lines` must treat a line as equal only when its text including its newline is equal, so a final line without a newline and the same text with a newline are reported as one `Removed` and one `Added` line carrying the same text.
+- **SPEC-4.60.4**: `diff_lines` must trim the common leading lines and the common trailing lines before comparing, and must emit them as `Same` lines before and after the changed middle.
+- **SPEC-4.60.5**: When both middle sections have at most 1200 lines, `diff_lines` must compute the middle with the longest-common-subsequence routine shared with the word diff, producing `Same`, `Removed` and `Added` lines in document order.
+- **SPEC-4.60.6**: When either middle section has more than 1200 lines, `diff_lines` must not build the comparison table and must report every middle line of the old body as `Removed` followed by every middle line of the new body as `Added`; it must still return a diff and never an error.
+- **SPEC-4.60.7**: `LineDiff.added` and `LineDiff.removed` must equal the number of `Added` and `Removed` lines in `lines`, and `LineDiff::is_empty` must be true exactly when both are 0.
+- **SPEC-4.60.8**: Where a run of `Removed` lines is immediately followed by a run of `Added` lines, `diff_lines` must pair the k-th removed line with the k-th added line in order for as many pairs as the shorter run holds, and word-diff each pair with `diff_words`.
+- **SPEC-4.60.9**: For a word-diffed pair, the removed line's `pieces` must hold the `Same` and `Removed` pieces only and the added line's `pieces` must hold the `Same` and `Added` pieces only; when `diff_words` returns `None` (too little shared) both lines must keep `pieces` of `None`.
+- **SPEC-4.60.10**: Removed or added lines with no partner in a rewrite pair, and lines outside any pair, must have `pieces` of `None`.
+- **SPEC-4.60.11**: `fold` of a diff with no changes must return every line as `Row::Line` and fold nothing.
+- **SPEC-4.60.12**: `fold(diff, context)` of a diff with changes must keep every non-`Same` line and the `context` lines on each side of it, and replace each maximal run of other lines (including a run at the start or the end) with one `Row::Folded(n)` where `n` is the number of lines in the run.
+
+### 4.61 Code highlighting: language selection and output safety
+
+- **SPEC-4.61.1**: `highlight_html` must take the language name from the first token of the fence info string, split at whitespace, `,` or `{`, and lowercase it as ASCII, so `rust,ignore` and `bash {1,3}` select `rust` and `bash`.
+- **SPEC-4.61.2**: `highlight_html` must select line-oriented diff highlighting when the name is `diff` or `patch`, before any other language lookup.
+- **SPEC-4.61.3**: `highlight_html` must return the code HTML-escaped with no spans when the name is empty (an unlabelled fence), so no language is guessed.
+- **SPEC-4.61.4**: Language names must map to grammars as follows: `rust`, `rs` to Rust; `js`, `javascript`, `ts`, `typescript`, `jsx`, `tsx` to JavaScript; `python`, `py` to Python; `bash`, `sh`, `shell`, `zsh`, `console`, `shell-session`, `nu`, `nushell` to shell; `sql`, `postgres`, `postgresql`, `psql` to SQL; `json`, `jsonc` to JSON; `yaml`, `yml` to YAML; `toml`, `ini`, `conf`, `cfg`, `env`, `dotenv` to TOML.
+- **SPEC-4.61.5**: A non-empty name that is not in the mapping must use the universal grammar: `#` and `//` line comments, `/* */` block comments, strings quoted with `"` or `'` with backslash escapes, numbers, and no keywords or types.
+- **SPEC-4.61.6**: `highlight_html` must HTML-escape every source character on every path (`&` to `&amp;`, `<` to `&lt;`, `>` to `&gt;`, `"` to `&quot;`), so removing the added spans and unescaping returns the original code unchanged and a scanning mistake can never produce unescaped markup.
+- **SPEC-4.61.7**: Each emitted span must have the form `<span class="hl-...">escaped text</span>` with a single `class` attribute and no other attribute.
+
+### 4.62 Code highlighting: token scanner
+
+- **SPEC-4.62.1**: The scanner must read the code left to right by character, emit each `\n` unchanged, and reset its per-line state (line start and whether a `:` or `=` has been seen) at every newline.
+- **SPEC-4.62.2**: Where a language has a block comment, the scanner must emit from the opening sequence through the closing sequence inclusive as one `hl-com` span, across lines, and to the end of the input when the closing sequence is missing.
+- **SPEC-4.62.3**: The scanner must emit from a line-comment marker to the end of the line (excluding the newline) as one `hl-com` span; the markers are `//` (Rust, JavaScript), `#` (Python, shell, YAML, TOML), `--` (SQL), `#` and `//` (universal grammar) and none (JSON).
+- **SPEC-4.62.4**: Block comments must be tested before line comments and both before strings, so a comment marker inside a string is never reached because strings are consumed whole.
+- **SPEC-4.62.5**: The scanner must recognise a string as starting at one of the language's quote characters (Rust `"`; JavaScript `"`, `'`, `` ` ``; Python, shell, YAML, TOML and universal `"` and `'`; SQL `'` and `"`; JSON `"`) and ending after the next identical quote character.
+- **SPEC-4.62.6**: Inside a string the scanner must skip the character after a backslash for every grammar except SQL, which has no escapes.
+- **SPEC-4.62.7**: A string that reaches a newline or the end of the input without its closing quote must end there and be emitted as `hl-str`, so one unbalanced quote does not recolour later lines.
+- **SPEC-4.62.8**: In the JSON, YAML and TOML grammars a closed quoted string must be emitted as `hl-key` instead of `hl-str` when no `:` or `=` has yet been seen on the line and the next non-blank character after it (spaces and tabs skipped) is `:` or `=`.
+- **SPEC-4.62.9**: In the shell and YAML grammars a `$name` or `${name}` outside a string must be emitted as `hl-var`, where a name is a run of letters, digits, `_` and `-` and the braced form requires a closing `}`; a `$` followed by neither must be emitted as plain text.
+- **SPEC-4.62.10**: In the shell and YAML grammars a double-quoted string must be split so each `$name` or `${name}` inside it is an `hl-var` span and the remaining parts are `hl-str` spans; a single-quoted string must be emitted whole as `hl-str`.
+- **SPEC-4.62.11**: The scanner must emit a run of ASCII letters, digits, `.` and `_` as one `hl-num` span when it starts with an ASCII digit that is not preceded by a letter, digit, `_` or `-`, so `sha256` and `utf8` stay whole and a digit directly after `-` is not a number.
+- **SPEC-4.62.12**: The scanner must read an identifier as a run of letters, digits, `_` and `-` that does not start with a digit, and classify it in this order: `hl-key` (keyed grammar, no `:` or `=` yet on the line, only whitespace before it on the line, and `:` or `=` next after optional spaces and tabs), then `hl-kw` if it is in the grammar's keyword list, then `hl-typ` if it is in the grammar's type list, otherwise plain text.
+- **SPEC-4.62.13**: Keyword and type lookup must be an exact, case-sensitive match, so SQL keywords are highlighted only in upper case.
+- **SPEC-4.62.14**: The scanner must record that a separator was seen when it meets a `:` or `=` outside strings and comments, so later words on the same line are values and not keys.
+- **SPEC-4.62.15**: The scanner must emit every other character escaped and unchanged, and must step by whole characters so multi-byte input never splits a character.
+- **SPEC-4.62.16**: The JSON grammar must have the keywords `false`, `null`, `true`; the YAML grammar the keywords `false`, `no`, `null`, `true`, `yes`, `~`; the TOML grammar the keywords `false`, `true`; the Rust grammar must classify `true` and `false` as keywords and `Some`, `None`, `Ok`, `Err` as types; the JavaScript grammar must classify `true`, `false`, `null`, `undefined` as types.
+
+### 4.63 Code highlighting: diff mode and class set
+
+- **SPEC-4.63.1**: Diff highlighting must process the code line by line, wrap each classified line's text (without its newline) in one span and emit the newline after it, and emit unclassified lines escaped without a span.
+- **SPEC-4.63.2**: Diff highlighting must classify a line by the first matching rule in this order: starts with `@@` is `hl-mta`; starts with `+++`, `---`, `diff ` or `index ` is `hl-com`; starts with `+` is `hl-ins`; starts with `-` is `hl-del`; anything else is unclassified.
+- **SPEC-4.63.3**: `CLASSES` must list exactly `hl-com`, `hl-str`, `hl-num`, `hl-kw`, `hl-typ`, `hl-var`, `hl-key`, `hl-ins`, `hl-del`, `hl-mta`, and the highlighter must emit no other class.
+- **SPEC-4.63.4**: Every class in `CLASSES` must have a style rule in `input.css` and a `--<class>` token defined in both the `:root` block and the `.dark` block, because an unstyled class renders in the body colour.
+
+### 4.64 Markdown rendering pipeline
+
+- **SPEC-4.64.1**: Markdown rendering must enable exactly the table, strikethrough and task-list extensions, and the heading list, the task-marker scan and the top-level block map must parse with the same option set as the renderer.
+- **SPEC-4.64.2**: `render_markdown(src)` must equal `render_markdown_with_mentions(src, &[], "")`, and every renderer must pass its HTML through the sanitizer before returning it.
+- **SPEC-4.64.3**: The renderer must transform the parser's event stream, not the finished HTML, so that highlighting sees only fenced or indented code text, autolinking and mention resolution see only text outside links and code, and the attachment rewrite sees only image destinations.
+- **SPEC-4.64.4**: For text inside a fenced or indented code block the renderer must emit the output of `highlight_html` with the fence info string (empty for an indented block) as raw HTML, not as text.
+- **SPEC-4.64.5**: The renderer must run the bare-URL and mention pass over a text event only when the link depth is 0, and must leave inline code spans untouched.
+- **SPEC-4.64.6**: `render_markdown_interactive` and `render_markdown_interactive_with_mentions` must remove every ` disabled=""` from the rendered HTML, then insert `data-ti="<n>"` into each `<input type="checkbox"` in document order starting at 0, then sanitize.
+- **SPEC-4.64.7**: Task-list checkboxes from `render_markdown` must stay disabled, and `[x]` items must be rendered checked.
+
+### 4.65 Markdown sanitizer
+
+- **SPEC-4.65.1**: The sanitizer must be the ammonia default allowlist plus the additions in this subsection, built once per process and reused by every render.
+- **SPEC-4.65.2**: The sanitizer must remove `script` elements, event-handler attributes and `javascript:` URLs from rendered output.
+- **SPEC-4.65.3**: The sanitizer must allow the `input` element with the attributes `checked`, `disabled` and `data-ti`, and `type` only with the value `checkbox`; an `input` of any other type must lose its `type`.
+- **SPEC-4.65.4**: The sanitizer must allow `id` only on `h1` to `h6`, must prefix every id it keeps with `kb-` unless the id already starts with `kb-`, and must drop an `id` on any other element.
+- **SPEC-4.65.5**: The sanitizer must allow `class` on `span` only with the values in `highlight::CLASSES` plus `mention`, and `class` on `code` only with the values `language-bash`, `language-console`, `language-diff`, `language-ini`, `language-js`, `language-json`, `language-jsonc`, `language-patch`, `language-python`, `language-rust`, `language-shell`, `language-sql`, `language-toml`, `language-ts`, `language-typescript`, `language-yaml`, `language-yml`; any other class value must be dropped.
+- **SPEC-4.65.6**: The sanitizer must allow `data-mention` and `title` on `span`, and must drop every other `data-` attribute and every `on*` attribute from `span`.
+- **SPEC-4.65.7**: The sanitizer must allow `style` on `span` only, and must keep a `style` value only when `safe_color_style` accepts it, dropping the whole attribute (and keeping the element and its text) otherwise.
+- **SPEC-4.65.8**: `safe_color_style` must trim the value, drop one trailing `;`, require the text before the first `:` to equal `color` ignoring case, and return `color:<value>` with the value trimmed and no space after the colon.
+- **SPEC-4.65.9**: `safe_color_style` must accept a value of 1 to 32 characters that is either `#` followed by 3, 4, 6 or 8 hexadecimal digits, or consists only of ASCII letters, and must reject everything else (including `url(...)`, `expression(...)`, `var(...)`, `rgb(...)`, `!important`, backslash escapes and a second declaration after `;`).
+- **SPEC-4.65.10**: The sanitizer must pass every attribute other than `style` through its attribute filter unchanged.
+
+### 4.66 Markdown links, bare URLs, mentions and attachment images
+
+- **SPEC-4.66.1**: `absolutize_attachment(dest, origin)` must return `dest` unchanged when `origin` is empty or `dest` does not start with `/api/`, and `origin` followed directly by `dest` otherwise.
+- **SPEC-4.66.2**: The renderer must apply `absolutize_attachment` to image destinations only; link destinations and absolute image URLs must keep what the author wrote.
+- **SPEC-4.66.3**: The renderer must rewrite a Markdown link whose destination starts with `#` to `#kb-` followed by the rest of the destination, and must leave every other destination, including one that merely contains `#`, unchanged.
+- **SPEC-4.66.4**: The renderer must turn a bare `http://` or `https://` URL in plain text into a link whose `href` and label are the URL text; no other scheme may be linked.
+- **SPEC-4.66.5**: The URL scan must skip a scheme that directly follows a letter or digit (`xhttps://y`) and continue scanning the same text for a later URL.
+- **SPEC-4.66.6**: A bare URL must end at the first whitespace, `<` or `"` character or at the end of the text.
+- **SPEC-4.66.7**: The URL scan must repeatedly remove a trailing `.`, `,`, `;`, `:`, `!`, `?`, `'`, `*` or `_`, and a trailing `)` only while the URL contains more `)` than `(`.
+- **SPEC-4.66.8**: The URL scan must not link a candidate that has no characters after the scheme, before or after trailing-punctuation removal, and must continue scanning after it.
+- **SPEC-4.66.9**: When a text run holds both a bare URL and a mention, the renderer must process them in order of position, and on equal position must process the URL.
+- **SPEC-4.66.10**: The renderer must resolve an `@handle` only when `mentions::handle_end` accepts it and `mentions::resolve` finds exactly one person; an `@` that fails either test, and every `@` when the directory is empty, must stay in the output exactly as typed.
+- **SPEC-4.66.11**: A resolved mention must render as `<span class="mention" data-mention="<user id>" title="<display> (@<handle>)">@<display></span>`, with `&`, `<`, `>` and `"` escaped in the attributes and `&`, `<`, `>` escaped in the text.
+- **SPEC-4.66.12**: A resolved mention must render as a `span`, never as an `a` element, because the markup is injected as raw HTML and a real `href` would leave the router and reload the application.
+- **SPEC-4.66.13**: Text with no bare URL and no resolved mention must be passed through as a single unchanged text event.
+
+### 4.67 Markdown headings and table-of-contents ids
+
+- **SPEC-4.67.1**: `headings(src)` must return one `Heading { level, text, slug }` per heading in document order, with `level` 1 to 6.
+- **SPEC-4.67.2**: A heading's `text` must be its text and inline-code content concatenated with markup removed, each soft or hard break as one space, trimmed.
+- **SPEC-4.67.3**: A heading's slug must be its text lower-cased with Unicode letters and digits kept, each run of other characters replaced by one `-`, no leading `-`, trailing `-` removed, and `section` when nothing remains.
+- **SPEC-4.67.4**: When a slug is already used by an earlier heading, `headings` must append `-2`, `-3` and so on, taking the first suffix whose slug is unused, so repeated headings stay distinct and an edit that leaves a heading and the headings above it alone leaves its slug unchanged.
+- **SPEC-4.67.5**: The renderer must give the n-th heading element the slug of the n-th entry of `headings(src)`, so the rendered ids and the table of contents agree.
+- **SPEC-4.67.6**: `heading_dom_id(slug)` must return `kb-` followed by the slug, and `ID_PREFIX` must be `kb-`.
+- **SPEC-4.67.7**: The id a heading has in the sanitized document must equal `heading_dom_id(slug)` for every slug.
+
+### 4.68 Markdown task lists
+
+- **SPEC-4.68.1**: `count_tasks(src)` must return the number of task-list markers the parser reports, which equals the number of checkboxes `render_markdown_interactive` produces; a line such as `- [ ]done` with no whitespace after `]` must not count.
+- **SPEC-4.68.2**: `toggle_task(src, index)` must find the marker character inside the brackets of the `index`-th task item in document order, the same order as the `data-ti` indices.
+- **SPEC-4.68.3**: `toggle_task` must replace a space marker with `x` and any other marker with a space, leave every other byte of `src` unchanged, and return the new source.
+- **SPEC-4.68.4**: `toggle_task` must return `None` when `index` is not smaller than the number of task items.
+
+### 4.69 Markdown block map and rendered text
+
+- **SPEC-4.69.1**: `top_level_block_ranges(src)` must return the byte range of every top-level block in document order, where a block with start and end events and a standalone top-level event (a rule or raw HTML block) each count as one block.
+- **SPEC-4.69.2**: `block_index_at(ranges, offset)` must return `None` for an empty slice, otherwise the index of the last range whose start is at or before `offset`, and 0 when `offset` precedes every range.
+- **SPEC-4.69.3**: `rendered_text(src)` must render `src` with `render_markdown`, remove everything from each `<` through the next `>`, and decode entities in the remainder.
+- **SPEC-4.69.4**: `rendered_text` must decode `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&#39;`, `&#x27;`, `&nbsp;`, `&#160;`, `&#xa0;` and any `&#<decimal>;` or `&#x<hex>;` that names a valid character.
+- **SPEC-4.69.5**: `rendered_text` must keep an entity it cannot decode, an unterminated `&...` and a name longer than 10 characters as the literal text it found.
+
+### 4.70 Mention resolution
+
+- **SPEC-4.70.1**: `Mention::handles` must return, lower-cased, trimmed, non-empty and without duplicates, in this order: the directory handle; the first whitespace-separated word of the display name; and, when the display name has two or more words, the words joined with `.` and the words concatenated.
+- **SPEC-4.70.2**: `Mention::handles` must not return the last name alone.
+- **SPEC-4.70.3**: `resolve(handle, people)` must trim and lower-case `handle`, return `None` for an empty result, and match a person when `handles()` contains it.
+- **SPEC-4.70.4**: `resolve` must return the person only when exactly one person matches, and `None` when none or two or more match.
+- **SPEC-4.70.5**: `handle_end(text, at)` must return `None` when `opens_a_handle(text, at)` is false.
+- **SPEC-4.70.6**: `handle_end` must extend the handle over Unicode letters and digits, `.`, `_` and `-`, then remove trailing `.`, `-` and `_`, and return `None` when no character remains after the `@`.
+- **SPEC-4.70.7**: `opens_a_handle(text, at)` must return true when `at` is 0, false when the preceding character is a letter, digit, `.`, `_` or `-`, and true otherwise.
+
+### 4.71 Mention autocomplete
+
+- **SPEC-4.71.1**: `active_mention(text, caret)` must treat `caret` as a UTF-16 offset, clamp it to the end of the text, and search backward from it for the nearest `@` without crossing whitespace, returning `None` when there is none.
+- **SPEC-4.71.2**: `active_mention` must return `None` when `opens_a_handle` is false for the found `@`, so no list opens for an `@` the renderer would not resolve.
+- **SPEC-4.71.3**: `active_mention` must return `None` when the text between the `@` and the caret contains any character other than a letter, digit, `.`, `_` or `-`.
+- **SPEC-4.71.4**: `active_mention` must return `ActiveMention { at, end, fragment }` with `at` the UTF-16 offset of the `@`, `end` the caret as passed, and `fragment` the text between them, empty for a bare `@`.
+- **SPEC-4.71.5**: `matches(fragment, people)` must lower-case and trim the fragment, return every person for an empty fragment, and otherwise return people ranked 0 when any of their `handles()` starts with the fragment, 1 when their display name starts with it, 2 when any handle or the display name contains it, and exclude the rest.
+- **SPEC-4.71.6**: `matches` must order the result by rank and then by display name in ascending string order.
+- **SPEC-4.71.7**: `accept(text, active, handle)` must replace the text from `active.at` to `active.end` with `@<handle> ` including one trailing space, leave the text after `active.end` unchanged, and return the new text and the UTF-16 caret offset just after the inserted space.
+- **SPEC-4.71.8**: `accept` must clamp an `active.end` beyond the text to the end of the text instead of panicking.
+
+### 4.72 Editor toolbar: selection handling, inline marks and inserts
+
+- **SPEC-4.72.1**: `apply(src, start, end, action)` must take `start` and `end` as UTF-16 code-unit offsets, swap them when `start` is greater than `end`, clamp an offset beyond the text to the end of the text, and return the new text with `sel_start` and `sel_end` in UTF-16 units.
+- **SPEC-4.72.2**: An offset that falls between the two UTF-16 units of one character must resolve to the byte offset after that character.
+- **SPEC-4.72.3**: `Bold`, `Italic`, `Strikethrough` and `InlineCode` must wrap with `**`, `*`, `~~` and `` ` `` respectively, and with an empty selection must insert the marker pair around the placeholder `bold text`, `italic text`, `struck text` or `code` and select the placeholder.
+- **SPEC-4.72.4**: Wrapping a non-empty selection must insert the marker before and after it and leave the original selected text selected.
+- **SPEC-4.72.5**: A wrap action must remove the markers instead of adding them when the selection is non-empty, starts and ends with the marker and is at least twice the marker length, and the run of marker characters at each end is exactly the marker length; the inner text must be left selected.
+- **SPEC-4.72.6**: A wrap action must remove the markers instead of adding them when the marker sits directly before and directly after the selection, and the run of marker characters on each side is exactly the marker length; the unwrapped text must be left selected.
+- **SPEC-4.72.7**: A wrap action whose marker is a prefix of the marker already present (`Italic` on `**bold**`) must wrap again (`***bold***`) and must not remove one character from each side.
+- **SPEC-4.72.8**: A wrap action must not panic or slice inside a multi-byte character when a character of more than one byte is adjacent to the selection.
+- **SPEC-4.72.9**: `Link { text, url }` must replace the selection with `[label]` immediately followed by `(url)`, where the label is the selection if non-empty, else `text` if it is not blank, else `link text`, and select the label; the `url` is inserted as given.
+- **SPEC-4.72.10**: `Image { alt, url }` must replace the selection (the selection is not used as alt text) with `![label]` immediately followed by `(url)`, where the label is `alt` unless it is blank, in which case `image`, and select the label.
+- **SPEC-4.72.11**: The image insert must start with a newline unless it is at offset 0 or directly after a newline, and must end with a newline unless it is at the end of the text or directly before a newline, so the image takes its own line and a repeated insert does not add blank lines.
+- **SPEC-4.72.12**: `CodeBlock { lang }` must replace the selection with a fence of three backticks plus `lang`, a newline, the selected text, a newline and three backticks, using the same leading and trailing newline rule as the image insert, and select the fenced content (an empty selection leaves the caret inside the fence).
+- **SPEC-4.72.13**: `Table { rows, cols }` must clamp `cols` to 1 through 12 and `rows` to 1 through 50 and replace the selection with a header row `| Column 1 | ... |`, a delimiter row `| --- | ... |` and `rows` body rows whose cells are three spaces, every row ending in a newline.
+- **SPEC-4.72.14**: The table insert must start with a newline unless it is at offset 0 or directly after a newline, and must select the text `Column 1` of the first header cell.
+
+### 4.73 Editor toolbar: line prefixes and headings
+
+- **SPEC-4.73.1**: `Quote`, `BulletList` and `Checklist` must act on every whole line from the line containing the selection start through the line containing the selection end, using the prefixes `> `, `- ` and `- [ ] `.
+- **SPEC-4.73.2**: A line-prefix action must remove one prefix from each touched line when every touched line starts with the prefix, and otherwise must add the prefix to every touched line, including lines that already carry it and blank lines.
+- **SPEC-4.73.3**: After a line-prefix, numbered-list or heading action the selection must cover all of the rewritten lines.
+- **SPEC-4.73.4**: `NumberedList` must prefix the touched lines with `1. `, `2. `, `3. ` and so on counted from 1 within the touched block, and must remove the numbering (digits followed by `. `) from each line when every touched line starts with digits followed by `. `.
+- **SPEC-4.73.5**: `Heading(level)` must, for each touched line, remove its leading `#` characters and one following space, then add `level` hashes (at most 6) and a space; when `level` is 0 or equals the line's existing hash count it must leave the line without a heading marker.
+
+### 4.74 Editor toolbar: table formatting
+
+- **SPEC-4.74.1**: `FormatTable` must return the text unchanged, with the selection converted to UTF-16 and otherwise kept, when the selection start is not inside a table.
+- **SPEC-4.74.2**: The table block must be the maximal run of consecutive lines, around the line containing the selection start (the last line when no line contains it), that each contain an unescaped `|`, and its range must exclude the final newline.
+- **SPEC-4.74.3**: `FormatTable` must treat the block as a table only when it has at least two rows and the second row is a delimiter row, in which every cell, after trimming and removing a leading and trailing `:`, is a non-empty run of `-`; otherwise it must leave the text unchanged.
+- **SPEC-4.74.4**: Splitting a row into cells must ignore one leading and one trailing `|`, treat `\|` as cell content, and trim each cell.
+- **SPEC-4.74.5**: `FormatTable` must size each column as the largest character count of its cells in all rows except the delimiter row, with a minimum of 3 for no alignment, 4 for left or right alignment and 5 for center alignment.
+- **SPEC-4.74.6**: `FormatTable` must rebuild the delimiter row from each delimiter cell's colons (`:` at the start for left, at the end for right, at both for center, dashes filling the column width) and treat a column with no delimiter cell as unaligned.
+- **SPEC-4.74.7**: `FormatTable` must pad a row with fewer cells than the widest row with empty cells, and write each row as `|` followed by ` <cell padded with spaces to the column width> |` for every column.
+- **SPEC-4.74.8**: `FormatTable` must leave the text before and after the block unchanged and must produce the same output when run again on its own output.
+- **SPEC-4.74.9**: `FormatTable` must place the caret at the end of the text of the cell it was in (same row and column, the column limited to the last cell of that row), or at the end of the table when the cell cannot be determined, and return it in UTF-16 units.
+
+### 4.75 Pagination query parameters
+
+- **SPEC-4.75.1**: When a list request omits `page`, `per_page` or `sort_dir`, the deserialized pagination parameters must be `page` = 1, `per_page` = 25 and `sort_dir` = "desc"; an omitted `sort` must be absent (`None`), not an empty string.
+- **SPEC-4.75.2**: The effective page size (`per_page()` and `limit()`) must be the requested `per_page` clamped into the range 1 to 100 inclusive (`MAX_PER_PAGE` = 100); a request for 0 must yield 1 and a request for 500 must yield 100, with no error returned.
+- **SPEC-4.75.3**: The query offset must equal `(page - 1) * effective per_page`, using the clamped page size, so page 1 and page 0 both yield offset 0 and page 3 with `per_page` 10 yields 20.
+- **SPEC-4.75.4**: The offset computation must not overflow or wrap for any `u32` page value; a very large page must produce an offset beyond the data (an empty page), never a small wrapped offset and never a panic.
+- **SPEC-4.75.5**: The sort direction must be ascending only when `sort_dir`, compared case-insensitively, equals "asc" (so "ASC" and "Asc" are ascending); every other value, including an empty string or an unknown word, must be descending.
+- **SPEC-4.75.6**: The Rust `Default` value of the parameters (as opposed to the deserialized defaults) must be `page` 0, `per_page` 0 and an empty `sort_dir`, which behaves as effective page size 1, offset 0 and descending.
+
+### 4.76 Pagination ORDER BY clause
+
+- **SPEC-4.76.1**: `order_by(default_field, allowed_fields)` must return `"<field> ASC"` or `"<field> DESC"` (direction per SPEC-4.75.5) when `sort` is present and exactly equals (case-sensitive) one of `allowed_fields`.
+- **SPEC-4.76.2**: When `sort` is absent or is not an exact member of `allowed_fields`, `order_by` must ignore it, without returning an error, and use `default_field` instead.
+- **SPEC-4.76.3**: When the default is used and `default_field` contains neither a space nor a comma, `order_by` must append the requested direction (`"payment_date"` with no `sort_dir` yields `"payment_date DESC"`).
+- **SPEC-4.76.4**: When the default is used and `default_field` contains a space or a comma (an explicit direction or a multi-column clause), `order_by` must return it verbatim with no direction appended, regardless of `sort_dir`, so `"invoice_date DESC"` never becomes `"invoice_date DESC DESC"`.
+- **SPEC-4.76.5**: `order_by` must interpolate only a field taken from the caller-supplied allow-list or the caller-supplied default into the clause; a request-supplied `sort` value outside the allow-list must never appear in the returned text.
+
+### 4.77 Paginated response envelope
+
+- **SPEC-4.77.1**: A paginated list response must serialize as `{"data": [...], "meta": {"page", "per_page", "total", "total_pages", "has_next", "has_prev"}}`, where `page`, `per_page` and `total_pages` are unsigned 32-bit integers and `total` is an unsigned 64-bit integer.
+- **SPEC-4.77.2**: `total_pages` must equal `ceil(total / per_page)`, so a total of 0 yields 0 pages and 17 items at 5 per page yield 4 pages.
+- **SPEC-4.77.3**: `has_next` must be true exactly when `page < total_pages`, and `has_prev` must be true exactly when `page > 1`.
+- **SPEC-4.77.4**: Building a response from request parameters (`from_params`) must report the page number exactly as requested (not clamped) and the clamped effective page size from SPEC-4.75.2.
+- **SPEC-4.77.5**: `PaginatedResponse::new` must be called only with `per_page` of at least 1; the request-parameter constructor guarantees this through the clamp, and a direct call with 0 is a caller error.
+- **SPEC-4.77.6**: `map` must transform every data item in order and leave the `meta` block unchanged.
+
+### 4.78 Per-user preference accessors
+
+- **SPEC-4.78.1**: `get_bool(key, default)` must return `default` when the key is unset or the store is unreachable, and otherwise must return true only when the stored text is exactly "1"; any other stored text, including "0", must read as false.
+- **SPEC-4.78.2**: `set_bool(key, value)` must store the text "1" for true and "0" for false.
+- **SPEC-4.78.3**: `get_str(key, default)` must return the stored text when it is non-empty and `default` when the key is unset, the store is unreachable, or the stored text is empty.
+- **SPEC-4.78.4**: `set_str(key, value)` must store `value` verbatim, including an empty string, which then reads back as the default.
+- **SPEC-4.78.5**: `clear(key)` must remove the stored value so the next read returns the caller's default; it exists so an in-progress draft is dropped once saved or deliberately discarded.
+- **SPEC-4.78.6**: The write accessors (`set_bool`, `set_str`, `clear`) must not return an error to the caller; a failed write must be reported by the underlying store as a log line naming the key, and must not abort the user's interaction.
+
+### 4.79 Rate-limit wait from a 429 body
+
+- **SPEC-4.79.1**: `retry_after_seconds(body)` must parse `body` as JSON and return the top-level `retry_after_seconds` value as a positive integer number of seconds.
+- **SPEC-4.79.2**: `retry_after_seconds` must return `None` (and must not panic) when the body is not valid JSON, is empty, is truncated, is an HTML page, lacks the key, or carries a value that is not an integer representable as `i64` (a string, a float or null).
+- **SPEC-4.79.3**: `retry_after_seconds` must return `None` for a value of 0 or any negative number, so the UI never says "in 0 seconds".
+- **SPEC-4.79.4**: A body in the canonical error envelope (`{"error":{"code","message"}}`) must yield no wait value.
+- **SPEC-4.79.5**: `retry_after_phrase(body)` must return `None` whenever `retry_after_seconds` returns `None`.
+- **SPEC-4.79.6**: For a wait under 60 seconds, `retry_after_phrase` must return `"in <n> seconds"` with the number of seconds.
+- **SPEC-4.79.7**: For a wait of 60 seconds or more, `retry_after_phrase` must round the minutes up (`ceil(seconds / 60)`) and return `"in about a minute"` when the result is 1 and `"in about <m> minutes"` otherwise, so 60 seconds reads "in about a minute", 61 and 90 read "in about 2 minutes".
+
+### 4.80 Role display labels
+
+- **SPEC-4.80.1**: `display_role_label` must map the server role identifier "admin" to the label "Owner" for every surface that shows a role; the identifier sent to the server must stay "admin".
+- **SPEC-4.80.2**: `display_role_label` must return these exact labels for these exact identifiers: "super_admin" -> "Super admin", "manager" -> "Manager", "technician" -> "Technician", "dispatcher" -> "Dispatcher", "sales" -> "Sales", "finance" -> "Finance".
+- **SPEC-4.80.3**: Both "read_only" and "readonly" must map to "Read-only".
+- **SPEC-4.80.4**: An empty role identifier must map to "Unknown".
+- **SPEC-4.80.5**: Any other identifier must be rendered by splitting on `_`, upper-casing the first character of the first word and lower-casing the rest of it, lower-casing every later word, and joining the words with single spaces ("service_delivery" -> "Service delivery", "ops" -> "Ops"), so an unknown role stays readable.
+- **SPEC-4.80.6**: The identifier match must be exact and case-sensitive; "Admin" or "ADMIN" must go through the generic rendering of SPEC-4.80.5 (yielding "Admin") and not map to "Owner".
+- **SPEC-4.80.7**: When the generic rendering produces an empty string, `display_role_label` must return the identifier unchanged.
+
+### 4.81 Sort-key allow-lists and canned sort fragments
+
+- **SPEC-4.81.1**: `COMPANY_SORT_KEYS`, `CONTACT_SORT_KEYS` and `TICKET_SORT_KEYS` must be re-exports of the server's shared allow-lists for `GET /api/v1/contacts/companies`, `GET /api/v1/contacts/contacts` and `GET /api/v1/tickets` respectively, never a client-side copy.
+- **SPEC-4.81.2**: `TICKETS_RECENT_SORT` must be exactly `sort=updated_at&sort_dir=desc`, and `COMPANIES_BY_NAME_SORT` must be exactly `sort=name&sort_dir=asc`.
+- **SPEC-4.81.3**: Every `sort=` value in a query literal the client sends must be a member of the target endpoint's allow-list; a direction-prefixed key such as `-updated_at` must not be used, because the server answers 422 for a key it does not accept.
+- **SPEC-4.81.4**: `sort_field_of(query)` must split the fragment on `&` and return the value of the first segment beginning with `sort=` (possibly empty), or `None` when no segment does.
+
+### 4.82 Invisible-character sanitizing
+
+- **SPEC-4.82.1**: The invisible-character and exotic-space predicates and `sanitize_invisible` must be re-exports of the server's shared text module; a local redefinition of `is_removed`, `is_invisible`, `is_exotic_space` or `sanitize_invisible` in the client text module must fail the unit tests.
+- **SPEC-4.82.2**: `has_invisible(raw)` must return true exactly when at least one character of `raw` is an invisible character or an exotic space, must return false for ordinary text including accented letters and CJK, and must not allocate.
+- **SPEC-4.82.3**: `strip_invisible(raw)`, applied on every keystroke by the shared field components, must delete every invisible character and replace every exotic (non-ASCII) whitespace character with a single U+0020 space.
+- **SPEC-4.82.4**: `strip_invisible` must not trim, collapse or otherwise alter ASCII whitespace (space, tab, newline), so a trailing space in "John " and the line breaks of a textarea survive.
+- **SPEC-4.82.5**: `strip_invisible` must keep U+200C and U+200D (zero-width non-joiner and joiner), so emoji sequences and Persian, Arabic and Indic text round-trip byte-identical in free text.
+- **SPEC-4.82.6**: `clean_strict(raw)`, used by validators for fields whose grammar admits no invisible character, must apply `strip_invisible`, additionally delete U+200C and U+200D, and then trim leading and trailing whitespace.
+- **SPEC-4.82.7**: The invisible set must include at least U+00AD, U+200B, U+200E, U+200F, U+202A to U+202E, U+2060 to U+2064, U+2066 to U+2069 and U+FEFF, and the exotic-space set must include at least U+00A0, U+202F, U+2007, U+2009 and U+3000.
+
+### 4.83 Unresolved-reference placeholders
+
+- **SPEC-4.83.1**: When a screen shows a placeholder because a reference id could not be named, it must call `unresolved(surface, kind, id, shown)`, which returns the hover text `"Unresolved <kind> <id>"` (the full id) or `"Unresolved <kind>"` when `id` is `None`; the caller must set that text as the tooltip of the element showing `shown`.
+- **SPEC-4.83.2**: `unresolved` must write one INFO log line with the message "reference unresolved, placeholder shown" and the fields `surface`, `kind`, `shown` and (when present) `id`, the first time a given `(surface, id)` pair is seen in a page load.
+- **SPEC-4.83.3**: Repeat calls with the same `(surface, id)` must return the same tooltip text and write no further log line, so a re-rendering component logs once; the dedup key must be `(surface, id)` only, so a different id on the same surface logs again.
+- **SPEC-4.83.4**: `unresolved_by_key(surface, kind, key, shown)` must return `"Unresolved <kind> <key>"` and write the same INFO message with fields `surface`, `kind`, `key` and `shown` once per `(surface, key)` pair, using a dedup set separate from SPEC-4.83.3 so neither variant exhausts the other's budget.
+- **SPEC-4.83.5**: An absent reference that legitimately means "no one" must not be passed to these helpers and must not be logged.
+
+### 4.84 History actor resolution
+
+- **SPEC-4.84.1**: `resolve_person(surface, server_name, id, viewer, roster)` must return `Named(<name trimmed>)` when `server_name` is present and non-blank after trimming, whatever `id` is.
+- **SPEC-4.84.2**: Otherwise, when `id` is `None`, `resolve_person` must return `System` and must write no log line.
+- **SPEC-4.84.3**: Otherwise, when `id` equals the viewer's id and the viewer's name is non-blank after trimming, `resolve_person` must return `Named` with the viewer's name, so a self-authored row never reads as unresolved because the roster is empty.
+- **SPEC-4.84.4**: Otherwise, when a roster user with a matching id has a display name, `resolve_person` must return `Named` with that display name, where the display name is the full name if non-blank, else first name and last name joined by a space and trimmed if non-empty, else the email if non-blank, else no name.
+- **SPEC-4.84.5**: Otherwise, `resolve_person` must return `Unresolved` with `shown` = "Someone" and `tooltip` = `"Unresolved user <id>"`, produced through `unresolved(surface, "user", Some(id), "Someone")` so the id is logged per SPEC-4.83.2.
+- **SPEC-4.84.6**: `PersonRef::text()` must return "System" for `System`, the name for `Named`, and `shown` for `Unresolved`; `tooltip()` must be present only for `Unresolved`; `is_system()` must be true only for `System`.
+
+### 4.85 Company reference resolution
+
+- **SPEC-4.85.1**: `resolve_company(surface, server_name, id)` must return `Named(<name trimmed>)` when the response carried a non-blank company name, whatever `id` is.
+- **SPEC-4.85.2**: When there is no usable name and `id` is `None`, `resolve_company` must return `NotSet` and must write no log line.
+- **SPEC-4.85.3**: When there is no usable name (absent, empty or whitespace-only) and `id` is present, `resolve_company` must return `Unresolved` with `shown` = "Unknown company" and `tooltip` = `"Unresolved company <id>"`, logging per SPEC-4.83.2.
+- **SPEC-4.85.4**: `resolve_company` must not look the id up in a separately fetched company list; a present id with no server-supplied name is terminal.
+- **SPEC-4.85.5**: `CompanyRef::text(not_set)` must return the caller's `not_set` text for `NotSet`, the name for `Named` and `shown` for `Unresolved`; the not-set wording must remain per screen and must not be unified here; `tooltip()` must be present only for `Unresolved`.
+
+### 4.86 Query-string encoding and reading
+
+- **SPEC-4.86.1**: `urlencoding_minimal(s)` must replace space with `%20`, `&` with `%26`, `#` with `%23`, `?` with `%3F`, `+` with `%2B`, `=` with `%3D`, and every character below U+0020 with `%` plus two upper-case hex digits, and must pass every other character, including non-ASCII, through unchanged.
+- **SPEC-4.86.2**: `urlencoding_minimal` must also replace a literal `%` with `%25`, so a value that contains an escape-looking sequence is not decoded into a different value by the server.
+- **SPEC-4.86.3**: `encode_uri_component(s)` must leave `A-Z a-z 0-9 - _ . ! ~ * ' ( )` unchanged and replace every other UTF-8 byte of `s` with `%` plus two upper-case hex digits, matching JavaScript `encodeURIComponent` ("a b" -> "a%20b", "e-acute" -> "%C3%A9").
+- **SPEC-4.86.4**: `current_query_param(key)` must read the query of the route the app is currently on (not the browser URL) and must return `None` when the current location cannot be resolved, the key is absent, or its value is empty after trimming.
+- **SPEC-4.86.5**: `query_param_in(search, key)` must strip one leading `?`, split on `&`, split each pair at the first `=`, and for the first pair whose name equals `key` exactly (case-sensitive) return the trimmed raw (still percent-encoded) value, or `None` when that value is empty or the key has no `=`; later pairs with the same key must not be consulted.
+- **SPEC-4.86.6**: `QueryString::parse(search)` must strip one leading `?`, split on `&`, skip empty segments, split each segment at the first `=`, decode key and value, and give a segment without `=` an empty value.
+- **SPEC-4.86.7**: `QueryString::get(key)` must return the value of the first pair whose decoded name equals `key` exactly, or `None` when no pair matches.
+- **SPEC-4.86.8**: Decoding a query component must turn `+` into a space and each `%XX` (two hex digits, either case) into its byte, must keep a `%` that is not followed by two hex digits as a literal `%` and continue, and must convert the resulting bytes to text with invalid UTF-8 replaced by U+FFFD.
+- **SPEC-4.86.9**: Decoding must not panic when `%` is adjacent to a multi-byte UTF-8 character or ends the string.
+
+### 4.87 Safe link targets
+
+- **SPEC-4.87.1**: `scheme_of(value)` must trim `value`, remove every whitespace character and every character below U+0020, and take the text before the first `:` as the scheme, returned lower-cased.
+- **SPEC-4.87.2**: `scheme_of` must return `None` when the cleaned value has no `:`, when the text before the first `:` is empty, or when that text contains `/` (so `example.com/a:b` and `/internal/path` have no scheme).
+- **SPEC-4.87.3**: `safe_href(value)` must return `None` for an empty or whitespace-only value.
+- **SPEC-4.87.4**: `safe_href` must return the trimmed value for an explicit scheme of `http`, `https` or `mailto` (case-insensitive) and must return `None` for every other explicit scheme, including `javascript`, `data` and `vbscript` and variants built with case changes, tabs or newlines such as `java<TAB>script:`, so the caller renders plain text instead of a live link.
+- **SPEC-4.87.5**: `safe_href` must return the trimmed value unchanged for a value with no scheme (a relative or scheme-less reference).
+- **SPEC-4.87.6**: A user-supplied value rendered into an `href` attribute must pass through `safe_href` first.
+
+### 4.88 Field validation engine
+
+- **SPEC-4.88.1**: `validate(value, label, rules)` must evaluate `rules` in order and return the message of the first failing rule, or `None` when every rule passes or `rules` is empty.
+- **SPEC-4.88.2**: Every rule except `MaxLen` must be evaluated against the value after `clean_strict` (SPEC-4.82.6); `MaxLen` must be evaluated against the raw, untrimmed value.
+- **SPEC-4.88.3**: The label woven into a message must be the label trimmed, and "This field" when the label is empty or whitespace-only.
+- **SPEC-4.88.4**: `is_valid(value, rules)` must return true exactly when `validate` with an empty label returns `None`.
+- **SPEC-4.88.5**: `Rule::Custom(f)` must call `f` with the cleaned value and, when `f` returns `Some(message)`, return that message verbatim as the failure.
+- **SPEC-4.88.6**: Rule equality must compare `MaxLen` and `MinLen` by length, `Number` by `min`, `max` and `max_decimals`, and `Custom` by function address, so equal rule lists remain equal for component memoization.
+- **SPEC-4.88.7**: Every typed rule other than `Required` and `MaxLen` (`MinLen`, `Email`, `Uuid`, `Number`) must pass a blank (after cleaning) value, so an optional field is validated only when the user typed something; a field that must not be blank must also carry `Required`.
+
+### 4.89 Required, length, email and UUID rules
+
+- **SPEC-4.89.1**: `Required` must fail with `"<label> is required."` when the cleaned value is empty, so a value made only of whitespace or invisible characters fails.
+- **SPEC-4.89.2**: `MaxLen(n)` must fail with `"<label> must be <n> characters or fewer."` when the raw value has more than `n` Unicode scalar values, counting trailing spaces and invisible characters, and a blank value is subject to the same cap.
+- **SPEC-4.89.3**: `MinLen(n)` must fail with `"<label> must be at least <n> characters."` when the cleaned value is non-empty and has fewer than `n` Unicode scalar values.
+- **SPEC-4.89.4**: `Email` must fail with `"<label> must be a valid email address."` unless the cleaned value contains a first `@` with a non-empty local part and a non-empty host, no whitespace anywhere, no second `@` in the host, and a host containing a `.` with non-empty text on both sides of its last `.`.
+- **SPEC-4.89.5**: `Uuid` must fail with `"<label> must be a valid selection."` unless the cleaned value parses as a UUID in any form the `uuid` crate's `parse_str` accepts.
+
+### 4.90 Number rule
+
+- **SPEC-4.90.1**: `Number` must fail with `"<label> must be a number."` when the cleaned value does not parse as a 64-bit float or parses to a non-finite value (infinity or NaN); a comma decimal separator is not accepted.
+- **SPEC-4.90.2**: When `min` is set and the number is below it, `Number` must fail with `"<label> must not be negative."` if `min` is 0, and otherwise with `"<label> must be at least <min>."` where `<min>` is the float formatted without a trailing `.0` for whole numbers.
+- **SPEC-4.90.3**: When `max` is set and the number is above it, `Number` must fail with `"<label> is out of range."`.
+- **SPEC-4.90.4**: When `max_decimals` is set and the count of digits after the first `.` in the cleaned text exceeds it, `Number` must fail with `"<label> must have at most <n> decimal place."` for n = 1 and `"<label> must have at most <n> decimal places."` for every other n (including 0).
+- **SPEC-4.90.5**: `Number` must test the checks in the order parse, finite, minimum, maximum, decimals and report only the first that fails.
+
+### 4.91 Build metadata constants
+
+- **SPEC-4.91.1**: `VERSION` must be the package `version` from `Cargo.toml` baked in at build time, not a value derived from git tags, so a build cut right after a version bump shows the new version.
+- **SPEC-4.91.2**: `GIT_HASH` must be the first 12 characters of the `GIT_SHA` environment variable when it is set and non-empty, else the output of `git rev-parse --short=12 HEAD`, else the literal "unknown"; a missing git must not fail the build.
+- **SPEC-4.91.3**: `BUILD_DATE` must be the UTC build time formatted `YYYY-MM-DDTHH:MM:SSZ`, or the literal "unknown" when the `date` command fails.
+
+### 4.92 Word-level diff
+
+- **SPEC-4.92.1**: `diff_words(old, new)` must return `Some(vec![Same(old)])` when the two values are equal, and `None` when they differ and either is empty.
+- **SPEC-4.92.2**: The diff must tokenize each value into words where each token carries the whitespace that follows it (and leading whitespace belongs to the first token), so concatenating the `Same` and `Removed` pieces reproduces `old` exactly and concatenating the `Same` and `Added` pieces reproduces `new` exactly.
+- **SPEC-4.92.3**: Tokens must compare equal only when their text including trailing whitespace is identical, so "word" and "word " are different tokens.
+- **SPEC-4.92.4**: `diff_words` must first trim the longest shared token prefix and the longest shared token suffix, then compute a longest-common-subsequence over the remaining middle tokens.
+- **SPEC-4.92.5**: When either middle token list has more than 400 tokens, `diff_words` must return `None` without building the LCS table.
+- **SPEC-4.92.6**: `diff_words` must return `None` when the characters in `Same` pieces divided by the character count of the longer value is below 0.3, so short unrelated values such as "Open" and "Closed" render as a replacement.
+- **SPEC-4.92.7**: Adjacent pieces of the same kind must be merged into one piece, and pieces with empty text must be omitted.
+- **SPEC-4.92.8**: When tokens differ in the LCS walk, a removal must be emitted before an addition on equal scores, so a replaced word appears as `Removed` followed by `Added`; leftover tokens after the walk must be emitted as one `Removed` run then one `Added` run.
+- **SPEC-4.92.9**: `lcs_into` must be usable over any token slice (words or lines) and must emit nothing for two empty slices, one `Added` run for an empty old side and one `Removed` run for an empty new side.
+- **SPEC-4.92.10**: `diff_words` and `lcs_into` must never panic or return an error for any input, including multi-byte text, because they render an audit row that has already been written.
+
+### 4.93 Diff elision
+
+- **SPEC-4.93.1**: `elide(pieces, context)` must leave `Removed` and `Added` pieces unchanged and shorten only `Same` pieces.
+- **SPEC-4.93.2**: A `Same` piece that is the only piece must never be shortened.
+- **SPEC-4.93.3**: A `Same` piece must be left whole when its word count is at most the number of words it would keep at its edges.
+- **SPEC-4.93.4**: The first piece of several, when `Same` and longer than `context` words, must keep only its last `context` words, prefixed by the ellipsis character U+2026 and one space.
+- **SPEC-4.93.5**: The last piece of several, when `Same` and longer than `context` words, must keep only its first `context` words, followed directly by the ellipsis character U+2026.
+- **SPEC-4.93.6**: A middle `Same` piece longer than twice `context` words must keep its first `context` words, then the ellipsis character U+2026 and one space, then its last `context` words.
+- **SPEC-4.93.7**: Kept words must retain their trailing whitespace, using the tokenization of SPEC-4.92.2.
+
+## 5. Components
+
+### 5.1 Portal access-required state
+
+- **SPEC-5.1.1**: The portal access-required component must be keyed by an access area made of a `key` (the server's closed area name) and a `label` (the customer-facing noun used mid-sentence), and the defined areas must be `payment_methods` ("saved payment methods"), `invoices` ("invoices"), `tickets` ("tickets"), `quotes` ("quotes") and `contracts` ("contracts").
+- **SPEC-5.1.2**: The access-required page must render a page header whose title is the caller's `title` prop (the section name, unchanged), followed by a card holding an information icon, a heading, the explanation, and the request controls.
+- **SPEC-5.1.3**: The heading must be the area label with its first character upper-cased followed by " are not shared with you" (for example "Invoices are not shared with you"), and must be "This is not shared with you" when the label is empty.
+- **SPEC-5.1.4**: The MSP name used in the copy must be the effective branding `display_name` when it is non-empty, otherwise the effective branding `company_name` when it is non-empty, otherwise absent.
+- **SPEC-5.1.5**: When an MSP name is available the explanation must read "Your {name} portal does not share {area} with your account. You can ask them for access."
+- **SPEC-5.1.6**: When no MSP name is available the explanation must read "This portal does not share {area} with your account. You can ask your provider for access."
+- **SPEC-5.1.7**: The explanation and the confirmation copy must not mention an "administrator" and must not contain an unreplaced `{` placeholder.
+- **SPEC-5.1.8**: Once a request has been sent, the page must replace the explanation, note field, error and button with "Your request has gone to {name}. They will let you know when access is granted." (or "Your request has gone to your provider. They will let you know when access is granted." without an MSP name), and the confirmation must not promise a timeframe.
+- **SPEC-5.1.9**: Before a request is sent the page must show a multi-line text field named `access_request_note` (2 rows, label "Anything to add (optional)") and a primary button labelled "Ask for access".
+- **SPEC-5.1.10**: Pressing "Ask for access" must send a contact-plane POST to `/access-requests` whose JSON body carries `area` (the area key, never a capability name) and carries `note` only when the trimmed note is non-empty, omitting the field entirely otherwise.
+- **SPEC-5.1.11**: While a request is in flight or after one has been sent, pressing the button again must do nothing, and the button must show its loading state and be disabled while the request is in flight.
+- **SPEC-5.1.12**: When the server cannot be reached for mutation (`use_can_mutate` is false) the "Ask for access" button must be disabled and carry the tooltip "Can't reach the server to send your request".
+- **SPEC-5.1.13**: When the request fails the page must show an error banner reading "Could not send your request: {message}" (the error's user message), keep the note and the button usable, and not show the sent confirmation.
+- **SPEC-5.1.14**: The in-flight flag must be cleared when the request completes, whether it succeeded or failed.
+
+### 5.2 Account-deleted overlay
+
+- **SPEC-5.2.1**: The account-deleted overlay must render nothing (no DOM) unless the shared `ACCOUNT_DELETED` flag is set, and the flag must read as false in a build without the `app` feature.
+- **SPEC-5.2.2**: When the flag is set the overlay must mount a separate terminal body component, so that the token-clearing and countdown hooks run only after the flag is set and never on a healthy render.
+- **SPEC-5.2.3**: The terminal body must be a fixed full-viewport layer (`z-50`) with role `alertdialog`, `aria-modal="true"` and `aria-labelledby` pointing at its heading, and it must offer no dismiss control other than "Sign out now".
+- **SPEC-5.2.4**: The terminal body must show the heading "Your account has been deleted." and the line "Signing you out in {secs} seconds" followed by an ellipsis, where `secs` is the live remaining count.
+- **SPEC-5.2.5**: On mount the terminal body must clear the locally stored OIDC auth state (`clear_auth`) exactly once, so that no later request re-arms the deleted account's bearer token.
+- **SPEC-5.2.6**: The countdown must start at 5 seconds, decrease by 1 every 1000 ms, and never go below 0.
+- **SPEC-5.2.7**: When the countdown reaches 0 the overlay must run the shared sign-out sequence (`sign_out`).
+- **SPEC-5.2.8**: The "Sign out now" button must run the same shared sign-out sequence immediately, without waiting for the countdown.
+
+### 5.3 Asset picker
+
+- **SPEC-5.3.1**: The asset picker must search with `GET /assets?per_page=20` when the trimmed query is empty and `GET /assets?q={encoded query}&per_page=20` otherwise, using the minimal URL encoder and the trimmed query.
+- **SPEC-5.3.2**: The search must be debounced by 300 ms of typing pause, and the resource must read the active tenant generation so that a tenant switch re-runs it.
+- **SPEC-5.3.3**: A failed search must log a warning "asset search failed: {error}" and the dropdown must show an error banner "Could not search. Try again.", distinct from the loading text "Searching..." (shown while no result has arrived) and the empty states.
+- **SPEC-5.3.4**: A successful search with no rows must show "No assets yet." when the trimmed query is empty and "No matches." otherwise.
+- **SPEC-5.3.5**: Each result row must show the asset name, and the asset tag in monospace beside it only when the tag is non-blank after trimming.
+- **SPEC-5.3.6**: Choosing a row (by click or by keyboard) must call `onselect` with `(id, name)`, leave inline-edit mode, and set the input text to the chosen name; a click must also close the dropdown.
+- **SPEC-5.3.7**: The search field must be a combobox that opens its dropdown on focus-in and on click, opens it fresh on every input change, and closes it, leaving inline-edit mode, when the backdrop outside the dropdown is clicked.
+- **SPEC-5.3.8**: Keyboard navigation must use the shared dropdown contract, and Enter with no highlighted row must choose the first match.
+- **SPEC-5.3.9**: Result row buttons must be out of the tab order (`tabindex="-1"`), so that Tab commits and moves to the next field.
+- **SPEC-5.3.10**: When `selected_id` is set and the picker is not in inline-edit mode, it must show a chip with the `value` name instead of the search field, with the label hidden when the label is blank after trimming and an asterisk when `required`.
+- **SPEC-5.3.11**: Pressing "Change" on the chip must clear the query, switch to the search field with the dropdown open, and must not call `onclear`.
+- **SPEC-5.3.12**: Pressing "Unassign" on the chip must call `onclear` and clear the query.
+- **SPEC-5.3.13**: The search field must be named `asset_search` with placeholder "Search assets...", label defaulting to "Asset", and `required` defaulting to false; the picker must not offer inline asset creation.
+
+### 5.4 Avatar
+
+- **SPEC-5.4.1**: The initials of a name must be the first alphanumeric character of each of its first two whitespace-separated words, upper-cased (so "Ada Lovelace" gives "AL", "ada" gives "A", a four-word name gives only the first two).
+- **SPEC-5.4.2**: The initials must be "?" when the trimmed name equals "unknown" ignoring ASCII case, and when the name yields no letters.
+- **SPEC-5.4.3**: When `url` is present and non-blank after trimming, the avatar must render a round `img` with `object-cover`, with `alt` and `title` both set to the name.
+- **SPEC-5.4.4**: When `url` is absent or blank, the avatar must render a round `span` with role `img`, `aria-label` and `title` set to the name, containing the initials.
+- **SPEC-5.4.5**: The size must be `Small` by default (`h-8 w-8 text-xs`) or `Medium` (`h-10 w-10 text-sm`), and the caller's extra classes must be appended to the disc.
+
+### 5.5 Bar chart
+
+- **SPEC-5.5.1**: A bar chart with no data rows must render only the text "No data to chart." and no SVG.
+- **SPEC-5.5.2**: Bar widths must scale against the largest value, with the scale floored at 1.0, and each bar must be `clamp(value / max, 0, 1)` of the 320 px track, truncated to whole pixels, so a zero or negative value draws no bar.
+- **SPEC-5.5.3**: The chart must use rows 28 px apart (18 px bar plus 10 px gap, first row at y = 5), a 160 px label column, a 320 px track, an 80 px value column, an SVG width of 580 and a height of 28 per row plus 10, and must scroll horizontally in its container when wider than it.
+- **SPEC-5.5.4**: Each row must show its label at the left, a full-width background track, the value bar, and the value label to the right of the track.
+- **SPEC-5.5.5**: The value label must be the value to one decimal place when `one_decimal` is set, the integer form when the value has no fractional part, and the default numeric form otherwise, always followed directly by `unit_suffix` with no inserted separator.
+
+### 5.6 Branding editor: planes and asset uploads
+
+- **SPEC-5.6.1**: Asset URLs must be derived from the editing plane: `/tenants/current/branding/{asset}` for the tenant plane, `/companies/{company_id}/{asset}` for a company on the staff plane, and `/contact/companies/self/{asset}` for a contact editing their own company.
+- **SPEC-5.6.2**: The editor must show three asset rows, in the order Logo (`logo`), Favicon (`favicon`) and Background image (`background`), each with a file input named `brand_upload_{asset}` that accepts `image/png,image/jpeg,image/webp,image/gif`.
+- **SPEC-5.6.3**: Choosing a file must upload it as a multipart PUT with the file in a form part named `file` carrying its original filename, using the staff bearer on the tenant and staff planes and the contact bearer on the contact plane.
+- **SPEC-5.6.4**: When the file input cannot be found or is not an input element the row must show "Could not read the picked file."; when no file is selected the change must do nothing.
+- **SPEC-5.6.5**: A successful upload or removal must call the row's `on_saved`, which the editor forwards to `on_asset_saved` when the parent supplied one; a failed upload must show "Upload failed: {error}" and a failed removal "Remove failed: {error}", each as an alert paragraph under the row.
+- **SPEC-5.6.6**: While an upload or removal is in flight the file input and the Remove button must be disabled, and a second Remove press must do nothing.
+- **SPEC-5.6.7**: The Remove button must be shown only when the row has a current URL, and must issue a DELETE to the asset URL, using the staff delete helper on the tenant and staff planes and the contact no-content delete helper on the contact plane.
+- **SPEC-5.6.8**: A row with a current URL must show a 64 px square preview with alt text "{label} preview", built from the URL passed through the versioned absolute-URL helper using the current branding block so a fresh upload evicts cached bytes; a row without one must show a dashed box reading "No file".
+- **SPEC-5.6.9**: When the `disabled` prop is true every field, upload input and button in the editor must be disabled but still rendered.
+
+### 5.7 Branding editor: fields, save, reset and contrast
+
+- **SPEC-5.7.1**: The editor must initialise each field from the `current` override block once at mount, with an absent value shown as an empty string.
+- **SPEC-5.7.2**: The editor must show an intro paragraph chosen by plane: the tenant plane starts "MSP-wide defaults.", the staff company plane starts "Customize how this Company's portal looks to its contacts.", and the contact plane starts "Customize how your Company's portal looks."
+- **SPEC-5.7.3**: Every plane must show fields for Display name, Trading name, Legal name, Tax ID, Postal address (4-row text area) and the Primary, Secondary and Background colors, and the tenant plane alone must also show an Invoice template select with options "Default (classic)" (empty value), "Classic", "Modern" and "Compact".
+- **SPEC-5.7.4**: The hint under each field must be "Blank falls back to the platform default." on the tenant plane, and on other planes "Inherits from MSP default: {value}" when the tenant default is non-empty and "No MSP default; portal falls back to the coded default." otherwise.
+- **SPEC-5.7.5**: The postal address hint must read "One line per address line. Up to six lines." followed by the plane hint; the editor itself must not enforce the six-line limit.
+- **SPEC-5.7.6**: The support contact fields (email, phone, contact name) must be editable on the staff company plane and the contact plane and not on the tenant plane.
+- **SPEC-5.7.7**: On the tenant plane the editor must show a read-only "Support contact" block listing the non-blank, trimmed contact name, email and phone joined by " - ", or "Not set yet." when all three are blank, with a link "Edit them under Organization" to the organization settings route.
+- **SPEC-5.7.8**: Pressing "Save branding" must build a branding block in which every text, color, support-contact and invoice-template field is the field value, or absent when the value is the empty string, with the logo, favicon and background asset fields left absent, and must call `on_save` with it; the editor must not perform the network call itself.
+- **SPEC-5.7.9**: The save block must carry the support-contact and invoice-identity keys on every plane regardless of whether their inputs are rendered, so that a tenant save passes the organization's values through unchanged.
+- **SPEC-5.7.10**: Each color field must show a "Reset to inherit" button only when the `current` override for that color is non-empty.
+- **SPEC-5.7.11**: Pressing "Reset to inherit" must send `{field: null}` for that color key: as a PUT to `/tenants/current` with `{"branding": {field: null}}` on the tenant plane, as a PUT to `/contacts/companies/{company_id}` with the same body on the staff plane, and as a PATCH to `/contact/companies/self/branding` with `{field: null}` on the contact plane.
+- **SPEC-5.7.12**: A successful reset must clear the local color value and call `on_asset_saved`; a failed reset must show the alert "Reset failed. Try again in a moment."; a second press while in flight must do nothing, and the picker and button must be disabled while in flight.
+- **SPEC-5.7.13**: For each of the three color values that parses as `#rrggbb`, the editor must compute the larger WCAG contrast ratio against pure black and pure white, and when any is below 4.5 must show a `role="note"` paragraph beginning "Contrast note:" listing "{Label} ({ratio to one decimal}:1)" for each such color, without blocking save.
+- **SPEC-5.7.14**: A color value that is empty or not a six-digit hex string must be skipped by the contrast check without any message.
+
+### 5.8 Bulk selection
+
+- **SPEC-5.8.1**: The bulk selection state must be a signal holding a set of row-id strings, and `use_bulk_selection` must return a fresh empty selection on every mount.
+- **SPEC-5.8.2**: Toggling an id must remove it when present and insert it when absent.
+- **SPEC-5.8.3**: Setting all ids must replace the whole selection with exactly the given ids, discarding any previously selected id not in the list.
+- **SPEC-5.8.4**: The row checkbox cell must be a `td` with a checkbox labelled "Select row", checked exactly when the row id is in the selection, toggling that id on change, and must stop click propagation so that selecting does not trigger the row's own click.
+- **SPEC-5.8.5**: The header checkbox must be checked only when the page id list is non-empty and every id is selected; it must be labelled "Clear selection" when checked and "Select all rows on this page" otherwise.
+- **SPEC-5.8.6**: Toggling the header checkbox when all page ids are selected must clear the entire selection, and otherwise must replace the selection with the page ids.
+- **SPEC-5.8.7**: The bulk actions bar must render nothing when the selection is empty, and otherwise must show "1 {label} selected" for one row and "{n} {label}s selected" for any other count, a secondary "Cancel" button that clears the selection, and the caller's action buttons on the right.
+
+### 5.9 Button and spinner
+
+- **SPEC-5.9.1**: The button variants must be Primary (default, accent fill), Secondary (surface fill with border), Danger (red fill, white text), Ghost (transparent) and Link (transparent, accent text), and the sizes must be Small (`px-2.5 py-1.5 text-xs`), Medium (default, `px-4 py-2 text-sm`) and Large (`px-6 py-3 text-base`).
+- **SPEC-5.9.2**: `button_class(variant, size)` must be public and return the base recipe plus the variant and size classes, so a link outside the app can look like a button.
+- **SPEC-5.9.3**: The button's `type` attribute must default to "button" so that it does not submit an enclosing form unless the caller sets it.
+- **SPEC-5.9.4**: A button must be natively disabled when `disabled` or `loading` is set, and in that case must also carry `aria-disabled="true"`, which must be absent otherwise.
+- **SPEC-5.9.5**: A loading button must show a spinner with a right margin before its children.
+- **SPEC-5.9.6**: The `title`, `aria-label` and `data-testid` attributes must be emitted only when the caller supplies them.
+- **SPEC-5.9.7**: Clicking an enabled button must call the caller's `onclick` with the mouse event.
+- **SPEC-5.9.8**: The spinner must render a 24-unit-viewBox SVG sized `h-4 w-4` with the `animate-spin` class.
+
+### 5.10 Card, card header and stat card
+
+- **SPEC-5.10.1**: A card must render its header only when `title` is non-empty, and `subtitle`, `subtitle_title`, `actions` and `danger` styling of the header must not appear without a title.
+- **SPEC-5.10.2**: The card header must show the title in an `h3`, the optional actions on the right in a wrapping flex group, and a rule below it, with the header always padded `px-6 pt-6 pb-4` regardless of the body's padding.
+- **SPEC-5.10.3**: A non-empty `subtitle` must render as a `text-sm` paragraph under the title inside the header, above the rule, and an empty one must render nothing.
+- **SPEC-5.10.4**: The paragraph for `subtitle` must carry `subtitle_title` as its `title` attribute when supplied, and no `title` attribute otherwise.
+- **SPEC-5.10.5**: The header's actions must align to the start (`items-start`) when a subtitle is present and centered (`items-center`) when it is not.
+- **SPEC-5.10.6**: With `padding` true the card body must be padded `px-6 pb-6 pt-4` when a header is shown and `p-6` when none is; with `padding` false the body must have no padding class.
+- **SPEC-5.10.7**: A `danger` card must use a red border and a red header title and rule in both color schemes, and an ordinary card must contain no red classes.
+- **SPEC-5.10.8**: A stat card must show the label, the value, the optional icon in a rounded container, an optional change text, and an optional caption line, with the change and caption rendered only when non-empty.
+- **SPEC-5.10.9**: The stat card change text must be green when `change_positive` is true (the default) and red when false.
+- **SPEC-5.10.10**: The stat card icon container tone must be `Accent` (default), `Warning` (yellow) or `Danger` (red), and the tone must supply the icon's inherited color.
+
+### 5.11 Change history
+
+- **SPEC-5.11.1**: Building a change line must format both values with the audit value formatter and title the field name, and must return no line only when both formatted sides are exactly "(reference)"; a swap with one readable side must still produce a line.
+- **SPEC-5.11.2**: A change line must render as a word diff, with unchanged context elided to 6 words either side of a change, when the word diff finds the two values worth interleaving, and otherwise as a replacement showing the shortened old and new values.
+- **SPEC-5.11.3**: The size of an entry must be the sum, over all its lines, of the characters actually rendered (diff pieces, or both replacement values) excluding the field name, and the entry must be large only when that sum is greater than `DETAIL_CHARS` (120), so exactly 120 stays inline.
+- **SPEC-5.11.4**: A change details block with no lines must render nothing, including no toggle.
+- **SPEC-5.11.5**: A large entry must hide its lines behind a button labelled "Details" that is closed initially, carries `aria-expanded` and an `aria-controls` naming the body id, shows a right chevron when closed and a down chevron when open, and toggles on click.
+- **SPEC-5.11.6**: A small entry must show its lines inline without a toggle.
+- **SPEC-5.11.7**: Each details block must keep its own open state and a unique body id of the form `ch-detail-{n}`, so that toggling one entry does not affect another.
+- **SPEC-5.11.8**: The word diff must be computed once per line per render and reused for both the size decision and the displayed view.
+- **SPEC-5.11.9**: A diff view must show removed text struck through with a red tint, added text with a green tint and no strike-through, and unchanged text in the subdued color, with whitespace and newlines preserved.
+- **SPEC-5.11.10**: A replacement view must show "{field}: " followed by the old value struck through, then an arrow, then the new value.
+- **SPEC-5.11.11**: A history entry must show its headline, then a "by {who}" line only when `who` is non-empty, with the name italic when `who_muted` and carrying `who_tooltip` as its `title`, then the details block, and a right-aligned `time` element whose `datetime` is `when_iso` and whose text is `when`.
+
+### 5.12 Window-close confirmation
+
+- **SPEC-5.12.1**: The close confirmation must open exactly when the platform window-close state reports a refused close request, and must add no DOM otherwise (including always on the web build).
+- **SPEC-5.12.2**: The dialog must be titled "Unsaved changes", say "This window has unsaved changes. Closing it now discards them.", and offer a destructive "Discard and close" and a "Keep editing" button.
+- **SPEC-5.12.3**: Confirming must call `confirm_close` and cancelling must call `cancel_close` on the platform window-close module.
+
+### 5.13 Collapsible card
+
+- **SPEC-5.13.1**: A collapsible card must start expanded unless `default_open` is false, and its body must not be rendered while collapsed.
+- **SPEC-5.13.2**: Only the chevron button (with the title and count) must toggle the card, with `aria-expanded` reflecting the state and `aria-controls` naming the body, and a down chevron when open and a right chevron when closed.
+- **SPEC-5.13.3**: The header actions must stay visible whether the card is open or collapsed and must not toggle it.
+- **SPEC-5.13.4**: The count badge must render whenever `count` is `Some`, including 0, and not otherwise.
+- **SPEC-5.13.5**: A non-empty subtitle must render in the header above the rule, indented to align with the title, with actions aligned to the start; with no subtitle the header must center its actions.
+- **SPEC-5.13.6**: The body id must be `lc-collapsible-` followed by the title with each alphanumeric character lower-cased (ASCII) and every other character replaced by `-`.
+- **SPEC-5.13.7**: The body must be padded `px-6 pb-6 pt-4` when `padding` is true and carry no padding when false.
+
+### 5.14 Collapsible side rail
+
+- **SPEC-5.14.1**: On wide screens (`lg` and up) the rail must show its children in a 16 rem column with a "Collapse panel" button (`aria-expanded="true"`) when the parent-owned `collapsed` signal is false, and only an "Expand panel" button (`aria-expanded="false"`) when it is true.
+- **SPEC-5.14.2**: The collapse and expand chevrons must point toward the rail's side when collapsing and away from it when expanding, so a left rail collapses with a left chevron and a right rail with a right chevron.
+- **SPEC-5.14.3**: On narrow screens the rail must show an "Open panel" handle button whose `aria-expanded` is true exactly when this side is the shared `open_overlay`.
+- **SPEC-5.14.4**: Pressing the handle must set `open_overlay` to this side when it is not open and to none when it is, so that opening one rail replaces any other open rail overlay.
+- **SPEC-5.14.5**: An open overlay must show a dimmed full-screen backdrop (`z-40`) and a 18 rem fixed panel (`z-50`) on the rail's own edge (left or right) with the children, and clicking the backdrop or the "Close panel" button must set `open_overlay` to none.
+
+### 5.15 Company picker
+
+- **SPEC-5.15.1**: The company picker must search with `GET /contacts/companies?status=active&per_page=20`, adding `q={encoded trimmed query}` when the query is non-empty, so that archived companies are never offered.
+- **SPEC-5.15.2**: The search must be debounced by 300 ms and must read the active tenant generation so that a tenant switch re-runs it.
+- **SPEC-5.15.3**: A failed search must log a warning "company search failed: {error}" and show an error banner "Could not search. Try again.", distinct from "Searching..." (no result yet), "No companies yet." (empty query, no rows) and "No matches." (non-empty query, no rows).
+- **SPEC-5.15.4**: Choosing a row must call `onselect` with `(id, name)` and set the input text to the name; a click must also close the dropdown.
+- **SPEC-5.15.5**: The search field must be a combobox that opens on focus-in and click, opens fresh on input change, closes on a backdrop click, takes the first match on Enter with no highlighted row, and keeps result row buttons out of the tab order.
+- **SPEC-5.15.6**: The search field must be named `company_search` with placeholder "Search companies...", label defaulting to "Company", and must forward the `error` prop to the input so a non-empty message shows next to the picker.
+- **SPEC-5.15.7**: When `selected_id` is set the picker must always show a chip with the `value` name, the label and an asterisk when `required`, and a "Change" button that calls `onclear` and clears the query.
+- **SPEC-5.15.8**: With `allow_inline_create` and a loaded result list the dropdown must end with a create row, which must be navigable by keyboard as the last row (and as row 0 when there are no matches), and must read "Create new company" for an empty query and `Create "{query}"` otherwise.
+- **SPEC-5.15.9**: Choosing the create row (click or keyboard) must close the dropdown, clear any create error, seed the company name field with the trimmed query, and open the "Create new company" dialog.
+- **SPEC-5.15.10**: The dialog must contain a required, auto-focused "Company name" field (placeholder "Acme Corp"), a note that a Client company with default settings is created, a Cancel button and a Create button, and must not close through Cancel or the close control while a create is in flight.
+- **SPEC-5.15.11**: Creating with a name that is empty after trimming must show "Enter a company name." in the dialog and send no request, and a create attempt while one is in flight must do nothing.
+- **SPEC-5.15.12**: Creating must POST `{"name": name}` to `/contacts/companies`; on success it must refresh the search list, call `onselect` with the new `(id, name)`, set the input text to the name, clear the dialog field and close the dialog.
+- **SPEC-5.15.13**: A failed create must keep the dialog open and show "Could not create company: {error}".
+- **SPEC-5.15.14**: Pressing Enter in any field of the dialog must run the same create action as the Create button.
+
+### 5.16 Contact picker
+
+- **SPEC-5.16.1**: The contact picker must search with `GET /contacts/contacts?per_page=20`, adding `&q={encoded trimmed query}` when the query is non-empty and `&company_id={encoded id}` when `company_filter` is non-empty.
+- **SPEC-5.16.2**: The search must be debounced by 300 ms and must read the active tenant generation so that a tenant switch re-runs it.
+- **SPEC-5.16.3**: A failed search must log a warning "contact search failed: {error}" and show an error banner "Could not search. Try again.", distinct from "Searching...", "No contacts yet." (empty query, no rows) and "No matches." (non-empty query, no rows).
+- **SPEC-5.16.4**: A contact's display name must be its trimmed `full_name` when non-empty, otherwise its trimmed "first last" names, and each result row must also show the company name and email when they are non-blank after trimming.
+- **SPEC-5.16.5**: Choosing a row (click or keyboard) must call `onselect` with `(id, display name)`, leave inline-edit mode and set the input text to the name; a click must also close the dropdown.
+- **SPEC-5.16.6**: The search field must be a combobox named `contact_search` with placeholder "Search contacts...", label defaulting to "Contact", that opens on focus-in and click, opens fresh on input change, closes with a backdrop click (leaving inline-edit mode), takes the first match on Enter with no highlighted row, and keeps result row buttons out of the tab order.
+- **SPEC-5.16.7**: When `selected_id` is set and the picker is not in inline-edit mode it must show a chip with the `value` name, the label and an asterisk when `required`, and "Change" must call `onclear`, clear the query, enter inline-edit mode and open the dropdown.
+- **SPEC-5.16.8**: With `allow_inline_create` and a loaded result list the dropdown must end with a create row, navigable by keyboard as the last row (and as row 0 when there are no matches), reading "Create new contact" for an empty query and `Create "{query}"` otherwise.
+- **SPEC-5.16.9**: Choosing the create row must close the dropdown, clear the email and any create error, seed the first and last name fields from the trimmed query by splitting on the first whitespace run (a single word fills only the first name, an empty query fills neither), and open the "Create new contact" dialog.
+- **SPEC-5.16.10**: The dialog must contain a required, auto-focused "First name" field, a required "Last name" field, an optional email field labelled "Email (optional)", a note that the default contact type is used, and Cancel and Create buttons, and must not close while a create is in flight.
+- **SPEC-5.16.11**: Creating with an empty first or last name (after trimming) must show "First and last name are required." and send no request, and an attempt while one is in flight must do nothing.
+- **SPEC-5.16.12**: Creating must POST `first_name`, `last_name`, `email` (only when non-empty after trimming) and `company_id` (only when `company_filter` trims to a valid UUID) to `/contacts/contacts`.
+- **SPEC-5.16.13**: When `company_filter` is non-blank but not a UUID the picker must log a warning "contact picker company filter {value} is not a uuid: {error}" and create the contact without `company_id`.
+- **SPEC-5.16.14**: A successful create must refresh the search list, call `onselect` with the new `(id, display name)`, set the input text to the name, clear the three dialog fields and close the dialog; a failed create must keep the dialog open and show "Could not create contact: {error}".
+- **SPEC-5.16.15**: Pressing Enter in any field of the dialog must run the same create action as the Create button.
+
+### 5.17 Server-unreachable page body
+
+- **SPEC-5.17.1**: The content-unavailable body must set the browser tab title to its `title` prop and render a page header with the same title.
+- **SPEC-5.17.2**: The body must show a card with `role="status"` and `aria-live="polite"` containing the heading "Can't load this page" and the text "The server is unreachable. This page will refresh on its own once the connection is back.", and must not show raw network error text.
+- **SPEC-5.17.3**: The body must show a "Go to dashboard" link to the dashboard route when `show_dashboard_link` is true (the default) and no link when false, and must not offer a retry button or redirect on its own.
+
+### 5.18 Company scope banner
+
+- **SPEC-5.18.1**: The context filter banner must read the `company_id` query parameter on render and must render nothing when it is absent.
+- **SPEC-5.18.2**: When the parameter is present the banner must fetch `GET /contacts/companies/{id}` (re-run on tenant switch) for the company name.
+- **SPEC-5.18.3**: While the name is loading, and when the lookup fails or returns a name that is blank after trimming, the banner must render nothing, and a failed lookup must log a warning "context filter company name load failed for {id}: {error}".
+- **SPEC-5.18.4**: With a resolved name the banner must show a blue "Scope" badge and the text "Showing only {name}'s {label}." where the label is "tickets", "assets", "contracts", "projects", "invoices" or "contacts" for the mounting list page.
+- **SPEC-5.18.5**: The banner's "Clear filter" button (accessible name "Clear company filter") must navigate to the mounting list's own route (ticket, asset, contract, project, invoice or contact list) without the query string.
+
+### 5.19 Contextual help link
+
+- **SPEC-5.19.1**: The contextual help link must render nothing when the current origin's OIDC configuration has no docs base configured.
+- **SPEC-5.19.2**: When a docs base is configured the link must be an anchor to `docs_url(article)` that opens in a new tab with `rel="noopener noreferrer"`, `title` "Open documentation" and `aria-label` "Help: open documentation", showing an information icon.
+
+### 5.20 Download button: fetch, save and failure wording
+
+- **SPEC-5.20.1**: The download button must ignore a click while a previous click is still in flight, issuing no second request.
+- **SPEC-5.20.2**: On a click that is not ignored, the download button must set its busy state (rendering the button as loading), discard the previous outcome message, and fetch `props.path` (relative to `/api/v1`) with the bearer token.
+- **SPEC-5.20.3**: When the fetch succeeds outside preview mode, the download button must save the bytes under the filename the server sent in `Content-Disposition`, and under `fallback_name` when the server sent none.
+- **SPEC-5.20.4**: When saving reports a destination path (the desktop build), the download button must show "Saved to {path}" in a `text-xs text-muted` paragraph with `role="status"` under the button.
+- **SPEC-5.20.5**: When saving reports no destination path (the browser build), the download button must show no message, because the browser shows its own download shelf.
+- **SPEC-5.20.6**: When the bytes arrive but saving fails, the download button must show "Fetched {what} but could not save it: {reason}".
+- **SPEC-5.20.7**: The download button must clear its busy state when the fetch, save or preview step finishes, on every success and failure path.
+- **SPEC-5.20.8**: The download button must classify a failed fetch by status: no status (transport failure) is Network, 401 is SessionExpired, 403 is Forbidden, 404 is NotFound, 500 through 599 is Server, and any other status is Other.
+- **SPEC-5.20.9**: For an Other failure the download button must show the server's message with surrounding whitespace trimmed, and must show "The request failed ({code})." when that message is empty or whitespace only. An error that is not a status error must carry an empty message.
+- **SPEC-5.20.10**: The download button must word each failure exactly as follows, where `{what}` is the `what` prop: SessionExpired "Your session has expired. Sign in again to download it."; Forbidden "Your role cannot download {what}."; NotFound "{What} is no longer available." with the first character of `what` upper-cased; Network "Could not reach the server. Check your connection and try again."; Server "The server could not produce {what}. Try again in a moment."; Other "Could not download {what}: {message}".
+- **SPEC-5.20.11**: A failure sentence must render in a `text-xs` red paragraph with `role="alert"` under the button.
+- **SPEC-5.20.12**: Every download failure must also be logged with the request path and the status or reason, so that the failure can be found outside the page.
+- **SPEC-5.20.13**: The download button must default to label "Download PDF", the Secondary variant, the default size, no title, enabled, and preview off; `title` must render as the native tooltip and `disabled` must disable the button.
+- **SPEC-5.20.14**: In a build without the `app` feature the download button must issue no request and must still clear its busy state.
+
+### 5.21 Download button: preview mode
+
+- **SPEC-5.21.1**: When `preview` is true the download button must open the preview tab synchronously inside the click handler, before any asynchronous work, so that pop-up blockers see the tab as a direct result of the click.
+- **SPEC-5.21.2**: When the fetch succeeds and a preview tab is open, the download button must show the bytes in that tab and must save no file and show no "Saved to" message.
+- **SPEC-5.21.3**: When showing the bytes in the preview tab fails, the download button must show "Fetched {what} but could not save it: {reason}".
+- **SPEC-5.21.4**: When the fetch fails while a preview tab is open, the download button must close that tab before it shows the failure sentence.
+- **SPEC-5.21.5**: When the preview tab cannot be opened, the download button must fall back to the save-to-disk path, and that fallback must be logged with the reason for the tab failure so that it is not silent.
+- **SPEC-5.21.6**: When `preview` is false the download button must never open a tab.
+
+### 5.22 Email preview
+
+- **SPEC-5.22.1**: The email preview component must render a link-variant "Preview email" button and a modal titled "Preview email" (large size) with a "Close" secondary button in its footer; both the footer button and the modal close action must close the modal.
+- **SPEC-5.22.2**: The email preview must never disable, delay or otherwise gate the send control beside it; a slow, empty or failed preview must leave the send control unchanged.
+- **SPEC-5.22.3**: On open, the email preview must show the modal and discard any previous error and entries before loading.
+- **SPEC-5.22.4**: When no built-in message is supplied, the email preview must call `POST /notifications/preview` once per open with the JSON body `{ "event_type": <event_type>, "context": <context callback result> }`, evaluating the context callback once per open and not on every render.
+- **SPEC-5.22.5**: While the preview request is in flight the email preview must show "Rendering what the recipient will see."
+- **SPEC-5.22.6**: When the preview request fails, the email preview must log a warning containing the error and must show a banner "Could not render the preview: {user message}" in the modal.
+- **SPEC-5.22.7**: When the preview request returns an empty list, the email preview must show "No email rule matches this action, so nothing will be sent." followed by the `empty_note` paragraph when `empty_note` is not empty.
+- **SPEC-5.22.8**: When the preview request returns entries, the email preview must render one entry view per entry in the order returned.
+- **SPEC-5.22.9**: When a built-in message is supplied, the email preview must make no request, must render an Info banner listing each note when `notes` is not empty, must render the paragraph explaining the message is built into the server and cannot be edited under Settings, and must render one entry with rule name "Built into the server", channel "email", the single recipient, the subject, the body as text, no HTML body, and the supplied unresolved keys.
+- **SPEC-5.22.10**: Each entry view must show the header "{rule_name} via {channel}", the recipients joined by ", " under "To", and the subject under "Subject".
+- **SPEC-5.22.11**: When an entry has no recipients the entry view must show "No recipient resolves for this rule."
+- **SPEC-5.22.12**: When an entry subject is absent or blank the entry view must show "No subject".
+- **SPEC-5.22.13**: The body must be chosen as follows: the plain-text body when it contains a non-whitespace character; otherwise the trimmed HTML body as source text when it is non-blank; otherwise nothing. An empty choice must show "This rule renders no body."
+- **SPEC-5.22.14**: When only an HTML body exists the entry view must show it as escaped text in a `pre` element under the line "This rule has no plain-text body. Its HTML source is shown as text, never rendered."
+- **SPEC-5.22.15**: The email preview must never insert a template's HTML into the DOM as markup, and must not use `dangerous_inner_html`.
+- **SPEC-5.22.16**: For each key in `unresolved` the entry view must show "filled in when sent: {key}".
+- **SPEC-5.22.17**: The preview entry must deserialize from the server fields `rule_name`, `channel`, `recipients`, `subject` (nullable), `body_text`, `body_html` (nullable) and `unresolved`.
+
+### 5.23 Status and error banners
+
+- **SPEC-5.23.1**: The status banner must render a `div` with the base classes of its tone followed by the caller's `class`, containing the caller's children.
+- **SPEC-5.23.2**: The status banner tones must be Error (red), Success (green), Warning (amber) and Info (blue), each with the same shape (rounded border, `px-3 py-2 text-sm`) and a light and a dark colour variant of its hue.
+- **SPEC-5.23.3**: The status banner must default to the Error tone.
+- **SPEC-5.23.4**: The status banner must set `role="alert"` for the Error tone and `role="status"` for Success, Warning and Info.
+- **SPEC-5.23.5**: The error banner must render a status banner of the Error tone with the caller's `class` and children.
+
+### 5.24 Filter pill bar
+
+- **SPEC-5.24.1**: A filter pill must carry the server-side field name, the operation, the list of JSON values, and the display label.
+- **SPEC-5.24.2**: The equality pill constructor must produce operation "eq", exactly one value, and the label "{field}: {display}".
+- **SPEC-5.24.3**: The filter pill bar must render nothing when the pill list is empty.
+- **SPEC-5.24.4**: The filter pill bar must render one chip per pill, in list order, showing the pill label and a remove button with `aria-label="Remove filter"`.
+- **SPEC-5.24.5**: Clicking a chip's remove button must call `onremove` with that pill's index and must not itself change the pill list.
+- **SPEC-5.24.6**: The filter pill bar must render a "Clear all" button only when there are at least two pills and `onclear` is supplied, and clicking it must call `onclear`.
+- **SPEC-5.24.7**: The filter pill bar must wrap its chips (`flex-wrap`) and append the optional `class` to its container.
+
+### 5.25 Icon button
+
+- **SPEC-5.25.1**: The icon button must require a `label` and must emit it as both `aria-label` and `title` on the button.
+- **SPEC-5.25.2**: The icon button must default its `type` attribute to `button` so that it never submits an enclosing form unless the caller sets another type.
+- **SPEC-5.25.3**: The icon button must apply `disabled` (default false) with reduced opacity and a not-allowed cursor when disabled.
+- **SPEC-5.25.4**: The icon button must emit `data-testid` only when `data_testid` is set.
+- **SPEC-5.25.5**: The icon button must call `onclick` with the click event and must append the caller's `class` after its base classes (inline-flex, rounded, focus ring).
+
+### 5.26 Text input
+
+- **SPEC-5.26.1**: The input must use its `name` as both `id` and `name` of the field, and when `label` is not empty it must render a label bound to that id.
+- **SPEC-5.26.2**: A required input must show a red asterisk with `aria-label="required"` in the label and `aria-required="true"` on the field (`"false"` otherwise), and must never set the HTML `required` attribute.
+- **SPEC-5.26.3**: The input must show an explicit `error` prop when it is not empty; otherwise, once the field has been blurred, it must show the first failing validation rule message evaluated against the current value and label on every render; before the first blur it must show no rule message.
+- **SPEC-5.26.4**: While an error is shown the input must apply the red border classes, set `aria-invalid="true"` and `aria-describedby="{name}-error"`, and render the message in a paragraph `id="{name}-error"` with `role="alert"`.
+- **SPEC-5.26.5**: The input must show `help` text only when no error is shown.
+- **SPEC-5.26.6**: The input must default `type` to `text`, `required` and `disabled` to false, and must pass `step`, `min`, `max`, `maxlength`, `placeholder`, `value` and `disabled` through to the field, and must set `aria-label` only when `aria_label` is not empty.
+- **SPEC-5.26.7**: For every input type other than `password`, the input must strip invisible characters from the value before calling `oninput`, and must pass a password value through unchanged.
+- **SPEC-5.26.8**: The sanitizing helper must return the original event unchanged when the value has no invisible character, and otherwise must return an event whose value is the stripped text and whose validity, form values and files are those of the original event.
+- **SPEC-5.26.9**: On blur the input must mark itself touched and then call `onblur`.
+- **SPEC-5.26.10**: When `autofocus` is true the input must set the `autofocus` attribute and focus itself on mount, and when focusing fails it must log a warning "could not focus {name}: {error}"; when false it must do neither.
+- **SPEC-5.26.11**: The `clear_on_edit` helper must, on every edit event, clear the error signal and store the event value in the value signal.
+- **SPEC-5.26.12**: The `submit_on_enter` helper must, on the Enter key only, prevent the default action and then run the action, and must leave every other key untouched.
+
+### 5.27 Date field, textarea and select
+
+- **SPEC-5.27.1**: The date field must render the text input with `type="date"`, defaulting `min` to "2000-01-01" and `max` to "2100-12-31", and forward name, label, value, required, disabled, error, rules, help and oninput.
+- **SPEC-5.27.2**: The textarea must use its `name` as `id` and `name`, default to 3 rows, apply `maxlength` when set, and set the value as an attribute and never as a child element.
+- **SPEC-5.27.3**: The textarea must hide its label when `label_hidden` is true while still using the label for validation messages, and must append `wrapper_class` to its wrapper `div`.
+- **SPEC-5.27.4**: The textarea must sanitize invisible characters on every input event, call `onkeydown` for key events on the textarea itself, and mark itself touched on blur.
+- **SPEC-5.27.5**: The textarea and the select must show an explicit error, else the first failing rule once touched, with the same classes, ARIA attributes and error paragraph as the text input, and `help` only when no error is shown.
+- **SPEC-5.27.6**: The select must render one option per entry with its value, label and disabled flag, mark the option whose value equals the current value as selected, and bind the current value on the `select` element itself so that an external value change repaints the choice.
+- **SPEC-5.27.7**: When `placeholder` is not empty the select must render a first option with value "" that is disabled and selected only while the current value is empty.
+- **SPEC-5.27.8**: The select option constructor must create an enabled option, and the select must mark itself touched on blur and pass change events to `onchange` unchanged.
+
+### 5.28 Checkbox, file field and search input
+
+- **SPEC-5.28.1**: The checkbox must use `name` as `id` and `name`, render a label bound to it, apply `checked` and `disabled`, and call `onchange` with the change event.
+- **SPEC-5.28.2**: The checkbox must show `error` in a paragraph `id="{name}-error"` with `role="alert"`, set `aria-invalid` and `aria-describedby` while an error exists, and show `help` only when there is no error.
+- **SPEC-5.28.3**: A caller that confirms a checkbox change before saving must render its recorded intent as `checked`, because a re-render with an unchanged `checked` value does not rewrite the browser's own state.
+- **SPEC-5.28.4**: The file field must use `name` as `id` and `name`, render the label when set, render the optional preview element between label and input, and set `accept` only when it is not empty.
+- **SPEC-5.28.5**: The file field must show `status` when it is not empty, otherwise `error` in a paragraph `id="{name}-error"` with `role="alert"`, otherwise `help`.
+- **SPEC-5.28.6**: In `hidden` mode the file field must render only the raw file input with `style="display:none"`, keep it in the DOM, and render no label, preview, status, error or help.
+- **SPEC-5.28.7**: The search input must render an `input type="search"` with a magnifier icon, defaulting its placeholder to "Search" followed by the ellipsis character (U+2026), and must strip invisible characters before calling `oninput`.
+
+### 5.29 Global search
+
+- **SPEC-5.29.1**: The global search must render a magnifier button with `aria-label="Search"` and `title="Search"` that sets `aria-expanded` to the expanded state and, when clicked, expands the entry without ever collapsing it.
+- **SPEC-5.29.2**: When the entry expands, the global search must focus the input with id `global_search`.
+- **SPEC-5.29.3**: The search input must have `aria-label` "Search tickets, contacts, companies, assets, projects", the placeholder "Search tickets, contacts, companies" followed by the ellipsis character (U+2026), and must be wrapped in a `combobox` element exposing `aria-expanded`, `aria-controls` and `aria-activedescendant`.
+- **SPEC-5.29.4**: The global search must debounce the query by 300 ms and trim it before use, and must make no request when the trimmed query is shorter than 2 bytes.
+- **SPEC-5.29.5**: For a query of at least 2 bytes the global search must call `GET /search?q={url-encoded trimmed query}` with the bearer token, and must rerun when the active tenant changes.
+- **SPEC-5.29.6**: When the search request fails, the global search must log a warning with the error and must show the banner "Could not search. Try again." in place of the results, never "no matches".
+- **SPEC-5.29.7**: The open panel must show "Type at least two characters to search." when the typed query is shorter than 2 bytes, the failure banner when the request failed, "No matches across tickets, contacts, companies, assets, or projects." when every group is empty, and otherwise the groups.
+- **SPEC-5.29.8**: The panel must render the groups in the order Tickets, Contacts, Companies, Assets, Projects, omit an empty group, and show in each group header the label and either the total or "{shown}/{total}" when the total exceeds the number shown.
+- **SPEC-5.29.9**: Each hit row must show its label and, when non-blank, its secondary text; the row must be a button outside the tab order (`tabindex="-1"`) inside an `li` with `role="option"` and `aria-selected` true only for the highlighted row.
+- **SPEC-5.29.10**: Choosing a hit must navigate to the detail route of its group (ticket, contact, company, asset or project) with the hit id, clear the query and, for a pointer pick, close the panel.
+- **SPEC-5.29.11**: The keyboard must navigate the flat list of hits in group order; Enter must commit only a highlighted row (never the first match when nothing is highlighted), and committing must clear the query and navigate.
+- **SPEC-5.29.12**: Escape must close the panel, clear the typed text and collapse the entry back to the icon.
+- **SPEC-5.29.13**: Focusing or clicking the field must open the panel; typing must update the query immediately and reopen the panel with a fresh highlight.
+- **SPEC-5.29.14**: Clicking outside the entry must close the panel and must collapse the entry only when the query is empty, so that a typed query is not lost.
+- **SPEC-5.29.15**: The search response must deserialize with every group and count defaulting to empty or zero when absent, and each hit with an `id`, a `label` and an optional `secondary`.
+
+### 5.30 Inline field editor
+
+- **SPEC-5.30.1**: The inline field editor must show its label and, in read mode, a button containing the display text, which is the `display` prop, else the option label matching the stored value for a select, else the stored value, else "-".
+- **SPEC-5.30.2**: Clicking the read-mode button must load the stored value into the draft, clear the error, and enter edit mode; with a shared `open_field` registry it must set the registry to its own `patch_field`, and an editor must be in edit mode only while the registry names it.
+- **SPEC-5.30.3**: The editor must offer a single-line text input (honouring `placeholder` and `maxlength`), a multi-line textarea (honouring `placeholder` and `rows`), a date input and a select, and every control must autofocus and be disabled while a save is in flight.
+- **SPEC-5.30.4**: Enter must commit the draft for the text, date and select controls, and must not commit for the textarea.
+- **SPEC-5.30.5**: Blur must commit the draft for the text, textarea and date controls, and a change event must commit the chosen value for the select.
+- **SPEC-5.30.6**: Escape must leave edit mode, restore the draft to the stored value and clear the error for every control.
+- **SPEC-5.30.7**: A commit must be ignored while a save is already in flight.
+- **SPEC-5.30.8**: A commit must trim the value; when the trimmed value is empty and `optional` is false it must set the error "Required", send no request, and stay in edit mode.
+- **SPEC-5.30.9**: A commit must send `PATCH {path}` with the JSON body `{ "{patch_field}": <trimmed string, or null when empty> }`, and a select must offer an empty "-" option only when `optional` is true.
+- **SPEC-5.30.10**: On success the editor must leave edit mode, release the registry slot if it holds it, and call `on_patched` with the trimmed value, or `None` when it is empty.
+- **SPEC-5.30.11**: On a failed save the editor must re-enter edit mode, reclaim the registry slot for itself before the error text renders, and show the error under the control.
+- **SPEC-5.30.12**: On a status error the error text must be the message for `patch_field` from the field list verbatim, else the top-level message, else "Save failed" when that is empty; on any other error it must be the error's user message.
+- **SPEC-5.30.13**: A top-level (not field) server message that equals "database operation failed" (case-insensitive) or contains "invalid input syntax", "sqlx" or "database error" must be replaced by "Invalid value for this field." and the raw message must be logged as a warning naming the field.
+- **SPEC-5.30.14**: While a save is in flight the editor must show "Saving" followed by the ellipsis character (U+2026) beside the control.
+- **SPEC-5.30.15**: The inline editor must apply the same invisible-character stripping as the form text inputs to a draft before sending it.
+
+### 5.31 Icons
+
+- **SPEC-5.31.1**: Every icon component must accept `size` (Small 16 px `w-4 h-4`, Medium 20 px `w-5 h-5`, Large 24 px `w-6 h-6`, default Medium) and `class`, and must render an `svg` whose class is the size class followed by `class`.
+- **SPEC-5.31.2**: Every icon must use a `0 0 24 24` view box, `currentColor` as its colour, and, except where this section says otherwise, an outline style with `fill="none"` and stroke width 1.5 with round caps and joins.
+- **SPEC-5.31.3**: The magnifying glass icon must use stroke width 2, and the two triangle icons must be filled with `currentColor` with stroke width 1 and round joins.
+- **SPEC-5.31.4**: The external-link square icon must set `aria-hidden="true"`; no other icon may carry an accessible name of its own.
+- **SPEC-5.31.5**: The module must export the path constant of each sidebar glyph (users, document, currency, document-check, scale, tag, credit card, document-text, receipt-refund, receipt-percent, banknotes, wallet, user-group, clipboard-document-list, table-cells, inbox-arrow-down, shield-check) so that the sidebar's distinct-icons check can compare them.
+- **SPEC-5.31.6**: Each sidebar row must render a glyph whose path differs from every other row's, so that no two rows show the same icon.
+
+### 5.32 KB template variables panel
+
+- **SPEC-5.32.1**: The request-values builder must forward only variables present in the article's declared list, so a stale pick for an undeclared name never reaches the render endpoint.
+- **SPEC-5.32.2**: The request-values builder must drop every pick whose value is the empty string, so an unset variable renders as the server's missing-value placeholder rather than as an empty string.
+- **SPEC-5.32.3**: The request-values builder must return a name-ordered map so the serialized request body is identical for identical picks.
+- **SPEC-5.32.4**: The request body built from picks must serialize as `{"values": {name: value}}`.
+- **SPEC-5.32.5**: Seeding a variable must yield its declared default when one is set and the empty string when none is set; seeding the whole set must produce one entry per declared variable, keyed by name.
+- **SPEC-5.32.6**: A variable must render as a dropdown when its allowed-values list is non-empty and as a free-text input otherwise.
+- **SPEC-5.32.7**: The panel must render nothing when the article declares no variables.
+- **SPEC-5.32.8**: The panel must render one row per declared variable in declaration order, keyed by variable name, with a `<label>` bound by `for` to a field whose id is `kb-tplvar-<name>` and whose name attribute is the variable name.
+- **SPEC-5.32.9**: The row label must be the variable's label, or the variable's name when the label is empty or whitespace-only.
+- **SPEC-5.32.10**: Each field must show the current pick for its variable, or the empty string when the pick map has no entry.
+- **SPEC-5.32.11**: On change of a dropdown or input the panel must write the new value into the caller-owned pick map under the variable's name, with no debounce and no request of its own.
+- **SPEC-5.32.12**: A dropdown whose current pick is empty must show a leading option with value empty and text "Choose..." (ellipsis character); the option must not appear once a value is picked, and the declared options follow in declaration order with value and text equal.
+- **SPEC-5.32.13**: A non-empty error prop must render as a one-line paragraph above the rows with `role="alert"` in red text, and the rows must remain editable.
+- **SPEC-5.32.14**: A true busy prop must render a paragraph with `role="status"` reading "Updating..." (ellipsis character) above the rows; a false busy prop must render none.
+- **SPEC-5.32.15**: The panel's error prop must default to the empty string (no error shown) and its busy prop must default to false.
+
+### 5.33 Markdown renderer component
+
+- **SPEC-5.33.1**: The renderer must emit one `div` with a unique id of the form `md-<n>` (a process-wide counter, assigned once per instance), classes `prose dark:prose-invert max-w-none` followed by the caller's extra classes, and the sanitized HTML as its inner HTML.
+- **SPEC-5.33.2**: The renderer must produce its HTML through the shared sanitizing Markdown renderer, using the interactive variant when the interactive prop is true and the plain variant otherwise, and passing the resolved mention directory and the API origin to both.
+- **SPEC-5.33.3**: The renderer must pass the API origin (empty when the SPA and API share an origin) to every render so attachment paths in article Markdown resolve against the API and not the SPA.
+- **SPEC-5.33.4**: The renderer's mentions prop must default to true; when false the renderer must not fetch a directory.
+- **SPEC-5.33.5**: When the people prop is provided the renderer must use that list verbatim and must make no directory request.
+- **SPEC-5.33.6**: When the people prop is absent and mentions is true the renderer must read the directory through the shared mention-directory hook, so all instances without a people prop share one cached request.
+- **SPEC-5.33.7**: When the directory cannot be loaded the renderer must render every `@handle` as the plain text the author wrote.
+- **SPEC-5.33.8**: A rendered mention chip must be inert for every viewer: the component must install no click handler, no navigation and no role-dependent rendering for mentions.
+- **SPEC-5.33.9**: The interactive and class props must default to false and the empty string, and on_toggle must default to a no-op handler.
+
+### 5.34 Markdown task-list toggling
+
+- **SPEC-5.34.1**: When the interactive prop is true, the renderer must attach exactly one delegated click listener to its container after render; when false it must attach none.
+- **SPEC-5.34.2**: On a click whose target element carries a `data-ti` attribute that parses as an unsigned integer, the listener must call on_toggle with that index; a target with no attribute or a non-numeric value must call nothing.
+- **SPEC-5.34.3**: The browser listener must invoke the caller through an event-handler object (never a bare closure), so the framework scope is pushed before the caller runs.
+- **SPEC-5.34.4**: On the desktop host the renderer must hand the container id and on_toggle to the platform task-toggle watcher instead of attaching a browser listener.
+- **SPEC-5.34.5**: If the container element cannot be found when the browser listener is installed, no listener must be installed and no toggle is reported.
+- **SPEC-5.34.6**: If the browser rejects the listener registration, the renderer must log "could not attach the markdown click listener" at error level and install nothing.
+
+### 5.35 Markdown toolbar actions
+
+- **SPEC-5.35.1**: The toolbar must render a container with `role="toolbar"` and `aria-label="Formatting"` that wraps onto further rows at narrow widths.
+- **SPEC-5.35.2**: The toolbar must offer, in this order and grouped by separators: Heading | Bold, Italic, Strikethrough | Quote, Inline code, Link | Bulleted list, Numbered list, Checklist | Code block, Table, Align table, Image.
+- **SPEC-5.35.3**: Each button must be `type="button"`, must call prevent-default on click so the surrounding form is not submitted, and must carry identical `title` and `aria-label` text of the form "<label>" or "<label> (<shortcut>)".
+- **SPEC-5.35.4**: The shortcut text must be Ctrl+B for Bold, Ctrl+I for Italic and Ctrl+K for Link, and absent for every other button.
+- **SPEC-5.35.5**: When the disabled prop is true every toolbar button must be disabled.
+- **SPEC-5.35.6**: The Heading button must apply a level-2 heading; Bold, Italic, Strikethrough, Quote, Inline code, Bulleted list, Numbered list, Checklist and Align table must each apply their matching text transform immediately without a dialog.
+- **SPEC-5.35.7**: Applying an action must read the target textarea's selection (passing the value's length in UTF-16 units as the fallback offset for the platform lookup), compute the new text with the shared Markdown edit routine, and call onchange with the new full source.
+- **SPEC-5.35.8**: After onchange, the toolbar must restore the transform's selection range on the textarea one timer tick (0 ms) later, so the host's re-render does not overwrite it.
+- **SPEC-5.35.9**: The toolbar must not own the source: the caller's value is the only copy, and every edit goes out through onchange.
+
+### 5.36 Markdown toolbar dialogs
+
+- **SPEC-5.36.1**: The Link, Image, Code block and Table buttons must each open a small modal titled "Insert link", "Insert image", "Insert code block" and "Insert table" respectively, with footer buttons "Cancel" and "Insert".
+- **SPEC-5.36.2**: Cancel and the modal's own close must dismiss the dialog without changing the source.
+- **SPEC-5.36.3**: Insert must apply the dialog's action to the target field, call onchange with the result, and close the dialog.
+- **SPEC-5.36.4**: The Link dialog must collect "URL" (placeholder "https://example.com") and "Text" (help "Leave blank to use whatever is selected in the body.") and insert a link action with both values unmodified.
+- **SPEC-5.36.5**: The Image dialog must collect "Image URL" (placeholder "https://example.com/diagram.png"), and "Alt text", and insert an image action with both values unmodified.
+- **SPEC-5.36.6**: The Code block dialog must collect an optional "Language" and insert a code-block action with the language trimmed of surrounding whitespace.
+- **SPEC-5.36.7**: The Table dialog must collect "Rows" and "Columns" as number inputs, each defaulting to 3, and insert a table with those counts.
+- **SPEC-5.36.8**: A Table row or column value that does not parse as an unsigned integer must be replaced by 3 at insert time.
+- **SPEC-5.36.9**: Dialog field values must persist across opens within one toolbar instance, so a closed dialog reopens with the last typed values.
+- **SPEC-5.36.10**: When the host sets the open_link flag, the toolbar must open the Link dialog and reset the flag to false in the same render.
+
+### 5.37 Markdown toolbar uploads and shortcut mapping
+
+- **SPEC-5.37.1**: The Image dialog must show an "Upload an image" file field above the URL field only when the host supplied an on_file handler; without it the dialog must be URL-only.
+- **SPEC-5.37.2**: The file field must restrict accepted types with the shared image-upload accept attribute and show the host's upload_help text, or when none is given "PNG, JPEG, WebP or GIF, up to <max size>. It is stored with this article."
+- **SPEC-5.37.3**: When a file is chosen the toolbar must close the dialog, read the file's bytes, and call on_file with (file name, content type or empty string, bytes); it must not upload the file itself.
+- **SPEC-5.37.4**: When no file is in the change event, the toolbar must do nothing.
+- **SPEC-5.37.5**: The shortcut mapping must return Bold for B and Italic for I (case-insensitive) when Ctrl or Meta is held, and no action for any other key or when neither modifier is held.
+
+### 5.38 Markdown editor view modes
+
+- **SPEC-5.38.1**: The editor's views prop must default to false; when false the editor must show only the write pane and no switcher.
+- **SPEC-5.38.2**: When views is true the editor must render a switcher with `role="radiogroup"` and `aria-label="Editor view"` containing three `role="radio"` buttons labelled Write, Preview and Split, in that order.
+- **SPEC-5.38.3**: Each option must expose `aria-checked` true only on the selected mode, a tabindex of 0 on the selected option and -1 on the others, and an id of `<name>-view-<mode>`.
+- **SPEC-5.38.4**: Selected options must be marked by elevation and weight (surface background, shadow, semibold), not by colour alone.
+- **SPEC-5.38.5**: Write must show only the source pane, Preview only the preview pane, and Split both.
+- **SPEC-5.38.6**: The initial mode must be the stored preference named by view_pref_key when one is set, and Write when the key is empty or the stored value is not one of "write", "split", "preview".
+- **SPEC-5.38.7**: Selecting a mode by click must set it, and when view_pref_key is non-empty must persist it by name ("write", "split", "preview"); with an empty key nothing may be written to storage.
+- **SPEC-5.38.8**: Right and Down arrow keys on an option must select the next mode, Left and Up the previous, wrapping at both ends; the key must be consumed, the choice persisted as for a click, and focus moved to the newly selected option.
+- **SPEC-5.38.9**: Other keys on a switcher option must be left unhandled.
+- **SPEC-5.38.10**: No global keyboard chord may be bound for cycling modes.
+
+### 5.39 Markdown editor panes and preview
+
+- **SPEC-5.39.1**: An off-screen pane must be hidden with `display: none` and not unmounted, so the textarea keeps its caret and scroll offset across mode changes.
+- **SPEC-5.39.2**: Split must lay the two panes out as a grid of two equal rows below the `lg` breakpoint and two equal columns from `lg` up, with a gap of 1rem; other modes must lay them out as a flex column; the panel_class prop must be applied in both.
+- **SPEC-5.39.3**: The preview pane must be titled "Preview" with the same label style as the field label.
+- **SPEC-5.39.4**: The preview body must be built only while the preview pane is visible, so no Markdown parse runs for a hidden preview.
+- **SPEC-5.39.5**: The preview must render the current source through the shared Markdown component, inside a scroll box with id `<name>-preview` that stretches to the pane and scrolls vertically.
+- **SPEC-5.39.6**: While the mode is Split, the editor must link the scrolling of the source field and the preview box, and must re-arm that link whenever the mode changes to Split after mount.
+- **SPEC-5.39.7**: In Split mode only, the editor must show a "Sync to cursor" button (title "Scroll the preview to the block the cursor is in") that scrolls the preview to the top-level Markdown block containing the caret, converting the DOM's UTF-16 caret offset to a byte offset first.
+- **SPEC-5.39.8**: If the caret falls in no top-level block, "Sync to cursor" must do nothing.
+- **SPEC-5.39.9**: The field_class prop must be applied to the textarea and, when non-empty, also to its wrapper together with `flex flex-col`, so the field stretches to the panel.
+
+### 5.40 Markdown editor field behavior
+
+- **SPEC-5.40.1**: The editor must show the label once, above the switcher and toolbar, as a `<label for>` the field name, with a red asterisk (`aria-label="required"`) when required, and must omit it when the label is empty or label_hidden is true.
+- **SPEC-5.40.2**: The editor must pass label_hidden to the shared textarea always, so the field has exactly one visible label while keeping its accessible name.
+- **SPEC-5.40.3**: The editor must pass name, placeholder, rows (default 8), required, disabled, maxlength, validation rules and error through to the shared textarea, and must draw the textarea square-topped and vertically resizable to join the toolbar.
+- **SPEC-5.40.4**: The editor must hold no copy of the source: the textarea shows the host's value, and every change from typing, a toolbar button, a shortcut or an accepted mention must go out through oninput with the full new text.
+- **SPEC-5.40.5**: The textarea wrapper must expose combobox semantics (`role="combobox"`, aria-expanded, aria-controls, aria-activedescendant) driven by a dropdown navigation state named "mention-ac".
+- **SPEC-5.40.6**: On keydown the editor must give the mention list first refusal: when the list consumes the key (Down, Up, Enter or Tab on a highlighted row, Escape), no formatting shortcut may run.
+- **SPEC-5.40.7**: Enter must not accept a mention unless the user has highlighted one, because Enter inserts a newline in the textarea.
+- **SPEC-5.40.8**: Ctrl or Meta plus K (case-insensitive) must be consumed and request the toolbar's Link dialog.
+- **SPEC-5.40.9**: Ctrl or Meta plus B or I must be consumed and apply Bold or Italic to the field.
+- **SPEC-5.40.10**: A key without Ctrl or Meta must reach the textarea unchanged.
+- **SPEC-5.40.11**: An accepted mention must call oninput with the completed text and restore the caret to the returned offset one timer tick later.
+- **SPEC-5.40.12**: The mention list must complete only against the people prop; with an empty people list no completion appears.
+- **SPEC-5.40.13**: When on_file is set, dragging over the source pane must be allowed to drop; a drop carrying at least one file must be consumed, and the first file's name, content type (empty if unknown) and bytes must be passed to on_file.
+- **SPEC-5.40.14**: A drop with no files, or any drop when on_file is absent, must be left to the browser so dragging selected text within the textarea still works.
+
+### 5.41 App shell and page title
+
+- **SPEC-5.41.1**: The shell must render once and stay mounted across navigations, holding in order: update-available banner, server-status banner, update banner, top bar, a row with the sidebar and the routed page, the toast host, and the account-deleted overlay.
+- **SPEC-5.41.2**: The routed page must render in a `main` element that supplies padding (`py-6 px-4 sm:px-6 lg:px-8`) and scrolling but no maximum width.
+- **SPEC-5.41.3**: The shell must hold a mobile-drawer open flag; the top bar's menu button must set it, and the drawer's close button and the scrim must clear it.
+- **SPEC-5.41.4**: While the drawer is open the shell must render a full-screen scrim at the `lg:hidden` breakpoint that closes the drawer on click.
+- **SPEC-5.41.5**: On web builds, when a staff access token is held and the effective-branding display name is not yet set, the shell must once fetch `/tenants/current` and store the returned branding; it must read the branding without subscribing so its own write does not re-run the fetch.
+- **SPEC-5.41.6**: The shell must not read the page-title signal; only the top bar may, so a title change re-renders only the bar.
+- **SPEC-5.41.7**: A page must set its title through the page-title hook, which must write the shared signal only when the new value differs from the current one, without subscribing the caller to the signal.
+- **SPEC-5.41.8**: The page-title signal must be provided once at the application root, defaulting to the empty string.
+
+### 5.42 Sidebar rail and drawer
+
+- **SPEC-5.42.1**: The sidebar must render a mobile drawer (hidden at `lg` and up) and a desktop rail (shown at `lg` and up) as separate elements.
+- **SPEC-5.42.2**: The mobile drawer must be translated off-canvas when closed, and its `aria-hidden` must be "true" when closed and "false" when open.
+- **SPEC-5.42.3**: The mobile drawer must include a close button labelled "Close navigation" and must show the full-width navigation, never the collapsed strip.
+- **SPEC-5.42.4**: The desktop rail must be 16 units wide (`lg:w-16`) when collapsed and 64 units wide (`lg:w-64`) when expanded, and its collapse state must live in application-root context so it survives navigation.
+- **SPEC-5.42.5**: The rail must have a half-circle handle on its right border that toggles collapse, with title and `aria-label` "Collapse sidebar" when expanded and "Expand sidebar" when collapsed, and `aria-expanded` "true" when expanded and "false" when collapsed.
+- **SPEC-5.42.6**: Only the desktop navigation element must carry the DOM id `mokosh-sidebar-nav`; the drawer's must have an empty id.
+- **SPEC-5.42.7**: On mount of the desktop navigation, when the stored scroll offset is nonzero, the sidebar must restore it; on every scroll it must read the element's offset and store it in application-root context, and the drawer must neither restore nor record.
+- **SPEC-5.42.8**: While the rail is collapsed the navigation must show icon-only items laid out as one column spread across the available height, section headers hidden, and the version footer hidden.
+- **SPEC-5.42.9**: Per-section collapse state must be keyed by section title in application-root context, default to open, and be preserved untouched while the rail is collapsed.
+- **SPEC-5.42.10**: A section header must be a button with `aria-expanded` reflecting its state and a right chevron when collapsed and a down chevron when open; clicking it must toggle that section and hide or show its items.
+- **SPEC-5.42.11**: A nested sub-category must use the state key `subcategory:<title>`, default to open, toggle on click with `aria-expanded`, indent its children one level, and render only its children (no header) when the rail is collapsed.
+
+### 5.43 Sidebar visibility gates
+
+- **SPEC-5.43.1**: While the server is unreachable the sidebar must show only the always-present entries (Dashboard if permitted, Portal Branding, Payment Methods, Documentation) and hide every section; sections must return when the server is reachable again.
+- **SPEC-5.43.2**: The Dashboard entry must show when the session holds any of the capabilities `tickets:read`, `invoices:read` or `quotes:read`.
+- **SPEC-5.43.3**: Staff-only entries (Time Entries, Timesheets, Companies, Contacts, Calendar, Dispatch, Scheduling Templates, Rate Cards, Payments, Reports) must show only to a session for which the staff-only sentinel capability holds.
+- **SPEC-5.43.4**: Tickets, Contracts, Quotes and Invoices must show when the session holds `tickets:read`, `contracts:read`, `quotes:read` or `invoices:read` respectively, or when the session is a contact (portal) session.
+- **SPEC-5.43.5**: Projects, Assets and Knowledge Base must show only with `projects:read`, `assets:read` and `kb:read` respectively, including for contact sessions.
+- **SPEC-5.43.6**: Timesheets and Timesheet Approvals must also require the "timesheets" module flag to be on, and Timesheet Approvals must require a role that can manage users (manager or above).
+- **SPEC-5.43.7**: The Portal Branding entry must show only for a contact session holding `settings:manage_company_branding`, and never on non-web builds.
+- **SPEC-5.43.8**: The Payment Methods entry must show to every contact session regardless of capabilities, and never to staff or on non-web builds.
+- **SPEC-5.43.9**: The My Approvals entry must show only for a contact session holding `approvals:decide`, and never on non-web builds.
+- **SPEC-5.43.10**: The Documentation entry must show only when a documentation base URL is configured, must open in a new tab with `rel="noopener noreferrer"`, and must have no active state.
+- **SPEC-5.43.11**: A section header must not render when every item under it is gated out for the session.
+- **SPEC-5.43.12**: The Bills, Expense Claims, Credit Notes and Statements entries must show only to roles that can manage billing (finance, admin or super admin).
+- **SPEC-5.43.13**: The Admin section must show when the role is admin or above or a platform bearer is present in session storage under `mokosh:platform_token` with a non-blank value; the Members entry within it must show only for organization tenants and only on multi-tenant builds.
+- **SPEC-5.43.14**: The Platform section (Platform Account) must show only when a platform bearer is present, independent of the user's tenant role.
+- **SPEC-5.43.15**: The sidebar gates must be treated as navigation affordances only; the pages and server enforce access.
+
+### 5.44 Sidebar sections, items and highlighting
+
+- **SPEC-5.44.1**: The sidebar sections must appear in this order with these titles: Service Desk, Projects, CRM, Operations, Contracts & Billing, Assets, Knowledge, Analytics, Admin, Platform.
+- **SPEC-5.44.2**: Service Desk must list Tickets, Time Entries, Timesheets, Timesheet Approvals, My Approvals; Projects: Projects; CRM: Companies, Contacts; Operations: Calendar, Dispatch, Scheduling Templates; Contracts & Billing: Contracts, Quotes, Rate Cards, Invoices, Payments, Bills, Expense Claims, Credit Notes, Statements; Assets: Assets; Knowledge: Knowledge Base; Analytics: Reports.
+- **SPEC-5.44.3**: The Admin section must list Members, Invitations, a "Logs" sub-category containing Audit Log, Request Forms, SLA Management and Settings.
+- **SPEC-5.44.4**: Each section must be tinted with its own accent hue (Blue, Indigo, Cyan, Emerald, Amber, Teal, Fuchsia, Rose, Violet, Sky respectively), applied to its header and its items' icons, each hue having light and dark variants.
+- **SPEC-5.44.5**: An item outside any section (Dashboard) must use the neutral subtle icon colour.
+- **SPEC-5.44.6**: Every sidebar row must render an icon distinct from every other row.
+- **SPEC-5.44.7**: An item must be marked active (surface background, content colour, left accent border) when the current route, after mapping detail and editor routes to their list route, equals the item's route.
+- **SPEC-5.44.8**: Detail, edit and new routes must highlight their list item: ticket, project, company, contact, contract, quote (detail, edit, new), rate card (detail, new), invoice, credit note, asset detail, knowledge-base article detail and report detail map to their list routes; all other routes map to themselves.
+- **SPEC-5.44.9**: A collapsed-rail item must be an icon-only router link whose title and `aria-label` equal the item's label.
+- **SPEC-5.44.10**: Navigation items must use the router link so navigation happens without a page reload.
+
+### 5.45 Top bar
+
+- **SPEC-5.45.1**: The top bar must be a 4rem-high strip containing, left to right: a hamburger button (hidden at `lg` and up, labelled "Open navigation"), the brand link to the dashboard, the centered page title, and the action cluster.
+- **SPEC-5.45.2**: The brand block must show the configured logo image (alt text the product name), the product name, and, once an active organization is known, its name beneath; before then it must show no organization line.
+- **SPEC-5.45.3**: The page title must be read from the shared signal and shown truncated on one line.
+- **SPEC-5.45.4**: On app builds, the document or window title must be set to the product name when the page title is empty (after trimming) or equals "Loading..." (ellipsis character), and to "<title> | <product name>" otherwise.
+- **SPEC-5.45.5**: The action cluster must contain, in order: global search (staff-only sentinel capability only), theme picker, notification bell, approvals badge, tenant switcher (only when the organizations feature flag is on), and the user menu.
+- **SPEC-5.45.6**: A contact session must never mount the global search.
+- **SPEC-5.45.7**: No action in the cluster may render an empty placeholder element; an action with nothing to show must render nothing.
+
+### 5.46 User menu and sign-out
+
+- **SPEC-5.46.1**: The user menu must open from a button labelled "User menu" and close on Escape, on item activation, and on every route change.
+- **SPEC-5.46.2**: The menu must list, in order: Profile (internal link), Account Settings (external link to the identity hub's `/settings`), System Status (internal link), then, only when the organizations flag is on, a separator and "Create new team", then a separator and "Logout" in red.
+- **SPEC-5.46.3**: Up and Down must move the highlight across the menu rows using the row count 5.
+- **SPEC-5.46.4**: "Create new team" must set the shared create-organization signal to true and close the menu.
+- **SPEC-5.46.5**: Logout for a staff session must run the shared sign-out sequence on a task: revoke the session, revoke the identity provider refresh-token family, clear local storage and redirect off the origin.
+- **SPEC-5.46.6**: Logout for a contact session must post the held refresh token to `/contact/auth/logout` without waiting for the result, clear the contact session locally, and replace the location with `/portal/<portal id>/login`; falling back to `/portal/<slug>/login`, then `/portal/login`, in that order of availability.
+- **SPEC-5.46.7**: The contact logout destination hints must be read before the session is cleared.
+- **SPEC-5.46.8**: The contact logout must not run the staff sign-out sequence, and the staff sign-out must not touch contact storage.
+
+### 5.47 Notification bell
+
+- **SPEC-5.47.1**: The bell must load `GET /notifications` on mount and again whenever the active tenant changes or after a row is marked read.
+- **SPEC-5.47.2**: A failed load must log "notification load failed, the bell will read empty: <error>" at error level and show the empty inbox; a successful empty load must log "notification load succeeded and the inbox is empty" at info level.
+- **SPEC-5.47.3**: The bell must show a red dot with the screen-reader text "<n> unread notifications" only when at least one item has no read time.
+- **SPEC-5.47.4**: The panel must be titled "Notifications", be 20rem wide with a maximum height of 24rem and scroll, and show "No notifications yet" when the list is empty.
+- **SPEC-5.47.5**: Items must be shown in the order received (the server orders newest first), each as a button with the subject (omitted when empty), the body, and the creation time in a time element with the RFC 3339 value.
+- **SPEC-5.47.6**: The creation time must be formatted in the user's profile timezone using the user's date-format preference when set.
+- **SPEC-5.47.7**: Clicking an unread row must post to `/notifications/<id>/read`, then reload the inbox; a failure must be logged at warn level as "failed to mark notification <id> read: <error>" and the inbox still reloaded.
+- **SPEC-5.47.8**: Clicking a read row must send no request.
+- **SPEC-5.47.9**: A row whose entity type and id map to a page must also close the panel and navigate there, and show an "Open >" hint; entity type "ticket" or "tickets" maps to ticket detail, "quote" or "quotes" to quote detail, "invoice" or "invoices" to invoice detail, "kb_article" or "kb_articles" to knowledge-base article detail.
+- **SPEC-5.47.10**: A row with an unknown entity type, an empty one, or no entity id must navigate nowhere and show no hint.
+- **SPEC-5.47.11**: Up and Down in the panel must move the highlight across the item rows.
+
+### 5.48 Approvals badge
+
+- **SPEC-5.48.1**: The badge must request `GET /approvals/pending/count` on mount and on every active-tenant change, using whichever bearer the session holds (contact first), and read only the `count` field.
+- **SPEC-5.48.2**: The badge must not make the request, and must show nothing, when the session lacks the `approvals:decide` capability.
+- **SPEC-5.48.3**: A count of zero or less must render nothing at all (not an empty element).
+- **SPEC-5.48.4**: A positive count must render a link to the approvals queue reading "Approvals <count>", with title "Pending approvals" and `aria-label` "<count> pending approvals".
+- **SPEC-5.48.5**: A failed count request must log "pending approval count failed, the badge will stay hidden: <error>" at error level and render nothing; a successful zero must log "pending approval count succeeded and the queue is empty" at info level.
+
+### 5.49 Auth layout and version footer
+
+- **SPEC-5.49.1**: The auth layout must show the logo above the wordmark, centered; the wordmark must be the branding display name, else the company name, else the product name, treating empty strings as absent.
+- **SPEC-5.49.2**: The logo must be the branding logo URL (empty treated as absent) made absolute and versioned, else the built-in configured logo.
+- **SPEC-5.49.3**: The layout must render its children in a card whose width class defaults to `sm:max-w-md`, applied equally to the logo block, the card and the footer.
+- **SPEC-5.49.4**: When a support email or phone is set, the layout must show a support block under the card reading "Need help? Contact <name>." when a contact name is set and "Need help? Contact your support team." otherwise, followed by a `mailto:` link for the email and a `tel:` link for the phone, each only when set.
+- **SPEC-5.49.5**: The support block must be absent when neither an email nor a phone is set, even if a contact name is set.
+- **SPEC-5.49.6**: The version footer must show "v<version>" linking to the System Status page with title "View system status and build details".
+- **SPEC-5.49.7**: The version footer must show a "Documentation" link, separated by a dot, only when a documentation base URL is configured; it must point at the configured base, open in a new tab and carry `rel="noopener noreferrer"`.
+
+### 5.50 Page header, breadcrumbs and empty state
+
+- **SPEC-5.50.1**: The page header must render an h1 with the title, wrapping the actions below the title on narrow rows rather than truncating it, and a muted subtitle paragraph only when the subtitle is non-empty.
+- **SPEC-5.50.2**: When a title slot is provided the header must render the slot in place of the h1 and keep the breadcrumbs, subtitle and actions; the title prop remains required.
+- **SPEC-5.50.3**: Breadcrumbs, when given, must render above the title row.
+- **SPEC-5.50.4**: Breadcrumbs must render a `nav` with `aria-label="Breadcrumb"` holding an ordered list; items after the first must be preceded by a chevron; an item with a route must be a router link and an item without one must be plain text.
+- **SPEC-5.50.5**: A detail trail must consist of exactly two items: the list label linked to the list route, then the record title with no route.
+- **SPEC-5.50.6**: The empty state must show a centered title, an optional description only when non-empty, an optional icon above and optional actions below.
+
+### 5.51 Mention autocomplete
+
+- **SPEC-5.51.1**: The mention autocomplete must read the caret offset, in UTF-16 units, from the textarea whose id is `target_id`, and must use the end of the current value (the sum of the UTF-16 lengths of its characters) as the offset when the selection cannot be read.
+- **SPEC-5.51.2**: When the `people` list is empty, the autocomplete must treat no mention as active and offer no rows, so the feature is off and a mention typed by hand still resolves at render time.
+- **SPEC-5.51.3**: When `people` is not empty, the active mention must be computed by the shared `utils::mentions` trigger rule from the value and caret, and the rows must be the people returned by `mentions::matches` for the active fragment, in the order that function returns them. The component must not detect an `@` itself, so the editor never offers a completion the renderer will not resolve.
+- **SPEC-5.51.4**: The popover and the field's keydown handler must compute the active mention and rows through the same function, so a keypress is decided on the same state the panel renders.
+- **SPEC-5.51.5**: The autocomplete must use the dropdown navigation state supplied through context by the markdown editor and must not create its own.
+- **SPEC-5.51.6**: When there is no active mention or no matching row, the autocomplete must render nothing (no "no matches" panel) and must close the shared navigation state if it is open.
+- **SPEC-5.51.7**: When there is an active mention with at least one row and the navigation state is closed, the autocomplete must open it fresh (no row highlighted).
+- **SPEC-5.51.8**: The panel must be a `div` with `role="listbox"`, the navigation panel id, `aria-label="People you can mention"`, and the classes `dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-60 overflow-y-auto`, anchored under the field and not at the caret.
+- **SPEC-5.51.9**: Each row must be a `button` with `type="button"`, `role="option"`, the navigation row id and selected state, keyed by the person id, showing the display name and `@` followed by the handle.
+- **SPEC-5.51.10**: The handle offered for a person must be the first entry of that person's handles, falling back to the person's display name when the person has no handle.
+- **SPEC-5.51.11**: Clicking a row must prevent the default action, replace the active fragment through `mentions::accept` with the row's handle, and report the new text and the new caret offset through `onaccept`. When no mention is active at click time it must do nothing.
+- **SPEC-5.51.12**: The text must change only through `onaccept`, from exactly two paths (row click and keyboard accept). Dismissing the list by Escape or by closing it must leave the typed text unchanged.
+- **SPEC-5.51.13**: The keydown handler must return `false` (leaving the key to the textarea) when no mention is active or there are no rows.
+- **SPEC-5.51.14**: Otherwise the keydown handler must pass the key to the navigation state with the row count, and when the navigation state commits a highlighted row it must accept that row with the same handle rule as a click and report it through `onaccept`.
+- **SPEC-5.51.15**: The keydown handler must return `true` when it accepted a row or when the navigation state took any action other than ignoring the key, and `false` when the key was ignored.
+- **SPEC-5.51.16**: Mention candidates must come from a single fetch of `GET /auth/directory` made by the shared mention directory hook. The markdown editor, the renderer and the ticket description must not fetch a directory of their own, and no mention source may read `/auth/users`, which is restricted to managers.
+
+### 5.52 Popover and overflow actions
+
+- **SPEC-5.52.1**: The popover must be controlled: it must not hold open state, and must report a trigger click through `ontoggle` and a click on the backdrop through `onclose`.
+- **SPEC-5.52.2**: The popover trigger must be a `button` with `type="button"`, the caller's trigger classes, `aria-label` set to `label`, `title` set to `title` when given and otherwise to `label`, `aria-haspopup="menu"`, and `aria-expanded` set to `true` when open and `false` when closed.
+- **SPEC-5.52.3**: The popover wrapper must be a `div` with class `relative` and must forward keydown events bubbling from the trigger or panel to `onkeydown` when the caller supplied it, and do nothing otherwise.
+- **SPEC-5.52.4**: While open, the popover must render a full-viewport click-catcher (`fixed inset-0 z-40`) that calls `onclose` on click, and the panel (`dropdown-panel absolute right-0 mt-2 z-50 p-1` plus the caller's width class) with `role="menu"` containing the children. While closed it must render neither.
+- **SPEC-5.52.5**: Overflow actions must render the children twice: inline in a container shown from the `sm` breakpoint upward (`hidden sm:flex items-center gap-2`), and inside a popover in a container hidden from `sm` upward (`sm:hidden`).
+- **SPEC-5.52.6**: The collapsed overflow trigger must have accessible label `More actions`, tooltip `More`, the midline horizontal ellipsis character (U+22EF) as its content, and the panel width class `w-48`.
+- **SPEC-5.52.7**: The collapsed overflow menu must toggle on trigger click, close on backdrop click, and use the dropdown navigation state in menu mode, so Escape closes it, Up and Down move the highlight, and Tab and Enter are left to the browser.
+- **SPEC-5.52.8**: The overflow menu must pass a fixed row count of 8 to the navigation state because it cannot see the number of caller-supplied children.
+- **SPEC-5.52.9**: The overflow menu panel content must be a `div` with classes `flex flex-col gap-2` and `role="none"` wrapping the children.
+
+### 5.53 Permission required state
+
+- **SPEC-5.53.1**: The permission required state must take a `title` and a `body` and render a page header with the title followed by a card.
+- **SPEC-5.53.2**: It must set the browser tab title to `title` itself, because it renders as a page body inside the persistent shell.
+- **SPEC-5.53.3**: The card heading must read `{title} access required`, followed by the `body` text as a paragraph, with an information icon above them.
+- **SPEC-5.53.4**: When the signed-in user is known and the user's role string is not empty, the card must show `Your current role: {role}`. When there is no user or the role is empty, the line must be omitted.
+
+### 5.54 Product picker
+
+- **SPEC-5.54.1**: The product picker must request `GET /products?is_active=true&per_page=20` when the trimmed query is empty, and `GET /products?is_active=true&q=<url-encoded trimmed query>&per_page=20` otherwise, so only active products are offered.
+- **SPEC-5.54.2**: The request must be driven by the query signal debounced by 300 ms, and must be reissued when the active tenant generation changes.
+- **SPEC-5.54.3**: Each listed product must carry a UUID `id` and a `name`. `sku` and `description` must be optional, `unit_price` and `unit` must default to the empty string, and `is_taxable` must default to `true` when absent.
+- **SPEC-5.54.4**: A failed search must be logged as a warning `product search failed: {error}` and must show the error banner `Could not search. Try again.` in the panel, with no rows, so a failure is not read as "no matches".
+- **SPEC-5.54.5**: While the request is pending the panel must show `Searching` followed by the ellipsis character (U+2026).
+- **SPEC-5.54.6**: When the request succeeds with no rows, the panel must show `No active products in the price list yet.` when the trimmed live query is empty, and `No matches.` otherwise.
+- **SPEC-5.54.7**: Each row must be an `li` with `role="option"` holding a `button` with `tabindex="-1"` showing the product name and a detail text.
+- **SPEC-5.54.8**: The detail text must be the SKU (only when it is non-blank after trimming) followed by the middle dot character (U+00B7) with spaces around it, then the unit price formatted as money, followed by ` / ` and the trimmed unit only when the unit is non-blank.
+- **SPEC-5.54.9**: The search field wrapper must have `role="combobox"` with expanded, controls and active-descendant attributes from the navigation state, must open the panel on focus and on click, and must open it fresh and update the query on each input.
+- **SPEC-5.54.10**: Keyboard handling must use the shared dropdown navigation with Enter taking the first row when no row is highlighted, so a typed name is accepted without arrowing to it.
+- **SPEC-5.54.11**: While the panel is open, a full-viewport backdrop (`fixed inset-0 z-10`) must close the panel and leave edit mode on click.
+- **SPEC-5.54.12**: Picking a row (click or keyboard) must call `onselect` once with the picked product, leave edit mode, and set the search text to the picked name, or to the empty string when `clear_on_select` is set. A click pick must also close the panel.
+- **SPEC-5.54.13**: The picked product must carry the id as a string, the name, the SKU and description (each `None` when blank after trimming), the unit price exactly as the server's decimal string at the moment of picking, the unit, and the product's taxable flag. The caller owns the copy, and the picker must not re-read the price later.
+- **SPEC-5.54.14**: When `selected_id` is set and the picker is not in edit mode, it must render a chip showing `value` (truncated) instead of the search input, with a label shown only when the trimmed label is non-empty and a red asterisk when `required`.
+- **SPEC-5.54.15**: The chip must offer `Change`, which clears the query, enters edit mode and opens the panel, and `Clear`, which calls `onclear` and clears the query.
+- **SPEC-5.54.16**: The defaults must be label `Product`, placeholder `Search the price list` followed by the ellipsis character (U+2026), `required` false and `clear_on_select` false, and the search input name must be `product_search`.
+
+### 5.55 Reorder buttons
+
+- **SPEC-5.55.1**: Reorder buttons must render two icon buttons, `Move up` with a filled up-triangle and `Move down` with a filled down-triangle, in that order.
+- **SPEC-5.55.2**: The accessible labels must be `Move {label_noun} up` and `Move {label_noun} down`.
+- **SPEC-5.55.3**: The up button must be disabled when `index` is 0 or the caller's `disabled` is set. The down button must be disabled when `index + 1 >= total` or the caller's `disabled` is set. A `total` of 0 or 1 must disable both without arithmetic underflow.
+- **SPEC-5.55.4**: A click on an enabled button must call `on_up` or `on_down` with no argument, and a disabled button must not call it.
+- **SPEC-5.55.5**: Both buttons must share the same class, `button_class` when given and `p-1 text-subtle hover:text-content` otherwise, and the same icon size, which defaults to small.
+
+### 5.56 Server status and update banners
+
+- **SPEC-5.56.1**: The server status banner must render nothing while the server is reachable, and must re-render on each reachability change. Builds without the fetch layer must always count the server as reachable.
+- **SPEC-5.56.2**: While the server is unreachable, the banner must render a bar with `role="status"` and `aria-live="polite"` reading `Server unreachable. Reconnecting` followed by the ellipsis character (U+2026), and a link `Click to see more` followed by the ellipsis character (U+2026) to the System Status route.
+- **SPEC-5.56.3**: The server status banner must have no dismiss control and must disappear by itself when reachability returns, and its text must not expose raw transport error text.
+- **SPEC-5.56.4**: The update available banner must render nothing while the loaded bundle is current. Builds without the update check must never show it.
+- **SPEC-5.56.5**: When a newer build is deployed, the update banner must render a bar with `role="status"` and `aria-live="polite"` reading `A new version of {brand} has been deployed. Reload the page to get it.`, where `{brand}` is the deployment's configured product name.
+- **SPEC-5.56.6**: The update banner must contain a `button` with `type="button"` labelled `Reload page` that performs the same page reload the automatic update path uses.
+- **SPEC-5.56.7**: The update banner must have no dismiss control, must not show build hashes, version numbers or operator instructions, and must be shown to every signed-in user regardless of role.
+- **SPEC-5.56.8**: In the application shell, the update banner must be mounted above both the server status banner and the administrator update banner.
+
+### 5.57 Setting form modal
+
+- **SPEC-5.57.1**: The setting form modal must render a medium-size modal that is always open for as long as it is mounted, with the caller's title, and a body of `space-y-4` holding the error banner (only when `error` is not empty) followed by the children.
+- **SPEC-5.57.2**: The footer must contain, in order: a `Delete` danger button (only when `is_edit` and `deletable` are both true, with `loading` bound to `deleting`), an expanding spacer, a `Cancel` secondary button that calls `onclose`, and a primary button with `loading` bound to `saving` that passes its click event to `onsave`.
+- **SPEC-5.57.3**: The primary button label must be `Save Changes` when `is_edit` is true and `create_label` otherwise.
+- **SPEC-5.57.4**: `deletable` must default to true and must be set false for rows the server refuses to delete.
+- **SPEC-5.57.5**: Clicking `Delete` must only open a confirmation dialog; `ondelete` must fire only when the dialog is confirmed.
+- **SPEC-5.57.6**: The confirmation dialog must default to title `Confirm deletion` and message `Are you sure you want to delete this item? This action cannot be undone.`, with confirm text `Delete`, cancel text `Cancel`, destructive styling and `loading` bound to `deleting`; the caller may override the title and message.
+- **SPEC-5.57.7**: On confirm, the dialog must close and then call `ondelete`. On cancel, the dialog must close unless a delete is in progress.
+- **SPEC-5.57.8**: Closing the modal by Escape, backdrop or the close button must call `onclose`.
+
+### 5.58 Loading skeletons
+
+- **SPEC-5.58.1**: The card grid skeleton must render `count` placeholder cards (default 6) inside a `grid` container whose columns and gap come from `grid_class` (default `grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6`).
+- **SPEC-5.58.2**: Each placeholder card must hold four pulsing blocks in this order: a title block, a subtitle block, a full-width body line, and a full-width rounded bar standing in for a progress bar.
+- **SPEC-5.58.3**: The detail skeleton must render a card holding a title block, `rows` full-width pulsing lines (default 4), and a shorter trailing line.
+- **SPEC-5.58.4**: All skeleton blocks must use the `surface-2` background with `rounded` and `animate-pulse`, the same shimmer as the table loading rows.
+
+### 5.59 Status badge mapping
+
+- **SPEC-5.59.1**: `humanize_enum_label` must return `-` for an empty string. Otherwise it must split on `_`, uppercase the first character of each part, keep the rest of each part unchanged, and join the parts with single spaces.
+- **SPEC-5.59.2**: Each status badge helper other than the ticket helper must match its input exactly (case-sensitive, snake_case) and return a pair of badge variant and label. An unknown status must return the gray variant with the humanized raw value as the label.
+- **SPEC-5.59.3**: The ticket status badge helper must lowercase its input and replace spaces with `_` before matching, so `In Progress` and `in_progress` agree, and must return only a variant: `open` blue, `in_progress` yellow, `pending` gray, `resolved` green, `closed` gray, and gray for anything else.
+- **SPEC-5.59.4**: Contract statuses must map `active` to green `Active`, `expired` to red `Expired`, `cancelled` and `canceled` to gray `Cancelled`, `pending` to yellow `Pending`, and `draft` to blue `Draft`.
+- **SPEC-5.59.5**: Project statuses must map `active` to green `Active`, `planning` to purple `Planning`, `on_hold` to yellow `On Hold`, `completed` to blue `Completed`, and `cancelled` and `canceled` to gray `Cancelled`.
+- **SPEC-5.59.6**: Asset statuses must map `active` to green `Active`, `in_repair` to yellow `In Repair`, `in_stock` to blue `In Stock`, `retired` to red `Retired`, and `inactive` to gray `Inactive`.
+- **SPEC-5.59.7**: Invoice statuses must map `draft` to gray `Draft`, `pending` to blue `Pending`, `sent` to blue `Sent`, `paid` to green `Paid`, `partially_paid` to yellow `Partially Paid`, `overdue` to orange `Overdue`, `void` to red `Void`, and `written_off` to red `Written Off`. Overdue must stay visually distinct from void.
+- **SPEC-5.59.8**: Credit note statuses must map `issued` to green `Issued` and `void` to red `Void`.
+- **SPEC-5.59.9**: Knowledge-base article statuses must map `published` to green `Published`, `draft` to yellow `Draft`, and `archived` to gray `Archived`.
+
+### 5.60 Suggest input
+
+- **SPEC-5.60.1**: The suggest input must remain free text: the value is owned by the parent, `oninput` must be called with the new text on every typed change and on every picked suggestion, and typed text must never be replaced unless the user picks a suggestion.
+- **SPEC-5.60.2**: The suggestion source must be the curated `suggestions` list when it is not empty (no request made), otherwise the server when `field` is not empty, otherwise none.
+- **SPEC-5.60.3**: The server source must call `GET /contacts/field-values?field=<url-encoded field>&q=<url-encoded trimmed query>`, debounced by 300 ms and reissued when the active tenant generation changes, expecting a JSON array of strings.
+- **SPEC-5.60.4**: For the curated list, the rows must be the entries that contain the trimmed current text as a case-insensitive substring (all entries when the text is empty), excluding an entry exactly equal to the trimmed current text, limited to the first 20.
+- **SPEC-5.60.5**: For the server list, the rows must be the returned values excluding any exactly equal to the trimmed current text.
+- **SPEC-5.60.6**: A failed server lookup must be logged as a warning `suggestion lookup failed: {error}` and must show the error banner `Could not search. Try again.` in the panel, so a failure is not read as "no suggestions".
+- **SPEC-5.60.7**: The panel must render only while the navigation state is open and there is at least one row or a failure, as a listbox `dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-60 overflow-y-auto`, with a transparent backdrop (`fixed inset-0 z-10`) that closes it on click.
+- **SPEC-5.60.8**: The wrapper must have `role="combobox"` with expanded, controls and active-descendant attributes, open the panel on focus and on click, and open it fresh on each input.
+- **SPEC-5.60.9**: Enter must take only a row the user has highlighted and must not take the first row when none is highlighted. Picking a row, by click or Enter, must set the text, call `oninput` with it, and (for a click) close the panel.
+- **SPEC-5.60.10**: Row buttons must have `tabindex="-1"` so Tab leaves the field instead of walking into the list.
+- **SPEC-5.60.11**: `name`, `label`, `required`, `error`, `help` and the value must be passed through to the underlying input.
+
+### 5.61 Modal dialog
+
+- **SPEC-5.61.1**: The modal must render nothing while `open` is false, and must mount the dialog only while open.
+- **SPEC-5.61.2**: On mount the dialog must record the focused element and must restore focus to it when the dialog unmounts, on every close path.
+- **SPEC-5.61.3**: The panel width classes must be `max-w-md` (small), `max-w-lg` (medium, the default), `max-w-2xl` (large), `max-w-4xl` (extra large) and `max-w-7xl` (full).
+- **SPEC-5.61.4**: The panel must have `role="dialog"`, `aria-modal="true"`, `tabindex="-1"`, and `aria-labelledby` pointing at the id of its own title, formed as `modal-title-{n}` from a process-wide counter so two dialogs mounted at once never share an id. It must request focus on mount.
+- **SPEC-5.61.5**: Pressing Escape inside the dialog must stop propagation and call `onclose`, so only the innermost of nested modals closes.
+- **SPEC-5.61.6**: A click on the backdrop must call `onclose`, and a click inside the panel must not propagate to the backdrop.
+- **SPEC-5.61.7**: The header must hold the title as an `h3` and an icon button labelled `Close dialog` that calls `onclose`.
+- **SPEC-5.61.8**: The panel must be a flex column capped at 90vh with a pinned header, an optional pinned subheader, a scrolling body (`flex-1 min-h-0 overflow-y-auto px-4 py-4`) and an optional pinned footer (right-aligned, wrapping, `gap-3`).
+- **SPEC-5.61.9**: The subheader must render between the header and the body, outside the scrolling region, and must add no element and no extra border when not supplied.
+- **SPEC-5.61.10**: The panel must not use a CSS `transform`, so a nested modal's fixed positioning stays relative to the viewport.
+
+### 5.62 Confirmation dialog
+
+- **SPEC-5.62.1**: The confirmation dialog must render nothing while `open` is false, and its phrase state must live in a component mounted only while open, so the typed phrase is cleared every time the dialog is reopened.
+- **SPEC-5.62.2**: The defaults must be confirm text `Confirm`, cancel text `Cancel`, `destructive` false, `loading` false, empty phrase, empty error, `blocked` false and `confirm_disabled` false.
+- **SPEC-5.62.3**: The dialog must render as a small modal whose close paths (Escape, backdrop, close button) call `oncancel`.
+- **SPEC-5.62.4**: The body must show the message, then the optional body element, then the error banner (with `role="alert"`, text verbatim) only when `error` is not empty, then the phrase gate.
+- **SPEC-5.62.5**: The phrase gate must be active only when `blocked` is false and the trimmed `confirm_phrase` is not empty. It must show `Type {phrase} to confirm` and an autocomplete-off text input whose value has invisible characters removed on every input.
+- **SPEC-5.62.6**: The phrase must be satisfied when the trimmed required phrase is empty, or when the trimmed typed text equals the trimmed required phrase ignoring ASCII case.
+- **SPEC-5.62.7**: The confirm button must call `onconfirm`, use the danger variant when `destructive` and the primary variant otherwise, show a loading state when `loading`, and be disabled while `loading`, while the phrase is not satisfied, or while `confirm_disabled` is set.
+- **SPEC-5.62.8**: The cancel button must call `oncancel` and be disabled while `loading`.
+- **SPEC-5.62.9**: When `blocked` is true, the dialog must render no confirm button and no phrase gate, and must render the `alternative` element (when supplied) in the footer before the cancel button.
+
+### 5.63 Alerts and toasts
+
+- **SPEC-5.63.1**: An alert must support the types info (default), success, warning and error, each with its own background, icon colour and text colour pair for light and dark themes. Info must use an information icon, success a check icon, and warning and error an exclamation icon.
+- **SPEC-5.63.2**: An alert must show the title only when it is not empty, and always the message. It must show a dismiss icon button labelled `Dismiss notification` only when `dismissible` is true (default false), which calls `ondismiss`.
+- **SPEC-5.63.3**: The toast container must render its toasts in a stack fixed to the bottom right (`fixed z-50 bottom-4 right-4 space-y-2 w-80`), each keyed by toast id.
+- **SPEC-5.63.4**: Each toast must render as a dismissible alert whose dismiss button calls `ondismiss` with the toast id.
+- **SPEC-5.63.5**: When `auto_dismiss_ms` is set, the toast must call `ondismiss` with its id after that many milliseconds; when it is `None` the toast must stay until dismissed by the user. The timer must run only in application builds.
+- **SPEC-5.63.6**: When `retry` is set, the toast must show a small secondary `Retry` button below the alert that first dismisses the toast and then calls the retry handler, so a repeat failure can push a fresh toast.
+
+### 5.64 Table primitives
+
+- **SPEC-5.64.1**: The table must be a `table` (`min-w-full divide-y divide-line` plus the caller's class) inside an `overflow-x-auto` wrapper. When `striped` is true (default false) odd body rows must be tinted with the `surface-2` token.
+- **SPEC-5.64.2**: The table head must render a `thead` with the `surface-2` background, and the table body a `tbody` with the `surface` background and row dividers.
+- **SPEC-5.64.3**: A clickable row must show a hover background and pointer cursor, and a row that is not clickable must carry no hover class. The row's `onclick` must be attached to the row element, `data_testid` must be emitted as `data-testid` when given, and the caller's class must be appended.
+- **SPEC-5.64.4**: Every row marked clickable must be reachable by keyboard: it must contain either a link or a cell carrying `onactivate`, because the row element itself is not focusable.
+- **SPEC-5.64.5**: A header cell must be a `th` with `scope="col"`, uppercase small text, padding `px-6 py-3` (or `px-4 py-3` when `compact`), and an alignment (left by default, center or right) that sets both text alignment and the inner justification.
+- **SPEC-5.64.6**: A sortable header must wrap its content in a `button` with `type="button"` that calls `onsort` on click, and the `th` itself must not carry a click handler.
+- **SPEC-5.64.7**: A sortable header must set `aria-sort` to `ascending`, `descending` or `none` according to the sort direction, and must show an up arrow, a down arrow or a faint up-and-down arrow (`opacity-40`) respectively. A non-sortable header must have no `aria-sort`, no button and no arrow.
+- **SPEC-5.64.8**: A table cell must use padding `px-6 py-4` (or `px-4 py-3` when `compact`), `break-words text-sm text-content`, the caller's class last, and `colspan` only when given.
+- **SPEC-5.64.9**: A cell with `onactivate` must wrap its content in a full-width, left-aligned `button` with `type="button"` whose click stops propagation and then calls the handler, so the row's own click handler does not run twice. It must be given to one cell per row.
+- **SPEC-5.64.10**: The table loading state must render a table body of `rows` (default 5) rows by `columns` (default 5) cells, each holding a pulsing placeholder bar.
+- **SPEC-5.64.11**: The table empty state must render one row spanning `columns` (default 5) cells. When `title` is not empty it must render the shared empty-state block with the title, description and optional actions; otherwise it must render `message` (default `No data available`) centered in muted text.
+- **SPEC-5.64.12**: The empty row must render a single `tr` whose cell spans `columns`, is centered (`px-6 py-8 text-center text-sm`) and appends the caller's class, without adding a table body of its own.
+
+### 5.65 Pagination, data table and badge
+
+- **SPEC-5.65.1**: Pagination must treat `current_page` as 1-indexed and must compute with `per_page` and `current_page` raised to at least 1, so zero inputs cannot divide by zero or underflow.
+- **SPEC-5.65.2**: Pagination must compute the total page count as `total_items` divided by `per_page` rounded up, and must render nothing when that count is 1 or less.
+- **SPEC-5.65.3**: From the `sm` breakpoint upward, pagination must show `Showing {start} to {end} of {total} results`, where `start` is `(page - 1) * per_page + 1` and `end` is `min(page * per_page, total_items)`.
+- **SPEC-5.65.4**: The page number list must cover `current_page - 2` through `current_page + 2`, limited to 1 through the total page count. The current page must be a non-interactive highlighted number, and every other number a button that calls `onpagechange` with that number.
+- **SPEC-5.65.5**: The previous control must be disabled when `current_page <= 1` and call `onpagechange(current_page - 1)`. The next control must be disabled when `current_page >= total pages` and call `onpagechange(current_page + 1)`. The disabled state must differ visibly from the enabled state.
+- **SPEC-5.65.6**: The desktop controls must be icon buttons labelled `Previous page` and `Next page` inside a `nav` with `aria-label="Pagination"`. Below the `sm` breakpoint the pager must show only text buttons `Previous` and `Next`.
+- **SPEC-5.65.7**: The top border of the pager must render when `bordered` is true (default) and be omitted when false.
+- **SPEC-5.65.8**: The data table must wrap its children in a table inside a bordered, shadowed container, and must render the pager only when `loading` is false and `total_items` is greater than `per_page`. The defaults must be `total_items` 0, `current_page` 1, `per_page` 25, and the pager's page changes must be forwarded to `onpagechange`.
+- **SPEC-5.65.9**: The badge must support the variants gray (default), blue, green, yellow, orange, red and purple, each with a light-theme and a dark-theme colour pair (gray uses the `surface-2` token), rendered as a rounded pill with the caller's class appended.
+
+### 5.66 Tenant switcher trigger and switching
+
+- **SPEC-5.66.1**: The tenant switcher must render nothing when the user is not authenticated.
+- **SPEC-5.66.2**: The switcher trigger must be shown only when the number of memberships plus pending invitations is at least 2, or when there is at least one pending invitation. Otherwise only the create-team modal remains available.
+- **SPEC-5.66.3**: The trigger slot must have a fixed width (`w-[8.5rem] sm:w-[11.5rem]`) while the trigger is shown or while memberships are still loading, so the profile control does not shift when the list arrives.
+- **SPEC-5.66.4**: The trigger must be a popover labelled `Switch team` with a `w-64` panel and must show the active team name, truncated. The active name must be the active organisation name when known, else the name of the membership whose tenant id equals the active tenant id, else empty.
+- **SPEC-5.66.5**: The memberships must be listed under the heading `Your teams`, sorted ascending by tenant name ignoring ASCII case, and an empty list must show `No memberships loaded.`.
+- **SPEC-5.66.6**: Each membership row must show the tenant name (truncated) and a caption `Active` for the active tenant, `Shared with you` for a row that has a grant id, and `Member` otherwise. The row button must be disabled for the active tenant and while a request is in flight.
+- **SPEC-5.66.7**: Selecting a team must send `POST /auth/switch-tenant/{tenant_id}` with no body and expect an access token, an optional refresh token, an expiry and the user. A second selection while a request is in flight must be ignored.
+- **SPEC-5.66.8**: On a successful switch the switcher must set the in-memory access token, persist the standalone session, set the user, clear the loading flag, the error and the OIDC tokens, set the active tenant id to the returned user's tenant id, mark the server user as not loaded, keep the memberships list unchanged, increment the tenant generation by one, replace the route with the dashboard unless the dashboard is already shown, and close the panel.
+- **SPEC-5.66.9**: A failed switch must leave the session unchanged and show a message in a `role="alert"` paragraph in the panel: `You no longer have access to that workspace. Refresh and try again.` on a 404, and the API error's user message otherwise. The in-flight flag must be cleared in every outcome.
+- **SPEC-5.66.10**: The panel must close when the route changes, and opening it must clear any previous error.
+- **SPEC-5.66.11**: The row `Create new team` must set the global create-team signal, close the panel and clear the error. The create-team modal must open whenever that signal is set, including from the user menu.
+
+### 5.67 Tenant switcher: create team and leave team
+
+- **SPEC-5.67.1**: The create-team modal must be a small modal titled `Create new team` with a required `Team name` field, an optional `Portal slug (optional)` field, and the help text `Leave blank to derive from the name. Slugs are only used for the client-facing portal URL.`. Both fields must be disabled while saving, and editing either must clear the error.
+- **SPEC-5.67.2**: Submitting with an empty trimmed team name must show `Enter a team name.` and send no request. A submit while a request is in flight must be ignored.
+- **SPEC-5.67.3**: The submit must send `POST /tenants/additional` with `tenant_name` (trimmed) and `tenant_slug` (trimmed, ASCII lowercased, omitted when blank).
+- **SPEC-5.67.4**: On success the switcher must refetch `GET /auth/memberships`, replace the memberships list with the result, clear both fields, close the modal and close the panel.
+- **SPEC-5.67.5**: On a 400 or 409 the modal must show the server's message verbatim in a `role="alert"` paragraph, and on any other failure the API error's user message. The in-flight flag must be cleared in every outcome.
+- **SPEC-5.67.6**: The `Cancel` button must close the modal and clear both fields and the error, and must be disabled while saving. The `Create` submit button must show a loading state while saving.
+- **SPEC-5.67.7**: A membership row must offer a `Leave` button (accessible name `Leave {tenant_name}`, disabled while a request is in flight) only when `leave_target` returns a grant id: it must return `None` for the active tenant and otherwise the membership's grant id, so a seat the identity owns in its own right has no Leave.
+- **SPEC-5.67.8**: Clicking `Leave` must open a destructive confirmation titled `Leave {tenant_name}?` with the message `You will lose access to {tenant_name} and it will disappear from your team list. Nothing in it is deleted, and its owner can invite you again.`, confirm text `Leave`, the in-flight flag as loading, and the current error shown inside the dialog. Cancel must close it and clear the error.
+- **SPEC-5.67.9**: Confirming must send `DELETE /my-grants/{grant_id}`. On success, or on a 404 (already gone), the switcher must refetch `GET /auth/memberships`, replace the memberships list, close the confirmation and close the panel.
+- **SPEC-5.67.10**: Any other leave failure must show the API error's user message inside the open confirmation dialog and keep the dialog open. A second leave while a request is in flight must be ignored.
+- **SPEC-5.67.11**: A failed refetch of the memberships list after a create or a leave must be logged and must show an error to the user, and must not be treated as a silent success.
+
+### 5.68 Tenant switcher: pending invitations
+
+- **SPEC-5.68.1**: The switcher must load `GET /my-grants/invitations` (a cross-tenant inbox) and reload it whenever the panel opens or closes and whenever the tenant generation changes. Each invitation must decode `id`, an optional `tenant_slug`, `role` and `expires_at`, each defaulting to empty when absent.
+- **SPEC-5.68.2**: A failed invitation load must be logged as a warning `pending-invites load failed: {error}` and must be shown as a load failure in the panel, not as an empty inbox.
+- **SPEC-5.68.3**: When there is at least one invitation, the panel must show a `Pending invitations` heading above `Your teams`, and for each invitation its `tenant_slug` (or `a team` when absent), the line `Role: {role}`, and `Accept` and `Decline` buttons.
+- **SPEC-5.68.4**: While an accept or decline is in flight for an invitation, its buttons must be disabled and show loading, and any further accept or decline must be ignored.
+- **SPEC-5.68.5**: Accept must send `POST /my-grants/invitations/{id}/accept` with no body. On success it must increment the tenant generation, reload the invitation list and refresh the memberships list so the new team appears under `Your teams`.
+- **SPEC-5.68.6**: Decline must send `POST /my-grants/invitations/{id}/decline` with no body and, on success, reload the invitation list.
+- **SPEC-5.68.7**: A failed accept or decline must show the API error's user message in a `role="alert"` paragraph under the invitations, cleared when the next accept or decline starts. The in-flight marker must be cleared in every outcome.
+
+### 5.69 Theme picker
+
+- **SPEC-5.69.1**: The theme picker button must be a top-bar button with accessible name `Theme and appearance`, tooltip `Appearance`, `aria-haspopup="dialog"` and `aria-expanded` reflecting whether the dialog is open, which opens a large modal titled `Appearance` containing the theme picker.
+- **SPEC-5.69.2**: The theme picker must start from the current base mode, the current resolved dark state and the current accent id.
+- **SPEC-5.69.3**: The base mode control must offer `Light`, `Dark` and `System` buttons with the current one highlighted. Clicking one must apply the mode, update the resolved dark state, and save the preference to the user's account.
+- **SPEC-5.69.4**: The picker must show `Sepia`, `Midnight` and `Forest` as non-interactive dashed placeholders marked `(later)` with the tooltip `Named palettes are coming in a later phase`.
+- **SPEC-5.69.5**: The accent grid must show one round swatch per defined accent in a 7-column grid, filled with the accent's dark-theme fill when the resolved mode is dark and its light-theme fill otherwise.
+- **SPEC-5.69.6**: A swatch must be locked (disabled, dimmed, not selectable) when its on-accent text colour on its fill does not meet WCAG AA for normal text (4.5:1).
+- **SPEC-5.69.7**: A swatch's tooltip and accessible name must read `{name} (contrast {ratio}:1)` when unlocked and `{name} - locked: contrast {ratio}:1 (needs 4.5:1 for WCAG AA)` when locked, with the ratio to one decimal place, and `aria-pressed` must reflect whether it is the selected accent.
+- **SPEC-5.69.8**: When the contrast ratio cannot be computed because a colour is not a valid hex value, the swatch must be locked and its tooltip must say the ratio could not be computed rather than state a ratio of 0.
+- **SPEC-5.69.9**: Clicking an unlocked swatch must apply the accent, mark it selected, and save the preference to the user's account. Clicking a locked swatch must do nothing.
+- **SPEC-5.69.10**: While the `red` accent is selected, the picker must show `Red is also the colour of destructive actions, so Save and Delete will look alike with this accent.`.
+- **SPEC-5.69.11**: The preview section must show sample controls built from the accent tokens, including a disabled `New ticket` button with tooltip `Sample button. This picker saves each change on click.`, and the text `Saved to your account. Applies across {brand} immediately.` with `{brand}` the deployment's configured product name.
+
+### 5.70 Component module exports
+
+- **SPEC-5.70.1**: The components module must declare each component file as a private submodule and re-export its public items at `crate::components`, so callers import every shared component from that one path.
+- **SPEC-5.70.2**: The module must re-export the markdown editor's preview-box id helper at crate visibility under the name `markdown_editor_preview_id`.
+
+### 5.71 Update banner: gating and fetch
+
+- **SPEC-5.71.1**: The update banner must render nothing and must not request the version endpoint unless the signed-in user's role is an admin role AND the deployment is standalone (as reported by the OIDC standalone check).
+- **SPEC-5.71.2**: The banner must not render for a SaaS (non-standalone) deployment for any role, including the super-admin role, because its remediation requires host and compose-file access.
+- **SPEC-5.71.3**: The banner must not render for a non-admin user, and the admin check must live in the banner component rather than the layout so non-admin layout renders are unchanged.
+- **SPEC-5.71.4**: The banner must call the same hooks in the same order on every render, performing the admin and standalone gate only after all hooks have run, so a user who becomes admin later (tenant switch, late hydration) does not change the hook set.
+- **SPEC-5.71.5**: The version fetch must be keyed on a memoized boolean (admin AND standalone) rather than on the raw auth context, so repeated writes of the same user into the auth context during startup do not re-fetch, and a change of the boolean does re-fetch.
+- **SPEC-5.71.6**: When the gate is false the version resource must resolve to an error without issuing a network request; when true it must call the version fetch (`get_version`) once per resource run.
+- **SPEC-5.71.7**: Each time the version resource resolves (success or error), the banner must write the result into the application-root version cache so that later mounts of the layout start from a resolved state.
+
+### 5.72 Update banner: state resolution and layout
+
+- **SPEC-5.72.1**: The banner must resolve its state in this order: a result in the application-root version cache, else the live resource result, else the reserving state.
+- **SPEC-5.72.2**: While no cached result and no live result exists, the banner must render a transparent, non-breaking-space row of one banner-line height (reserving state) so the content below does not shift when the banner appears.
+- **SPEC-5.72.3**: When a cached result exists the banner must derive its final state directly (shown or collapsed) without passing through the reserving state, so navigation between pages does not animate the row.
+- **SPEC-5.72.4**: The banner must show when the server pair reports an update available, or the client pair reports an update available, or the client pair reports running ahead of its latest, and the notification is not dismissed.
+- **SPEC-5.72.5**: When the resolved result is an error (cached or live), the banner must collapse to zero height and render no content.
+- **SPEC-5.72.6**: When there is no update to report, or the notification is dismissed, the banner must collapse to zero height (grid row 0fr), transparent, with a 200 ms ease-in-out transition.
+- **SPEC-5.72.7**: Only the shown state must be fully opaque; the reserving and collapsed states must be transparent (opacity 0).
+- **SPEC-5.72.8**: The banner must keep its container mounted in the reserving, shown and collapsed states so the height transition runs on the same element.
+
+### 5.73 Update banner: content and dismissal
+
+- **SPEC-5.73.1**: When the client or the server update is available, the banner must show the bold text "Update available." followed by "Client: <running> -> <latest>. " when the client update is available and "Server: <running> -> <latest>. " when the server update is available, using an arrow glyph between the versions, and a missing latest version rendered as "unknown".
+- **SPEC-5.73.2**: For an update-available banner the remediation text must read "Bump the tag(s) in your compose.yml and run" followed by the code text "docker compose pull && docker compose up --detach" and then "on the host to apply."
+- **SPEC-5.73.3**: When no update is available but the client bundle is ahead of the server, the banner must show the bold text "Server needs updating." and a line stating the client bundle version is newer than the server version, where the server version shown is the client pair's latest value.
+- **SPEC-5.73.4**: For the server-behind banner the remediation text must read "Upgrade the server image: bump its tag in your compose.yml and run" followed by the code text "docker compose pull && docker compose up --detach" and then "on the host."
+- **SPEC-5.73.5**: When both an update is available and the client is running ahead, the update-available message must take precedence and the server-behind message must not be shown.
+- **SPEC-5.73.6**: The banner must render a dismiss button with title "Dismiss until next update" and accessible label "Dismiss update notification", containing a small X icon.
+- **SPEC-5.73.7**: Clicking dismiss must write the value "1" to the durable preference store under the key "mokosh-update-dismissed-s<server latest>-c<client latest>" and must hide the banner immediately for the rest of the component's life.
+- **SPEC-5.73.8**: In the dismissal key a missing server or client latest version must be written as "-", so a change of either latest version produces a new key and re-shows the banner.
+- **SPEC-5.73.9**: The banner must treat a notification as dismissed when the local dismissed flag is set or when the durable preference store holds any value for the current dismissal key; a missing record means not dismissed, so the banner shows.
+
+### 5.74 User picker: search
+
+- **SPEC-5.74.1**: The user picker must load matches from `GET /auth/users` with query parameter `per_page=20`, adding `q=<trimmed query, URL-encoded>` only when the trimmed query is non-empty, so an empty query lists the first 20 users.
+- **SPEC-5.74.2**: The picker must debounce the search input by 300 ms before issuing a request, and must re-run the request when the debounced query changes.
+- **SPEC-5.74.3**: The picker must read the response as a page object whose `data` array contains users with a required UUID `id` and optional `full_name`, `first_name`, `last_name` and `email` strings that default to empty.
+- **SPEC-5.74.4**: A user's display name must be the trimmed `full_name` when non-empty, otherwise the first name and last name joined by one space and trimmed.
+- **SPEC-5.74.5**: The picker must drop every returned user whose id is in the `exclude_ids` prop from the match list before rendering and before keyboard selection.
+- **SPEC-5.74.6**: When the search request fails the picker must log a warning "user search failed: <error>" and show the failure in the dropdown (SPEC-5.76.6); the request must be sent as an authenticated call.
+
+### 5.75 User picker: selected chip and change
+
+- **SPEC-5.75.1**: When the `selected_id` prop is `Some` and the picker is not in editing mode, the picker must render a chip showing the `value` prop as the user name (truncated with an ellipsis on overflow) instead of the search input.
+- **SPEC-5.75.2**: The chip must show the label above it only when the `label` prop is non-blank after trimming, with a red asterisk after the label when `required` is set.
+- **SPEC-5.75.3**: The chip must offer a "Change" link-style small button that, on click, calls `onclear`, clears the query text, enters editing mode and opens the dropdown.
+- **SPEC-5.75.4**: While in editing mode the picker must show the search input and dropdown even when `selected_id` is still `Some`.
+- **SPEC-5.75.5**: The `label` prop must default to "User", the `placeholder` prop to "Search users" followed by an ellipsis character, `required` to false and `exclude_ids` to empty.
+
+### 5.76 User picker: dropdown states
+
+- **SPEC-5.76.1**: The search input must be named `user_search`, take the `label`, `placeholder` and `required` props, and be wrapped in an element with role "combobox" exposing aria-expanded, aria-controls and aria-activedescendant from the dropdown navigation state.
+- **SPEC-5.76.2**: The dropdown must open on focus-in and click of the combobox wrapper and must reopen fresh on each input event, which also stores the typed text as the query.
+- **SPEC-5.76.3**: While the dropdown is open the picker must render a full-screen transparent overlay behind it; clicking the overlay must close the dropdown and leave editing mode.
+- **SPEC-5.76.4**: The dropdown panel must have role "listbox", a maximum height of 18 rem (max-h-72) with vertical scrolling, and must be anchored below the input spanning its full width.
+- **SPEC-5.76.5**: While the request has no result the dropdown must show "Searching" followed by an ellipsis character.
+- **SPEC-5.76.6**: When the request has failed the dropdown must show an error banner reading "Could not search. Try again." and must not show any rows.
+- **SPEC-5.76.7**: When the request succeeded and no rows remain after exclusion the dropdown must show "No users yet." if the trimmed query is empty, otherwise "No matches."
+- **SPEC-5.76.8**: When rows remain, each must render as a list item with role "option", keyed by the user id, containing a non-tab-stop button of type "button" showing the display name in medium weight followed by the trimmed email in small muted text only when the email is non-empty.
+
+### 5.77 User picker: selection
+
+- **SPEC-5.77.1**: Clicking a row must call `onselect` with the tuple (user id as a hyphenated UUID string, display name), close the dropdown, leave editing mode and set the query text to the display name.
+- **SPEC-5.77.2**: The picker must support keyboard navigation through the dropdown navigation helper (id prefix "user-picker") over the filtered rows, and pressing Enter without an active row must take the first match.
+- **SPEC-5.77.3**: Keyboard-selecting a row must call `onselect` with the same tuple as a click, leave editing mode and set the query text to the display name; an index outside the filtered rows must select nothing.
+- **SPEC-5.77.4**: `onselect` must fire once per selection action, and `onclear` must fire only from the Change button.
+
 ## 6. Identity, portal and org pages
 
 Scope: `src/pages/accept_grant.rs`, `src/pages/admin_features.rs`,
@@ -919,9 +3594,8 @@ Scope: `src/pages/accept_grant.rs`, `src/pages/admin_features.rs`,
 `src/pages/reset_password.rs`, `src/pages/set_password.rs`,
 `src/pages/system_status.rs`, `src/pages/teams.rs`.
 
-`src/pages/mod.rs` is a flat list of `pub mod` declarations with no
-behavior of its own; it is covered by this section but owns no
-`SPEC-6.` id. `src/pages/button_showcase.rs` is a static, dev-only
+`src/pages/mod.rs` is a flat list of `pub mod` declarations; its one
+conditional behavior is specified at SPEC-6.10.1. `src/pages/button_showcase.rs` is a static, dev-only
 style reference with no form, no network call and no state beyond its
 one route; it is covered by SPEC-6.1.19 only.
 
@@ -1405,6 +4079,14 @@ cited at SPEC-6.3.6.
   pending next-target for at most the current tab's session and must
   consume it (remove it from storage) the first time it is read,
   regardless of whether that read's value was valid.
+
+### 6.10 Page module registration
+
+- **SPEC-6.10.1**: `src/pages/mod.rs` must declare the `members` and
+  `members_teams_tab` page modules only when the `multi-tenant` Cargo
+  feature is enabled, and must declare every other page module of this
+  section unconditionally, so a build without `multi-tenant` compiles
+  with neither module present.
 
 ## 7. Contacts and companies
 
@@ -2711,10 +5393,14 @@ one `Vendor`-parameterized `GroupImportBody` component.
   state from the saved overview connection at most once, on first load,
   never overwriting an in-progress local choice on a later overview
   refresh.
-- **SPEC-8.6.6**: `settings_contact_sync.rs`'s `confirm_off` cancel path
-  must restart the overview resource to resync the enable checkbox's
-  visual state, since the checkbox optimistically unticks before the
-  confirmation is answered.
+- **SPEC-8.6.6**: `settings_contact_sync.rs` and
+  `settings_contact_sync_icloud.rs` must render the enable checkbox's
+  `checked` from the user's last click (`wanted`) when one is recorded and
+  from the server's value otherwise, record the click in the change handler,
+  and clear it on the `confirm_off` cancel path, so the box returns to the
+  server's value after a cancelled turn-off. Re-reading the overview on
+  cancel must not be the mechanism, because it recomputes the same
+  `checked` value and writes nothing to the DOM.
 
 ### 8.7 Integrations
 
@@ -2792,6 +5478,2026 @@ pattern cited at SPEC-6.3.6 and restated as SPEC-8.3.6 for this scope.
   server contract this page cites in its own help text, not a requirement
   this client enforces.
 
+### 8.10 Stale-response and failed-write handling
+
+- **SPEC-8.10.1**: `GroupImportBody`'s `review` action must increment a
+  `review_generation` counter on every call before issuing the exact-selection
+  preview request, and a preview response must be written to the Review
+  step's totals only if the counter still equals the value it held when that
+  request was issued; a response for a superseded group selection must be
+  dropped, so a slow earlier response cannot overwrite a later selection's
+  totals.
+- **SPEC-8.10.2**: When the enable/disable write fails on the Google or
+  iCloud settings page, the page must show "Could not change the setting:
+  {e}" (SPEC-8.5.4, SPEC-8.5.5) and must clear the recorded checkbox intent,
+  so the checkbox returns to the server's value instead of staying on a
+  change that was not saved.
+
+## 9. Tickets, SLA and requests
+
+### 9.1 Ticket list: access, data load, sorting and paging
+
+- **SPEC-9.1.1**: The ticket list route must render the portal "access required" state (title "Tickets", ticket area) instead of the list body when the session is a contact session that lacks the `tickets:read` capability, so none of the list body's fetches run; staff sessions must always get the list body.
+- **SPEC-9.1.2**: The ticket list must set the page title to "Tickets" and show the header subtitle "Manage support tickets and service requests".
+- **SPEC-9.1.3**: The "New Ticket" button in the page header, and in the "No tickets yet" empty state, must render only when the caller holds `tickets:write` (staff sessions always hold it), and must navigate to the New Ticket route.
+- **SPEC-9.1.4**: The list must fetch one page at a time with `GET /tickets?page=<n>&per_page=25` using the dual-plane helper (contact bearer or staff bearer), where `<n>` is the page signal clamped to at least 1.
+- **SPEC-9.1.5**: When neither a staff access token nor a contact session exists, the list fetch must resolve to the failed state without sending a request.
+- **SPEC-9.1.6**: When the page URL carries a `company_id` query parameter, the list fetch must append `&company_id=<value>` so every row belongs to that company, and the page must show the company-scope context banner.
+- **SPEC-9.1.7**: The list fetch must append `&q=<text>` only when the trimmed search text is non-empty, percent-encoded as a URI component; `&status_id=`, `&priority_id=` and `&queue_id=` only when the matching filter is non-empty; and `&sort=<key>&sort_dir=<asc|desc>` whenever a sort is active.
+- **SPEC-9.1.8**: The search text used by the fetch must be debounced by 300 ms; filter, sort and page changes must refetch immediately, and the fetch must refetch when the server returns from unreachable.
+- **SPEC-9.1.9**: The default sort must be "Updated" descending, and the sortable columns must map to the server sort keys `ticket_number` (Ticket), `company_name` (Company), `status` (Status), `priority` (Priority), `assigned_to_name` (Assigned To) and `updated_at` (Updated); every key sent must be a member of the shared ticket sort allow-list, because the server rejects an unlisted key with 422.
+- **SPEC-9.1.10**: Activating a sortable column header must sort ascending when that column is not the active sort, and must flip between ascending and descending when it is; every sort change must reset the page to 1.
+- **SPEC-9.1.11**: The sort direction sent to the server must be the literal `asc` for ascending and `desc` for descending, and a saved sort whose key or direction is not recognized must be treated as no sort (unsorted fetch) rather than mapped to another column.
+- **SPEC-9.1.12**: The table must show the server's total match count and 25 rows per page, and a page change must set the page signal to the requested page.
+- **SPEC-9.1.13**: The table must have a select-all checkbox column followed by the columns Ticket, Company, Status, Priority, Assigned To and Updated, and while the fetch is in flight it must show a loading skeleton of 5 rows by 6 columns.
+- **SPEC-9.1.14**: A failed list fetch must be logged at error level as "ticket list load failed: <cause>" and must stay distinguishable from an empty list.
+- **SPEC-9.1.15**: When the list fetch fails while the server is flagged unreachable, the page must render the "content unavailable" state titled "Tickets" instead of a table.
+- **SPEC-9.1.16**: When the list fetch fails while the server is reachable, the page must show the error banner "Could not load tickets. Refresh the page to retry." above the table.
+
+### 9.2 Ticket list: search, filters and saved views
+
+- **SPEC-9.2.1**: The search box (placeholder "Search tickets" with a trailing ellipsis) must update the search signal on every input event and reset the page to 1, so a search from page N never requests a page past the end of the new result set.
+- **SPEC-9.2.2**: The Status, Queue and Priority filter options must be loaded from `GET /tickets/statuses`, `GET /tickets/queues` and `GET /tickets/priorities` (all pages, staff bearer), each preceded by an empty-valued placeholder option "All Statuses", "All Queues" and "All Priorities", with the option value equal to the row id and the priority label humanized.
+- **SPEC-9.2.3**: A filter lookup that fails must be logged at error level with a label naming the lookup and must leave only the placeholder option; the page must not fabricate options.
+- **SPEC-9.2.4**: Changing the Status, Queue or Priority select must set that filter signal to the chosen id and reset the page to 1.
+- **SPEC-9.2.5**: The filter card, left to right, must hold the Views control, the search box, then the Status, Queue and Priority selects in that order.
+- **SPEC-9.2.6**: The list must show one filter pill per non-empty Status, Queue and Priority filter in the order Status, Queue, Priority, labelled with the lookup row name (priority humanized) or, when the id is not in the lookup, the raw id.
+- **SPEC-9.2.7**: Removing a pill must clear only that filter and reset the page to 1; the pill bar's clear-all must clear the Status, Queue and Priority filters (not the search text) and reset the page to 1.
+- **SPEC-9.2.8**: The list must treat filters as active when the trimmed search text is non-empty or any of the Status, Queue or Priority filters is set, and that decides which empty state is shown.
+- **SPEC-9.2.9**: The Views popover trigger must show the name of the selected saved view, or "No view" when none is selected, and the popover must list the caller's saved views sorted case-insensitively by name, or "No saved views yet." when there are none.
+- **SPEC-9.2.10**: Saved views must be read through the shared saved-views cache (`GET /tickets/saved-views`), and every successful save, rename or delete must restart that cache.
+- **SPEC-9.2.11**: Choosing "No view" must clear the selected-view id only and must leave the current filters and sort untouched.
+- **SPEC-9.2.12**: Choosing a saved view must set the search, Status, Priority and Queue signals from its stored filter, set the sort from its stored sort (unsorted when absent or unrecognized), reset the page to 1, mark the view selected and close the popover; a stored filter that does not deserialize must apply as all-empty filters.
+- **SPEC-9.2.13**: "+ Save current view" must open the "Save current view" modal with an empty "View name" field limited to 100 characters, clearing any earlier error.
+- **SPEC-9.2.14**: Saving a view must trim the name and, without sending a request, show "Enter a view name." for an empty name and "View names are capped at 100 characters." for a name over 100 characters.
+- **SPEC-9.2.15**: A valid save must `POST` the saved-views endpoint with `{name, filter: {search (trimmed), status_id, priority_id, queue_id}, sort: {key, direction} or null}`, ignore further submits while a save is in flight, and on success select the created view and close the modal.
+- **SPEC-9.2.16**: A save that fails with 409 must show the server's message inside the modal; any other save failure must show the error's user message inside the modal; the modal must stay open in both cases.
+- **SPEC-9.2.17**: "Rename" on a saved view must open the "Rename view" modal pre-filled with the current name and apply the same trim, empty-name and 100-character checks and messages as saving.
+- **SPEC-9.2.18**: A valid rename must `PUT` the saved-views endpoint at `/<id>` with only `{name}` (leaving filter and sort unchanged on the server), show a 409 message or the error's user message inside the modal on failure, and close the modal on success.
+- **SPEC-9.2.19**: "Delete" on a saved view must open a destructive confirmation titled "Delete view" with the message `Delete the saved view "<name>"? This cannot be undone.` and the confirm label "Delete".
+- **SPEC-9.2.20**: Confirming a view delete must send `DELETE` to the saved-views endpoint at `/<id>`, treat a 404 as success, and on success restart the cache, clear the selected-view id if it was the deleted view, and close the dialog; any other failure must show the error's user message inside the dialog and keep it open.
+
+### 9.3 Ticket list: rows, empty states and bulk delete
+
+- **SPEC-9.3.1**: Each row must show the ticket number as a link to the ticket detail route with the title below it (truncated), the company name, a status badge, a priority badge, the assignee and the last-updated time; clicking the row outside the checkbox cell must navigate to the ticket detail route.
+- **SPEC-9.3.2**: The status label must be the server status name run through the humanizer (empty or "open" to "Open", "in_progress" or "in progress" to "In Progress", "pending", "resolved" and "closed" to their title case, any other value with only its first letter upper-cased), and the badge color must come from the shared ticket status badge mapping.
+- **SPEC-9.3.3**: The priority label must be the server priority name humanized (empty to "Medium", "critical", "high", "medium" and "low" to title case, any other value with its first letter upper-cased), with badge color Red for Critical and High, Yellow for Medium, Green for Low and Gray otherwise.
+- **SPEC-9.3.4**: The assignee cell must show the assignee name, or the italic text "Unassigned" when there is no name; when an assignee id is present but no name was sent, the cell must still read "Unassigned", must carry a tooltip naming the unresolved user id, and the unresolved reference must be logged.
+- **SPEC-9.3.5**: The Updated cell must show a relative time ("just now" under 60 seconds, "N min ago" under one hour, "1 hour ago" or "N hours ago" under one day, then "1 day ago" or "N days ago"), inside a `time` element whose `datetime` is the RFC 3339 value and whose title is the absolute time formatted `%b %d, %Y %H:%M` in the user's timezone and format preference.
+- **SPEC-9.3.6**: When the page has loaded with no rows and no filter is active, the table must show the empty state "No tickets yet" with the description "Create your first ticket to start tracking support work." and, for callers with `tickets:write`, a "New Ticket" button.
+- **SPEC-9.3.7**: When the page has loaded with no rows and a filter is active, the table must show "No tickets match your filters" with the description "Adjust the filters above, or clear them to see every ticket again." and a "Clear filters" button that clears the search text, Status, Priority and Queue filters and resets the page to 1.
+- **SPEC-9.3.8**: The select-all header must toggle every row id on the current page into or out of the page-scoped selection, and each row's checkbox cell must toggle only its own id without navigating.
+- **SPEC-9.3.9**: When at least one row is selected, the bulk bar (labelled "ticket") must offer a danger "Delete selected" button that is disabled while a bulk delete is running or the server is unreachable, with the title "Can't delete while the server is unreachable" in the latter case.
+- **SPEC-9.3.10**: Clicking "Delete selected" must snapshot the selected ids and open the confirmation only when at least one id is selected; the dialog is titled "Delete selected tickets", reads "Delete N selected ticket(s)? Notes, attachments, and time entries on these tickets are also removed. This cannot be undone.", and confirms with "Delete N ticket(s)".
+- **SPEC-9.3.11**: Confirming a bulk delete must ignore the click while a delete is running, send one `DELETE /tickets/<id>` per snapshotted id concurrently, and then clear the selection, restart the list fetch and close the dialog.
+- **SPEC-9.3.12**: A bulk delete in which every request succeeded must raise a success toast "Deleted N ticket(s)."; a bulk delete with failures must raise an error toast "Deleted X of N; F failed.".
+- **SPEC-9.3.13**: Cancelling the bulk-delete dialog must close it unless a delete is running.
+
+### 9.4 New ticket page: prefill, lookups and form layout
+
+- **SPEC-9.4.1**: The New Ticket page must set the page title "New Ticket", show the subtitle "Create a new support ticket" and the breadcrumbs "Tickets" (link to the list) then "New Ticket".
+- **SPEC-9.4.2**: The form must pre-select the company from the `company_id` and `company_name` query parameters only when `company_id` parses as a UUID; when the current query lacks a valid `company_id`, the page must fall back to the query captured at application boot; otherwise the company must start empty.
+- **SPEC-9.4.3**: When the query carries a `from_kb_article` that parses as a UUID, the form must be seeded with the title `from_kb_title`, and, when that title is non-empty, the description `Article: <title>` followed by a newline and `Link: <from_kb_url>` when the URL is non-empty; the article id must be sent as `source_kb_article_id`.
+- **SPEC-9.4.4**: The form must load the Type options from `GET /tickets/types`, the Category options from `GET /tickets/categories` and the Priority options from `GET /tickets/priorities`; a Type or Category lookup failure must be logged at warn level ("ticket-type lookup failed" or "ticket-category lookup failed" with the cause) and leave only the "(none)" option, and a priority lookup failure must be logged at error level and leave no options.
+- **SPEC-9.4.5**: The Type and Category selects must start with the empty option "(none)", the Assigned To select with the empty option "Unassigned" followed by the roster users labelled by full name or, when blank, by email, and the Priority select must show a single "Loading..." option until the lookup resolves.
+- **SPEC-9.4.6**: Once priorities load and no priority is selected, the form must select the row flagged `is_default`, or the first row when none is flagged, and must never overwrite a selection the user already made.
+- **SPEC-9.4.7**: The Company picker must be required and allow inline company creation; selecting a company must clear the company error and clear any chosen contact, and clearing the company must also clear the chosen contact.
+- **SPEC-9.4.8**: The Contact picker must be optional, scoped to the selected company, and allow inline contact creation; the Asset picker must be optional.
+- **SPEC-9.4.9**: The Title input must limit input to 500 characters; the Description editor must be a required Markdown editor with 8 rows and the shared view-mode preference key `ticket_desc_view_mode`, with `@handle` completion against the mention directory.
+- **SPEC-9.4.10**: The Due Date field must carry the help text "Stamps the ticket's scheduled-end so SLA + dispatch view it on creation."
+- **SPEC-9.4.11**: The "Team (UUID, optional)" text input must render only when the tenant is not a personal tenant.
+- **SPEC-9.4.12**: The Cancel button must navigate to the ticket list, and the "Create Ticket" button must be disabled while the server is unreachable with the title "Can't create a ticket while the server is unreachable".
+
+### 9.5 New ticket page: validation and submit
+
+- **SPEC-9.5.1**: Submitting must first validate Title (trimmed, required), Description (trimmed, required) and Company (required and a UUID) through the shared form guard, show every failure inline at once in the field's own slot, focus the first invalid field, and send no request.
+- **SPEC-9.5.2**: The Company failure message must be shown in the Company picker's own error slot and not in the form-level banner.
+- **SPEC-9.5.3**: An empty Due Date must send `scheduled_end` as null; a `YYYY-MM-DD` value must be sent as that date at 23:59:00 UTC; any other value must be logged at warn level, shown as "Enter the due date as YYYY-MM-DD." on the Due Date field, and block the submit.
+- **SPEC-9.5.4**: The create body must carry the trimmed title, the trimmed description (never null), `company_id`, and `contact_id`, `priority_id`, `asset_id`, `type_id`, `category_id`, `assigned_to_id`, `scheduled_end`, `source_kb_article_id` and `team_id` each as null when not chosen.
+- **SPEC-9.5.5**: A non-empty `team_id` or `source_kb_article_id` that does not parse as a UUID must be logged at warn level naming the value and the parse error.
+- **SPEC-9.5.6**: A valid submit must `POST /tickets`, show the loading state on the button, and on success raise the toast "Ticket created." and navigate to the new ticket's detail route.
+- **SPEC-9.5.7**: A failed create must keep the form mounted with the user's input, route a server field message for `title`, `description` or `company_id` to that field's inline slot, and otherwise show the banner "Could not create ticket: <user message>".
+- **SPEC-9.5.8**: Editing the Title or Description, or choosing a company, must clear that field's inline error.
+
+### 9.6 Ticket detail: access, data load and failure states
+
+- **SPEC-9.6.1**: The ticket detail route must render the portal "access required" state (title "Ticket") for a contact session lacking `tickets:read` before any detail hook runs; staff sessions must always get the detail body.
+- **SPEC-9.6.2**: The detail page must load the ticket with `GET /tickets/<id>` using the dual-plane helper, subscribe to server reachability so it refetches on reconnect, and log a failure at error level as "ticket detail load failed for <id>: <cause>".
+- **SPEC-9.6.3**: A failed ticket load while the server is flagged unreachable must render the "content unavailable" state titled "Ticket".
+- **SPEC-9.6.4**: A failed ticket load while the server is reachable must render the header "Ticket not found", the message "Ticket not found. It may have been deleted, or the link may be incorrect." and a "Back to tickets" link to the list, and set the tab title "Ticket not found".
+- **SPEC-9.6.5**: The tab title and header must be "<ticket number>: <title>" when both are non-blank, the title alone when the number is blank, "Ticket <id>" when the title is blank, and "Loading..." while the ticket is in flight; the breadcrumbs must be "Tickets" (link to the list) then that header text.
+- **SPEC-9.6.6**: The detail page must load the SLA legs from `GET /tickets/<id>/sla` (dual-plane), refetching whenever the ticket resource changes, and log a failure at warn level as "ticket sla load failed for <id>: <cause>".
+- **SPEC-9.6.7**: The detail page must load all notes from `GET /tickets/<id>/notes` (dual-plane, all pages) and log a failure at error level as "ticket note thread load failed for <id>: <cause>".
+- **SPEC-9.6.8**: The detail page must load all time entries from `GET /time-entries?ticket_id=<id>` with the staff bearer, must skip the request and use an empty list on a contact session, and must log a failure at error level as "ticket time entry load failed for <id>: <cause>".
+- **SPEC-9.6.9**: The detail page must load all change-history entries from `GET /audit-log/entity/tickets/<id>` with the staff bearer and log a failure at error level as "ticket journal load failed for <id>: <cause>".
+- **SPEC-9.6.10**: The detail page must load the editor lookups with the dual-plane helper from `/tickets/statuses`, `/tickets/priorities`, `/tickets/types`, `/tickets/categories`, `/teams` and `/sla/policies`, the company sites from `/contacts/companies/<company_id>/sites` and the company contracts from `/contracts?company_id=<company_id>`; the site and contract requests must not be sent until the ticket's company id is known.
+- **SPEC-9.6.11**: A lookup that fails must be logged at error level with a label naming it and must yield an empty option list; teams that are not active must be excluded from the Team editor.
+- **SPEC-9.6.12**: The detail page must hide the Approvals section on a contact session and show it, given the ticket id, on a staff session.
+- **SPEC-9.6.13**: The detail page must arm the browser unload guard while the description editor is open and has unsaved changes.
+- **SPEC-9.6.14**: The detail page must read the ticket, its parent or children, the SLA legs, the notes, the time entries and the history independently, so the failure of one secondary source must not blank the page.
+
+### 9.7 Ticket detail: description editing
+
+- **SPEC-9.7.1**: The Description card must show the ticket description as sanitized Markdown, the italic text "No description provided." when it is empty or whitespace, and "Loading..." until the ticket has loaded.
+- **SPEC-9.7.2**: Below the description, the card must show "Edited <time> by <who>" naming the most recent history entry whose action is `update` and whose changed fields include `description`, with the actor resolved from the server-sent name, then the roster, and a system or unresolved actor marked with the shared placeholder styling and tooltip.
+- **SPEC-9.7.3**: The Edit button must render only when the ticket has loaded and the editor is closed, and for a contact session only when the contact holds `tickets:edit_own` and the ticket's `contact_id` equals the session's own contact id; a missing id on either side must hide the button.
+- **SPEC-9.7.4**: The Edit button must be disabled while the server is unreachable with the title "Can't edit while the server is unreachable".
+- **SPEC-9.7.5**: Opening the editor must copy the saved title and description into the editor fields, record them as the unchanged baseline, clear the error and replace the header title with an editable Title input.
+- **SPEC-9.7.6**: The editor must be a required Markdown editor of 24 rows with the shared view-mode key `ticket_desc_view_mode`, disabled while the server is unreachable.
+- **SPEC-9.7.7**: Saving must validate the trimmed Title and Description as required through the shared form guard, show both failures inline and send no request.
+- **SPEC-9.7.8**: Saving as a staff session must `PUT /tickets/<id>` with `{title, description}` (trimmed); saving as a contact session must `PATCH /tickets/<id>` with the same body; a contact save in a build without browser support must fail with "Editing tickets is only available in the browser.".
+- **SPEC-9.7.9**: A successful save must close the editor and refetch the ticket and its history; a failed save must keep the editor open and show the error message in red above the editor; a second save click while one is in flight must be ignored.
+- **SPEC-9.7.10**: The "Save Changes" button must be disabled while the server is unreachable with the title "Can't save while the server is unreachable".
+- **SPEC-9.7.11**: The editor must count as unsaved when it is open and the title or description differs from the baseline, and retyping a value back to the baseline must stop it counting as unsaved.
+- **SPEC-9.7.12**: Cancel with unsaved changes must open the destructive dialog "Discard your changes?" ("The edits to this ticket have not been saved. Discarding them cannot be undone.", confirm "Discard", cancel "Keep editing"); Cancel with no unsaved changes must close the editor immediately; confirming Discard must clear the errors and close the editor.
+- **SPEC-9.7.13**: A task-list checkbox in the rendered description must be interactive only while the server is reachable; toggling it must flip the marker in the source and `PUT /tickets/<id>` with only `{description}`, doing nothing when the marker cannot be located.
+- **SPEC-9.7.14**: A successful checkbox toggle must refetch the ticket and history; a failed toggle must raise the error toast "Could not update checklist: <cause>" and refetch the ticket so the display reverts.
+
+### 9.8 Ticket detail: header actions
+
+- **SPEC-9.8.1**: The "Reopen" button must render only when the caller holds `tickets:reopen` and the ticket's status name contains "closed" or "resolved" (case-insensitive); it must not render while the ticket is still loading.
+- **SPEC-9.8.2**: Clicking "Reopen" must ignore the click while a reopen is in flight, `POST /tickets/<id>/reopen` with an empty JSON object using the dual-plane helper, and on success refetch the ticket and history and raise the toast "Ticket reopened.".
+- **SPEC-9.8.3**: A failed reopen must show the banner "Could not reopen ticket: <user message>" under the header; the button must be disabled while the server is unreachable with the title "Can't reopen while the server is unreachable".
+- **SPEC-9.8.4**: The "Attach file" button and its hidden file input must render only when the caller holds `tickets:attach_file`, the button must be disabled while the server is unreachable with the title "Can't attach a file while the server is unreachable", and activating it must clear the previous attach error.
+- **SPEC-9.8.5**: A picked file larger than 5 MiB (5242880 bytes) must set the banner "File too large" and send no request; a file whose bytes cannot be read must set "Could not read the selected file.".
+- **SPEC-9.8.6**: A valid attachment must be sent as `POST /tickets/<id>/attachments` with `{filename, content_type (application/octet-stream when unknown), data_base64}`, ignoring a new pick while one is in flight; success must refetch the notes and raise the toast "File attached."; failure must show "Could not attach file: <user message>".
+- **SPEC-9.8.7**: The "Log Time" link (to `/time/new?ticket_id=<id>`) and the "Delete" button must render only for staff sessions.
+- **SPEC-9.8.8**: The Delete button must be disabled while a delete is running or the server is unreachable (title "Can't delete while the server is unreachable" only for the unreachable case), and otherwise disabled with the title "Only a manager or above can delete a ticket" when the caller is not a super admin, admin or manager.
+- **SPEC-9.8.9**: The delete confirmation must be titled "Delete ticket" with the message `Delete <label>? Notes, attachments, and time entries on this ticket are also removed. This cannot be undone.`, where the label is "<number> - <title>", the title when the number is blank, or "this ticket" before the ticket loads, and the confirm label "Delete ticket".
+- **SPEC-9.8.10**: Confirming the delete must ignore the click while a delete runs, send `DELETE /tickets/<id>`, and on success raise the toast "Ticket deleted.", close the dialog and navigate to the ticket list.
+- **SPEC-9.8.11**: A failed delete must append "Could not delete ticket: <error>" to the dialog message and keep the dialog open for retry; cancelling must close the dialog and clear the error unless a delete is running.
+
+### 9.9 Ticket journal: assembly and display
+
+- **SPEC-9.9.1**: The journal must merge the notes, the change-history entries and the time entries into one list ordered newest first by timestamp, with entries of equal timestamp keeping the order notes, history, time entries.
+- **SPEC-9.9.2**: The journal must render at most the 50 newest entries and, when more exist, must show "Showing the 50 most recent of <total> entries.".
+- **SPEC-9.9.3**: A note's headline must be "added an internal note" for `internal`, "added a resolution note (internal)" for `resolution`, "added a public note and emailed the client" for `public` with `is_email_sent`, "added a public note (not emailed)" for `public` without it, and "added a note" for any other type.
+- **SPEC-9.9.4**: A note's body must be its content only when the content is not blank, and a note must be marked edited only when its `updated_at` is strictly later than its `created_at`.
+- **SPEC-9.9.5**: A history entry about a note (`entity_type` of `ticket_notes`) must read "deleted a note" for action `delete` and "edited a note" otherwise; a ticket entry must read "created the ticket" for `create` and "deleted the ticket" for `delete`.
+- **SPEC-9.9.6**: A ticket `update` history entry must read "changed the status" for the sole changed field `status_id`, "changed the assignee" for the sole field `assigned_to_id`, "updated <field title>" for another sole field, "updated <field list>" for several, and "<action label lowercased> the ticket" when no fields are listed.
+- **SPEC-9.9.7**: A history entry's before/after lines must be built from its field changes, omitting a change that is a bare reference pair.
+- **SPEC-9.9.8**: A time entry's headline must be "logged <minutes> min on <date>" with " (billable)" appended for a billable entry, its body must be its notes when not blank, and its timestamp must be its creation instant, or midnight UTC of its work date when the creation instant is absent.
+- **SPEC-9.9.9**: A journal entry's actor must be resolved in this order: the server-sent name, the viewing user's own composed name when the entry's user id is the viewer, then the roster; an entry with no user id and no server name must read "System", and an unresolved actor must render the shared placeholder with a tooltip naming the id.
+- **SPEC-9.9.10**: Each journal entry must be keyed by its note id when it is an editable note and otherwise by its timestamp and position, so per-entry edit state follows the entry.
+- **SPEC-9.9.11**: Each journal entry must receive `can_edit` equal to the write-permitted flag (false while the server is unreachable), and when an entry's note is saved the notes must be refetched.
+- **SPEC-9.9.12**: When the journal is empty and every source loaded, it must show "Nothing has happened on this ticket yet. Notes, state and assignment changes and logged time land here.".
+- **SPEC-9.9.13**: When any of the notes, change history or time entries failed to load, the journal must show in red "This ticket's <labels> could not be loaded, so the journal is missing entries. Reload the page to try again." with the failed labels from "notes", "change history", "time entries" joined by ", ", and must not show the empty message.
+- **SPEC-9.9.14**: The journal must always end with the note stating it is built from the ticket's notes, change history and time entries and that attachments and approvals are not in the stream.
+- **SPEC-9.9.15**: A note must be editable by the viewer only when the server's `can_edit` says so; when `can_edit` is absent the shared rule applies with the viewer permitted when an admin or super admin, or the note's author; an unrecognized note type must not be editable.
+- **SPEC-9.9.16**: A note's extra lines must list, in order, "Time" as "<n> min", "Work summary" when not blank, "Parts used" joined with ", " when non-empty, and "Follow-up".
+- **SPEC-9.9.17**: A follow-up line must read "Needed" or "Not needed" from the boolean `needed`, followed by " - <description>" when a description string exists and " (target <date>)" when a target date string exists.
+- **SPEC-9.9.18**: A follow-up whose `needed` is absent or not a boolean must be logged at warn level with the note id and the raw value and must render the line "Follow-up" with the text "Invalid follow-up data".
+
+### 9.10 Ticket journal: note composer
+
+- **SPEC-9.10.1**: The Journal card must open with a note composer: a required Markdown editor labelled "Add a note" (4 rows, placeholder "Enter your note...", view-mode key `ticket_note_view_mode`) with `@handle` completion.
+- **SPEC-9.10.2**: The Note Type select must offer exactly "Internal Note", "Public Note (visible to customer)" and "Resolution Note (internal)" (values `internal`, `public`, `resolution`), never the `time_entry` type, and must default to `internal` for a staff session and `public` for any other session.
+- **SPEC-9.10.3**: The "Email this note to the client" checkbox, with the help text "Sent to the ticket's contact. Nothing is sent when the ticket has no contact with an email address.", must render only while the selected type is `public`, must default to off, and must be reset to off when the type changes away from `public`.
+- **SPEC-9.10.4**: While the type is `public` and the email checkbox is on, the composer must show an email preview for event type `ticket.note` (context: ticket number, header title and the note text) with the empty-preview note, and the submit button must show a mail icon instead of a plus icon.
+- **SPEC-9.10.5**: The composer must offer the optional fields "Time (minutes)" (whole number, minimum 1, maximum 2147483647), "Work summary" (200 characters), "Parts used" (comma-separated) and "Follow-up needed", which reveals "Follow-up description" and "Follow-up target date".
+- **SPEC-9.10.6**: Submitting must validate the trimmed Content as required and the minutes as an integer in 1 to 2147483647 through the shared form guard, show both failures inline and send nothing.
+- **SPEC-9.10.7**: A selected note type that does not parse as a shared note type must be logged at error level, show "Pick a note type." on the type field and send nothing; minutes that pass the guard but fail to parse as an `i32` must show "<value> is not a valid minute count" and send nothing.
+- **SPEC-9.10.8**: The note body must send `note_type`, `content` (as typed), `send_email` (true only for a public note with the checkbox on) and, only when filled, `time_minutes`, `work_summary` (trimmed), `parts_used` (split on commas, each trimmed, empties dropped, omitted when none) and `follow_up` (`{needed: true, description or null, target_date or null}`, present only while "Follow-up needed" is checked).
+- **SPEC-9.10.9**: A valid submit must `POST /tickets/<id>/notes`; success must clear the content, email flag and every structured field and refetch the notes; failure must show the banner "Could not add note: <error>" and keep everything typed.
+- **SPEC-9.10.10**: The "Add note" button must show a loading state while submitting and be disabled while the server is unreachable with the title "Can't add a note while the server is unreachable".
+
+### 9.11 Ticket detail: inline image upload
+
+- **SPEC-9.11.1**: A picked or pasted image in the description editor or the note composer must first be checked for allowed type and size by the shared image check; a rejection must set the field's upload error to the check's message and send no request.
+- **SPEC-9.11.2**: An image picked while another image upload on the same editor is in flight must be ignored.
+- **SPEC-9.11.3**: An accepted image must be sent as a file `POST /tickets/<id>/attachments/inline` (stored against the ticket), with the text "Uploading the image..." shown while it runs.
+- **SPEC-9.11.4**: On success the editor must insert a Markdown image at the caret with alt text derived from the file name and the URL the server returned, or `/api/v1/public/tickets/attachments/<attachment id>` when the server returned none or a blank one, and must clear the field's validation error.
+- **SPEC-9.11.5**: On failure the editor must show "Could not upload that image: <user message>" and leave the editor text unchanged; the upload-in-flight flag must be cleared in both outcomes.
+- **SPEC-9.11.6**: The upload help text must read "PNG, JPEG, WebP or GIF, up to <max size>. It is stored with this ticket and anyone holding the link can view it.".
+
+### 9.12 Ticket detail: Details card inline editors
+
+- **SPEC-9.12.1**: The Status, Priority, Assigned To, Type, Category, Site, Team, Contract and SLA Policy selects must be disabled unless the server is reachable and the session is a staff session.
+- **SPEC-9.12.2**: Changing a select or picker must `PUT /tickets/<id>` with only that editor's field, and on success refetch the ticket and its history.
+- **SPEC-9.12.3**: A failed inline save must show, in red under the Assigned To row, "Could not update <field>: <error>" with the field named status, priority, assignee, asset, type, category, contact, site, team, contract or "SLA policy"; the shared error slot must be cleared at the start of every inline save.
+- **SPEC-9.12.4**: A select value that is non-empty and not a UUID must be ignored without a request.
+- **SPEC-9.12.5**: The Status and Priority selects must list the tenant lookups with the ticket's current id selected, and show a single "Loading..." option while the lookup is empty.
+- **SPEC-9.12.6**: The Assigned To select must start with the empty option "Unassigned", list the roster labelled by full name or the user id when the name is blank, and choosing the empty option must send `assigned_to_id: null` to clear the assignee.
+- **SPEC-9.12.7**: The Type and Category selects must start with the empty option "None", and the current value must be the lookup row whose name equals the ticket's type or category name, with no selection when none matches or the name is blank; choosing "None" must send null.
+- **SPEC-9.12.8**: The Asset and Contact rows must use pickers (the Contact picker scoped to the ticket's company); selecting must send the chosen id, clearing must send null, and the pickers must not be disabled by the unreachable flag or the staff-only rule.
+- **SPEC-9.12.9**: The Site, Team, Contract and SLA Policy selects must start with the empty option "Not set", list respectively the company's sites, the active teams, the company's contracts and the SLA policies, and show only the value picked in the current page session, because the ticket response carries no saved value for them.
+- **SPEC-9.12.10**: After a successful Site, Team, Contract or SLA Policy save, the select must show the chosen value, or return to "Not set" when the empty option was chosen.
+- **SPEC-9.12.11**: The Details card must show a read-only "Procedure" row linking to the procedure article (the article title, or "View procedure" when the title is blank) only when the ticket has a procedure article id.
+- **SPEC-9.12.12**: The Details card must show a "Company" row (a link to the company when the id is known) when the company name is non-empty, a read-only "Contact" row when the contact name is non-empty, a "Queue" row when the queue name is non-empty, and a "Created" row with the timestamp followed by "by <name>" only when the creator name is non-empty.
+- **SPEC-9.12.13**: The Details card must show "Loading..." until the ticket has loaded.
+- **SPEC-9.12.14**: The card must show "Time Logged" as the sum of the time entries' minutes divided by 60 to one decimal place followed by " hours", then "No time logged yet." when there are none and otherwise "Every entry is in the journal.".
+
+### 9.13 Ticket detail: SLA display and relative times
+
+- **SPEC-9.13.1**: The "SLA Status" row must show a badge from the SLA route's status when that route loaded and otherwise from the ticket's own status, labelled "On Track" (green), "At Risk" (yellow) or "Breached" (red), and must be omitted when the status is not applicable.
+- **SPEC-9.13.2**: When the SLA route loaded, the card must show "First response" and "Resolution" rows only for a leg that has a target time, and a leg that has an actual time but no target must show nothing.
+- **SPEC-9.13.3**: An unreached leg must read "Due <timestamp> (<hint>)", and a reached leg must read "<actual timestamp> (met, due <target>)" when the actual is at or before the target and "(missed, due <target>)" otherwise.
+- **SPEC-9.13.4**: When the SLA route did not load, the card must show one "SLA Due" row from the ticket's `sla_due_date` (absolute timestamp `%b %-d, %Y %-I:%M %p` plus the hint) when that date exists.
+- **SPEC-9.13.5**: The remaining-time hint must be "<n> min left" under one hour (at least 1), "<n> hr left" under one day, "<n> days left" beyond; and for a due time at or before now "<n> min overdue" under one hour (at least 1), "<n> hr overdue" under one day, "<n> days overdue" beyond.
+- **SPEC-9.13.6**: Every SLA timestamp and the "Created" timestamp must be formatted in the user's timezone and format preference, and each timestamp must be wrapped in a `time` element carrying the RFC 3339 value.
+
+### 9.14 Ticket detail: request family and approval requests
+
+- **SPEC-9.14.1**: A ticket with a `parent_ticket_id` must show a card reading "Part of the request <parent ticket number>, one ticket per person. The work, the time and the SLA are on this ticket." with the number linking to the parent ticket, loaded with `GET /tickets/<parent id>`.
+- **SPEC-9.14.2**: A ticket without a parent must load its children with `GET /tickets?parent_ticket_id=<id>` (all pages, dual-plane) and, when at least one exists, show the card "People on this request" with the note "One ticket per person. Track the work, the time and the SLA on each of them, not here." listing each child's number as a link, title and status name.
+- **SPEC-9.14.3**: A ticket with no parent and no children must show no family card, and a failed parent or children load must be logged at error level naming the ticket id and show no family card.
+- **SPEC-9.14.4**: The sidebar "Actions" card with a "Request approval" button must render only when the caller holds `tickets:request_approval`; the button must be disabled while the server is unreachable with the title "Can't request an approval while the server is unreachable", and activating it must expand the inline form with the note and the errors cleared.
+- **SPEC-9.14.5**: The approval request form must require a note of 1 to 2000 characters after trimming, showing the failure inline and sending nothing, with a Cancel button that collapses the form.
+- **SPEC-9.14.6**: A valid request must `POST /tickets/<id>/approvals/request` with `{note}` using the dual-plane helper, ignore a click while one is in flight, and on success raise the toast "Approval requested. Your MSP will follow up.", clear the note and collapse the form.
+- **SPEC-9.14.7**: A failed approval request must show the banner "Could not request approval: <user message>" inside the form and keep the note.
+
+### 9.15 Ticket detail: capability helpers and wire bodies
+
+- **SPEC-9.15.1**: The "may a contact edit this ticket" decision must be false when the contact lacks `tickets:edit_own`, and otherwise true only when both the ticket's reporter contact id and the session's own contact id are present and equal.
+- **SPEC-9.15.2**: The attachment size cap must be 5 MiB, the ticket list page size 25 and the journal display limit 50.
+- **SPEC-9.15.3**: The create-ticket request body must carry exactly `title`, `description`, `company_id`, `contact_id`, `priority_id`, `asset_id`, `type_id`, `category_id`, `assigned_to_id`, `scheduled_end`, `source_kb_article_id` and `team_id`, with unset optional fields serialized as null.
+- **SPEC-9.15.4**: The update-ticket request body must omit every field the firing editor did not set, and for the clearable fields (`assigned_to_id`, `asset_id`, `type_id`, `category_id`, `contact_id`, `site_id`, `team_id`, `contract_id`, `sla_id`) must serialize "clear" as an explicit null and "unchanged" as an absent key.
+- **SPEC-9.15.5**: The create-note body must carry `note_type`, `content` and `send_email`, plus `time_minutes`, `work_summary`, `parts_used` and `follow_up` only when set; the update-note body must carry only `content`.
+- **SPEC-9.15.6**: The client's request-body types must stay field-for-field in step with the shared create and update request types, so a field added, removed, renamed or retyped there fails the build here.
+
+### 9.16 Ticket detail: Details row and phrase layout
+- **SPEC-9.16.1**: The Details row component (`DetailItem`) must render a label (`dt`, small muted text that does not shrink) and a value (`dd`) side by side in one flex row with a 0.75rem gap, top-aligned (`items-start`), so a multi-line value stays aligned to the label's first line.
+- **SPEC-9.16.2**: The Details value cell must grow to fill the rest of the row (`flex-1 min-w-0`), right-aligned, so a wide child such as the asset chip fills the cell and truncates inside it instead of overflowing onto the next row.
+- **SPEC-9.16.3**: The Details value cell must not carry `whitespace-nowrap`; a value made of several phrases must wrap between phrases, never clip at the card edge.
+- **SPEC-9.16.4**: The phrase list component (`Phrases`) must render its parts as flex items in a wrapping, right-justified span with a one-unit horizontal gap, so a narrow card breaks the line between parts and a part wraps inside itself only when it alone is wider than the cell.
+- **SPEC-9.16.5**: A phrase part that carries a timestamp must render as a `time` element whose `datetime` attribute is that RFC 3339 timestamp; a part with no timestamp must render as a plain `span`.
+- **SPEC-9.16.6**: The Created row and every SLA row on the Details card must render their text through `Phrases`, one part per timestamp, so a timestamp is never split across lines.
+
+### 9.17 Ticket detail: journal entry header
+- **SPEC-9.17.1**: Each journal entry (`TimelineItem`) must render as one list item whose leading avatar shows the initials of the actor name.
+- **SPEC-9.17.2**: An entry that is not the last one shown must draw a vertical connector line below its avatar; the last shown entry must not.
+- **SPEC-9.17.3**: The actor name must render in the entry headline with its hover title set to the supplied tooltip text, which is the empty string when the actor is resolved or is the system placeholder.
+- **SPEC-9.17.4**: When the entry is flagged as a system or unresolved actor, the actor name must render in the muted, italic "not set" style; otherwise in the medium-weight content style.
+- **SPEC-9.17.5**: The action text must follow the actor name after one space on the same line.
+- **SPEC-9.17.6**: A note that has been edited since it was written must show the marker "(edited)" in small italic text after the action, so a reader can tell the text is not what was first written.
+- **SPEC-9.17.7**: The entry must show its time right-aligned and unwrapped in a `time` element whose `datetime` attribute is the ISO 8601 form supplied by the caller.
+- **SPEC-9.17.8**: The "Edit" button must render only for an entry that carries an editable note id and only while that entry is not already in edit mode; history lines, time entries and notes the viewer may not edit must render no edit control.
+- **SPEC-9.17.9**: When the write gate is closed (the server is unreachable), the "Edit" button must be disabled with the title "Can't edit while the server is unreachable"; when the gate is open it must carry no title.
+- **SPEC-9.17.10**: Clicking "Edit" must load the draft with the note's current content (the empty string when it has none), clear any earlier edit error, and switch that entry into edit mode.
+
+### 9.18 Ticket detail: journal entry body and metadata
+- **SPEC-9.18.1**: Outside edit mode, an entry with content must render the content through the shared Markdown renderer, inside a rounded surface box, passing the staff directory so an `@handle` resolves to a mention; the content must not be shown as raw pre-wrapped text.
+- **SPEC-9.18.2**: An entry with no content must render no body box.
+- **SPEC-9.18.3**: Outside edit mode, an entry with a non-empty structured list must render a definition list under the body with one row per item, in the supplied order, each row showing "<label>:" in the medium-weight content style followed by the value.
+- **SPEC-9.18.4**: The structured definition list must not render while the entry is in edit mode, and must not render at all for an entry whose list is empty.
+- **SPEC-9.18.5**: Every entry must pass its change lines to the collapsible change-details block, which for a note or time entry receives an empty list.
+- **SPEC-9.18.6**: Edit state (editing flag, draft, error, saving flag, image upload state) must be owned by each entry component, so two notes open for editing at once never share a draft.
+
+### 9.19 Ticket detail: inline note editing
+- **SPEC-9.19.1**: Edit mode must replace the body with an inline Markdown editor in the journal (not a modal), labelled "Edit note", 4 rows, with write/preview views, remembered through the storage key `ticket_note_view_mode`, and required.
+- **SPEC-9.19.2**: The editor field name must be `edit-note-<note id>`, unique per entry, so the toolbar of one inline editor never addresses another entry's field.
+- **SPEC-9.19.3**: The editor must be given the staff directory prop so `@` completes against the same list the renderer resolves with; the directory is fetched once by the detail page and handed down, not fetched per entry.
+- **SPEC-9.19.4**: Typing in the editor must clear the edit error and update the draft.
+- **SPEC-9.19.5**: A picked or pasted image in the editor must be uploaded for the ticket through the shared inline-image upload routine, targeting this entry's field and draft, and the image path must land in the draft the same way a linked image does.
+- **SPEC-9.19.6**: While an image upload is in flight the entry must show the status text "Uploading the image" followed by an ellipsis character, and a failed upload must show its message in red text below the editor.
+- **SPEC-9.19.7**: "Save" must do nothing while a save is already in flight, and nothing when the entry carries no editable note id.
+- **SPEC-9.19.8**: "Save" must trim the draft; when the trimmed draft is empty it must set the edit error "A note cannot be empty." and send no request.
+- **SPEC-9.19.9**: A valid save must send `PUT /tickets/{ticket id}/notes/{note id}` with a JSON body holding only `content` (the trimmed draft), with the "Save" button showing its loading state until the call returns.
+- **SPEC-9.19.10**: On a successful save the entry must leave edit mode and notify the host so the journal is refetched.
+- **SPEC-9.19.11**: On a failed save the entry must stay in edit mode and set the server's error text, verbatim and without a prefix, as the editor's field error next to the note; the refusal must not be raised as a toast.
+- **SPEC-9.19.12**: "Cancel" must restore the draft to the original content, clear the edit error, and leave edit mode without sending a request and without a confirmation.
+
+### 9.20 Approvals section: load and list states
+- **SPEC-9.20.1**: The Approvals section (`ApprovalsSection`) must take an entity id, an optional URL segment (default `tickets`) and an optional noun (default `ticket`), so the same section serves any entity whose approvals hang off `/{segment}/{id}/approvals`.
+- **SPEC-9.20.2**: The section must load the list with `GET /{segment}/{id}/approvals` on the staff bearer, decoded as a list of approval rows, and must reload when the active tenant generation changes or after a request is created.
+- **SPEC-9.20.3**: A failed list load must log an error line naming the segment, entity id and cause ("approval load failed for {segment}/{id}: {cause}") and the section must show the error banner "Could not load approvals for this {noun}." in place of the list.
+- **SPEC-9.20.4**: While the first load is outstanding the section must show the italic text "Loading approvals" followed by an ellipsis character.
+- **SPEC-9.20.5**: A successful load with no rows must show "No approvals on this {noun}. Approval is optional: this {noun} is not waiting on one unless you request it."; a failed load must never show this text.
+- **SPEC-9.20.6**: The section must read the approver roster through the shared roster cache (enabled) rather than its own fetch.
+- **SPEC-9.20.7**: The section card must be titled "Approvals" and must always show a right-aligned primary "Request approval" button, disabled with the title "Can't request an approval while the server is unreachable" when the write gate is closed.
+- **SPEC-9.20.8**: The section must resolve the user's timezone and date-format preference once per render and use them for every row timestamp, formatted as `%b %-d, %Y %H:%M %Z` unless the preference overrides it.
+
+### 9.21 Approvals section: row content
+- **SPEC-9.21.1**: Each approval row must render as a bordered list item keyed by the approval id.
+- **SPEC-9.21.2**: The row must show a badge whose text is the row's state string verbatim; state `approved` must be green, `rejected` red, and every other value (including an unknown one) yellow.
+- **SPEC-9.21.3**: The approver text next to the badge must come from the shared approver-label function of the My Approvals page, taking the approver user name, role and contact name, so both pages print the same label.
+- **SPEC-9.21.4**: The line "Requested by {name}" must render only when the requesting user name or requesting contact name is present, using the shared requester-label function.
+- **SPEC-9.21.5**: The line "Requested {time}" must render only when `requested_at` is present, with the time in a `time` element whose `datetime` is RFC 3339.
+- **SPEC-9.21.6**: The request notes must render in pre-wrapped muted text only when non-empty.
+- **SPEC-9.21.7**: When the row has a non-empty decision, it must render "Decision: " followed by the decision in bold, then " by {name}" when the shared decided-by label is non-empty, then " on {time}" when `decided_at` is present.
+- **SPEC-9.21.8**: Decision notes must render in italic pre-wrapped muted text only when non-empty.
+- **SPEC-9.21.9**: An approval row decoded from the server must treat every field except `id` as optional: an absent `state` decodes as the empty string and every name, role, decision, note and timestamp field decodes as absent.
+
+### 9.22 Approvals section: request modal
+- **SPEC-9.22.1**: Clicking "Request approval" must open a medium modal titled "Request approval"; the close control and "Cancel" must close it without clearing the entered values.
+- **SPEC-9.22.2**: The modal body must show the hint "Pick a specific approver OR enter a role. The server requires exactly one.", a select "Approver", a text input "Approver role (optional)" with placeholder "e.g. manager, finance", and a 3-row textarea "Notes (optional)".
+- **SPEC-9.22.3**: The approver select must list a first, empty-valued option "- Pick approver -" followed by one option per roster user, labelled with the user's display name, or the user id when the user has none.
+- **SPEC-9.22.4**: The confirm button "Request" must show its loading state while the request is in flight and be disabled, with the title "Can't request an approval while the server is unreachable", when the write gate is closed.
+- **SPEC-9.22.5**: When both the approver and the role are empty, submit must set the form banner "Pick an approver or enter a role.", focus the approver select, and send no request.
+- **SPEC-9.22.6**: When both the approver and the role are filled, submit must set the form banner "Pick either an approver or a role, not both.", focus the approver select, and send no request.
+- **SPEC-9.22.7**: A valid submit must trim all three values, clear the banner, and send `POST /{segment}/{id}/approvals` on the staff bearer with a JSON object holding `approver_user_id` (the UUID string) only when an approver is chosen, `approver_role` only when a role is entered, and `notes` only when non-empty.
+- **SPEC-9.22.8**: On success the section must show the success toast "Approval requested", close the modal, clear the approver, role and notes fields, and reload the list.
+- **SPEC-9.22.9**: On failure the modal must stay open with its entered values and show the banner "Could not create approval: {cause}" inside the modal, and the submitting state must end.
+
+### 9.23 Ticket detail: journal composition
+- **SPEC-9.23.1**: The journal builder must merge notes, the ticket's change history and its time entries into one list ordered newest first by event time, with entries of equal time keeping the order notes, history, time entries.
+- **SPEC-9.23.2**: A source that returns nothing must contribute no entries; a ticket with no notes, history or time must yield an empty journal and not an error.
+- **SPEC-9.23.3**: A note entry's action must read "added an internal note" for `internal`, "added a resolution note (internal)" for `resolution`, "added a public note and emailed the client" for a `public` note whose email was sent, "added a public note (not emailed)" for any other `public` note, and "added a note" for any other type; a non-public note must never be described as public.
+- **SPEC-9.23.4**: A note entry's body must be the note content when it is not blank, and absent otherwise; its time must be the note's creation time.
+- **SPEC-9.23.5**: A note must be marked edited only when `updated_at` is strictly later than `created_at`; a note with no `updated_at` must decode and read as never edited.
+- **SPEC-9.23.6**: A change-history entry about a note (`entity_type` of `ticket_notes`) must read "edited a note", or "deleted a note" for action `delete`, must carry the replaced text as a change line for the field "Content", and an entry with no `entity_type` must read as a ticket edit.
+- **SPEC-9.23.7**: A ticket history entry must read "created the ticket" for action `create`, "deleted the ticket" for `delete`, "changed the status" for a lone `status_id` change, and "changed the assignee" for a lone `assigned_to_id` change.
+- **SPEC-9.23.8**: A history change that records only two references (a foreign-key swap with no readable before/after) must produce no change line, and a history entry's before/after must be carried in its change lines, never in its body.
+- **SPEC-9.23.9**: A time entry must read "logged {minutes} min on {date}" with " (billable)" appended when billable, carry its notes as the body when not blank, and be timed at its creation time, or midnight UTC of its work date when the creation time is absent.
+- **SPEC-9.23.10**: The actor of an entry must be resolved in this order: the server-sent name (non-blank); the viewer's own name when the actor id equals the viewer id (even when the roster is empty or carries a blank name); the roster; otherwise "Someone" with the tooltip "Unresolved user {id}".
+- **SPEC-9.23.11**: An entry with no actor id must read "System" in the muted style with no tooltip, and must not be treated as an unresolved person.
+- **SPEC-9.23.12**: Only a note entry may carry an editable note id, and only when the viewer may edit that note; history lines and time entries must never carry one.
+
+### 9.24 Ticket detail: note editability and note composer options
+- **SPEC-9.24.1**: When the server sends `can_edit` for a note, that answer must decide whether the Edit control is offered, over any local rule.
+- **SPEC-9.24.2**: Without a server answer, a note of an unrecognised type must offer no Edit control.
+- **SPEC-9.24.3**: Without a server answer, the Edit control must be offered only when the viewer is an admin or the note's author, and the note's state allows editing; an emailed public note, a note authored by a portal contact, and a `time_entry` note must never offer it, even to an admin.
+- **SPEC-9.24.4**: A viewer with no resolved id must not match a note with no recorded author, while an admin still may edit it.
+- **SPEC-9.24.5**: The note composer's Note Type select must offer exactly "Internal Note" (`internal`), "Public Note (visible to customer)" (`public`) and "Resolution Note (internal)" (`resolution`), in that order, and must never offer `time_entry`.
+- **SPEC-9.24.6**: The "Email this note to the client" checkbox must be rendered only while the selected type is `public`, absent rather than disabled on every other type.
+- **SPEC-9.24.7**: Changing the type to anything but `public` must clear the email flag, and the submit must send `send_email` true only when the type is `public` and the flag is set.
+
+### 9.25 Ticket detail: structured note lines
+- **SPEC-9.25.1**: A note's structured lines must appear in the order "Time", "Work summary", "Parts used", "Follow-up", each only when the note carries it; a note carrying none must yield no lines.
+- **SPEC-9.25.2**: The "Time" line must read "{n} min"; the "Work summary" line must appear only when not blank; the "Parts used" line must appear only when the list is non-empty and must join the parts with ", ".
+- **SPEC-9.25.3**: A follow-up with a boolean `needed` must read "Needed" or "Not needed", followed by " - {description}" when a string description is present and by " (target {target_date})" when a string target date is present; "Not needed" must still render.
+- **SPEC-9.25.4**: A follow-up whose `needed` is absent or not a boolean must render "Invalid follow-up data" and log a warning naming the note id and the raw value; it must not render as "Needed" or "Not needed".
+
+### 9.26 Ticket detail: delete button gate
+- **SPEC-9.26.1**: The delete gate must return disabled when a delete is in flight or the write gate is closed; the reason text must be "Can't delete while the server is unreachable" only when the write gate is closed, and absent while a delete is merely in flight.
+- **SPEC-9.26.2**: With the write gate open and no delete in flight, the delete gate must return disabled with the reason "Only a manager or above can delete a ticket" unless the viewer holds manager rights.
+- **SPEC-9.26.3**: A manager-or-above viewer, online and idle, must get an enabled delete button with no reason.
+
+### 9.27 Ticket detail: SLA presentation
+- **SPEC-9.27.1**: An SLA leg with no target time must produce no leg and print nothing, even when an actual time exists.
+- **SPEC-9.27.2**: A leg with a target and no actual time must be pending and render "Due {time}" followed by "({hint})"; a leg with a target and an actual time must be reached, met when the actual is at or before the target and missed otherwise.
+- **SPEC-9.27.3**: A reached leg must render the actual time, then "(met, due" or "(missed, due", then "{due time})", each time as its own timestamp phrase.
+- **SPEC-9.27.4**: The remaining/overdue hint must count a due time at or before now as overdue and read "{n} min overdue" (minimum 1) under one hour, "{n} hr overdue" under one day and "{n} days overdue" beyond; a future due time must read "{n} min left" (minimum 1) under one hour, "{n} hr left" under one day and "{n} days left" beyond, with whole-unit truncation.
+- **SPEC-9.27.5**: The single SLA due date row must render the absolute time as `%b %-d, %Y %-I:%M %p` in the user's timezone and format preference, then the hint in brackets.
+- **SPEC-9.27.6**: The Created row must render the timestamp phrase and, only when the creator name is non-empty, a second phrase "by {name}".
+- **SPEC-9.27.7**: The SLA legs must be fetched with `GET /tickets/{id}/sla` on whichever bearer the session holds (staff or contact), and the body must decode with null timestamps and snake_case status values, a ticket with no policy decoding with every timestamp absent and status `not_applicable`.
+
+### 9.28 Ticket detail: wire bodies and decode tolerance
+- **SPEC-9.28.1**: The create-ticket body must serialise every key, nulls included, in the order title, description, company_id, contact_id, priority_id, asset_id, type_id, category_id, assigned_to_id, scheduled_end, source_kb_article_id, team_id.
+- **SPEC-9.28.2**: Each inline ticket edit must send a body holding only its own field; unset fields must be omitted from the JSON.
+- **SPEC-9.28.3**: Clearing a clearable field (assignee, asset, type, category, contact, site, team, contract, SLA) must send the key with a JSON null, never omit it.
+- **SPEC-9.28.4**: The create-note body must serialise `note_type`, `content`, `send_email`, then `time_minutes`, `work_summary`, `parts_used` and `follow_up` only when set; the edit-note body must hold only `content`.
+- **SPEC-9.28.5**: Every field of the shared create-ticket, update-ticket, create-note, update-note, ticket, note and time-entry response types must be accounted for in this page's own request and response structs, so adding, removing, renaming or retyping a field on the server fails the build.
+- **SPEC-9.28.6**: The page's SLA status must map the shared status exhaustively (on track, warning, breached, not applicable), so a new server variant fails the build.
+- **SPEC-9.28.7**: The note type must decode as a string, so an unknown type reads as a plain note instead of failing the whole journal; a note without `can_edit` or `updated_at`, and a time entry without `created_at`, must still decode.
+
+### 9.29 Ticket page: structural invariants
+- **SPEC-9.29.1**: Every Markdown field on the ticket pages must use the shared Markdown editor: exactly four editors exist (create form, in-page description edit, note composer, inline note edit), and no bare textarea named `description`, `edit-description` or `content` may exist.
+- **SPEC-9.29.2**: A note must render through the shared Markdown renderer, never as raw text in a pre-wrapped box.
+- **SPEC-9.29.3**: The staff mention directory must be fetched once by the list page's create form and once by the detail page; the detail page must resolve one people list for the whole journal and the editor.
+- **SPEC-9.29.4**: The description editor must be disabled together with the rest of its form when the write gate is closed.
+- **SPEC-9.29.5**: There must be no "Edit Ticket" modal and no full-size modal; exactly three modals may exist in the page file (approvals request, save view, rename view).
+- **SPEC-9.29.6**: The description editor must render inside the Description card, the title must be edited in the header slot, and the header Edit button must be hidden while editing.
+- **SPEC-9.29.7**: Unsaved description or title edits must be guarded by the browser unload guard driven by the dirty flag, and "Cancel" must open a confirmation dialog only when the editor is dirty, closing the editor immediately otherwise.
+- **SPEC-9.29.8**: The dirty flag must be computed from signal reads only (editing flag, current and baseline title, current and baseline description), so it re-evaluates on every change.
+- **SPEC-9.29.9**: Saving the description card must `PUT /tickets/{id}` and validate `edit-title` and `edit-description` through the shared form guard.
+- **SPEC-9.29.10**: The journal list must be keyed by the note id for a note and by "{time}-{index}" for any other entry, so an open draft never follows a different note after a refetch.
+- **SPEC-9.29.11**: Of the four Markdown editors, the three on the detail page must accept a file and use the ticket upload help text; the create form, which has no ticket yet, must not.
+- **SPEC-9.29.12**: A child ticket of a multi-person request must show "Part of the request {number}" linking to the parent; a parent must list its children under "People on this request"; both must come from the `parent_ticket_id` filter, a child must not ask for children of its own, and an ordinary ticket with an empty children list must render no card.
+
+### 9.30 Ticket page: inline images and URL prefill
+- **SPEC-9.30.1**: The path inserted for an uploaded inline image must be the server-supplied `url` when it is non-blank, otherwise `/api/v1/public/tickets/attachments/{attachment id}`.
+- **SPEC-9.30.2**: Inline image uploads on the detail page must be sent to `/tickets/{ticket id}/attachments/inline`, and the picker help text must state that anyone holding the link can view the image.
+- **SPEC-9.30.3**: The New Ticket company prefill must be taken from the query parameters `company_id` and `company_name` only when `company_id` parses as a UUID; otherwise both id and name must be empty. The name must be percent-decoded.
+- **SPEC-9.30.4**: The New Ticket article prefill must be taken from `from_kb_article`, `from_kb_title` and `from_kb_url` only when `from_kb_article` parses as a UUID; otherwise id, title and url must be empty.
+
+### 9.31 Ticket list: filter and saved-view structure
+- **SPEC-9.31.1**: The Queue filter select must sit between the Status and Priority selects on the list filter card.
+- **SPEC-9.31.2**: The list fetch must append `&queue_id={id}` only when a queue filter is chosen, never an empty `queue_id=`.
+- **SPEC-9.31.3**: "Clear filters" must clear the queue filter along with the others, and the filters-active state that picks the empty-state message and shows "Clear filters" must count a queue-only filter.
+- **SPEC-9.31.4**: The saved Views control must sit to the left of the search input on the filter card.
+- **SPEC-9.31.5**: Saving a view must `POST` to the shared saved-views endpoint constant through the typed authenticated call.
+- **SPEC-9.31.6**: Choosing "No view" must clear the selected view id.
+
+### 9.32 Ticket page: reopen, contact edit, attachment cap and routes
+- **SPEC-9.32.1**: The Reopen button must show only when the session holds the reopen capability and the status name, compared case-insensitively, contains "closed" or "resolved".
+- **SPEC-9.32.2**: A contact must see the Description Edit button only when it holds `tickets:edit_own` and the ticket's `contact_id` equals the contact's own id; when either id is absent the button must be hidden.
+- **SPEC-9.32.3**: The client-side ticket attachment size cap must be 5 MiB (5 * 1024 * 1024 bytes).
+- **SPEC-9.32.4**: The route `/tickets/{uuid}` must resolve to the ticket detail page with the id parameter set to that string.
+- **SPEC-9.32.5**: The ticket detail payload must read `procedure_kb_article_id` and `procedure_kb_article_title` for the Procedure row, both absent when the server sends neither, and must never take the Procedure from `source_kb_article_id`.
+
+### 9.33 My Approvals page: access and queue loading
+
+- **SPEC-9.33.1**: The My Approvals page (component `ApprovalsPage`) must set the page title "My Approvals" and render the header title "My Approvals" with subtitle "Pending decisions assigned to you (or to a role you hold)".
+- **SPEC-9.33.2**: The page must read the capability `approvals:decide` before any early return. When the session lacks it, the page must not call the approvals endpoint and must render the header title "My Approvals" with subtitle "Decisions waiting on you" and a card reading "Approvals are not enabled for your account. Ask your provider if you are expected to approve requests." instead of an error banner.
+- **SPEC-9.33.3**: When the capability is held, the page must load the queue with `GET /approvals/pending` through the contact-first authenticated helper, so a session holding a portal-contact bearer reads on the contact plane and a staff session reads with the staff bearer.
+- **SPEC-9.33.4**: The queue load must re-run when the active tenant generation changes, when server reachability changes, and after each successful decision.
+- **SPEC-9.33.5**: When the queue load fails, the page must log "approval queue load failed: {error}" at error level and treat the result as failed, distinct from an empty queue.
+- **SPEC-9.33.6**: When the queue load has failed and the server is flagged unreachable, the page must render only the unavailable-content component titled "My Approvals" instead of the queue.
+- **SPEC-9.33.7**: When the queue load has failed and the server is reachable, the page must render a card holding an error banner "Could not load pending approvals." and must not render the filter bar.
+- **SPEC-9.33.8**: While the queue has not yet resolved, the page must render a card reading "Loading" followed by an ellipsis character.
+- **SPEC-9.33.9**: When the queue loaded empty and no filter is active, the page must render a card reading "No pending approvals. You're all caught up."
+- **SPEC-9.33.10**: A pending-approval row must decode when optional keys are absent: `target` must default to "ticket", the entity id must be `entity_id` and otherwise the legacy `ticket_id`, and every name, reference, label, notes and timestamp field must default to absent.
+
+### 9.34 My Approvals page: client-side filtering
+
+- **SPEC-9.34.1**: The filter bar (a search input and a kind select) must render only when the queue has loaded, has not failed, and holds at least one row before filtering; it must stay visible when filters hide every row.
+- **SPEC-9.34.2**: The search input must show the placeholder "Search requester or subject" followed by an ellipsis character.
+- **SPEC-9.34.3**: The kind select must offer, in order, the value "" labelled "All kinds", then "ticket" labelled "Ticket", "time_entry" labelled "Time entry", "change_request" labelled "Change request" and "quote" labelled "Quote".
+- **SPEC-9.34.4**: A non-empty kind filter must keep only rows whose `target` equals it exactly.
+- **SPEC-9.34.5**: A search term must be trimmed and lower-cased, and a row must match when the term is a substring of its lower-cased requester label, trimmed entity reference or trimmed entity label; an all-blank term must filter nothing.
+- **SPEC-9.34.6**: A "Clear filters" secondary button must render only while the kind filter or the search term is non-empty, and must reset both.
+- **SPEC-9.34.7**: When filters are active, the unfiltered queue is non-empty and no row matches, the page must render a card reading "No matches." and not the all-caught-up text.
+- **SPEC-9.34.8**: Filtering must be done in memory on the already loaded queue and must not issue a request.
+
+### 9.35 My Approvals page: row content and actor labels
+
+- **SPEC-9.35.1**: Each pending row must render in a card keyed by the approval id, with a yellow badge "Pending" and a gray badge for the target: "Ticket", "Time entry", "Change request" or "Quote" for those four values, and the raw target string for any other value.
+- **SPEC-9.35.2**: The subject chip must show the trimmed entity reference in a monospace span when non-empty, then the trimmed entity label when non-empty.
+- **SPEC-9.35.3**: When both the reference and the label are empty, the subject chip must show the first 8 characters of the entity id in a monospace span whose tooltip is the full id, or "-" when the row has no entity id.
+- **SPEC-9.35.4**: When the target is "ticket" and an entity id exists, the subject chip must be a routed link to the ticket detail route for that id; for every other target, or with no entity id, it must be plain text.
+- **SPEC-9.35.5**: Each row must show "From: " followed by the requester label, and below it the approver label.
+- **SPEC-9.35.6**: The requester label must be the trimmed staff user name; else the trimmed contact name followed by " (customer contact)"; else "(unknown requester)". A blank (whitespace-only) name must count as absent.
+- **SPEC-9.35.7**: The approver label must be "To: {user}" for a non-blank user name; else "Role: {role}" for a non-blank role; else "To: {contact} (customer contact)" for a non-blank contact name; else "(unassigned approver)", checked in that order.
+- **SPEC-9.35.8**: When no requester name or no approver name can be resolved, the label function must log the substitution through the shared unresolved-value logger with context "approvals.requester" or "approvals.approver" and the placeholder shown.
+- **SPEC-9.35.9**: The decided-by label must be the trimmed user name, else the trimmed contact name followed by " (customer contact)", else absent, and must not substitute a placeholder.
+- **SPEC-9.35.10**: The approver, requester and decided-by label functions must be the single implementation shared with the ticket-detail approvals section.
+- **SPEC-9.35.11**: When the row has a request timestamp, the row must show "Requested " followed by a time element whose datetime attribute is the RFC 3339 timestamp and whose text is the timestamp formatted as "%b %-d, %Y %H:%M %Z" in the user's timezone and format preference; when absent the line must be omitted. The timezone and preference must be resolved once per page render.
+- **SPEC-9.35.12**: When the row has non-empty notes, the row must show them with whitespace and line breaks preserved.
+
+### 9.36 My Approvals page: recording a decision
+
+- **SPEC-9.36.1**: Each row must offer a secondary "Reject" button and a primary "Approve" button.
+- **SPEC-9.36.2**: Clicking a button must send `POST /approvals/{id}/decision` through the contact-first authenticated helper with the JSON body `{"decision": "approve"}` or `{"decision": "reject"}`.
+- **SPEC-9.36.3**: On success the page must push a success toast "Approved" or "Rejected" matching the decision, bump the reload version and re-fetch the queue.
+- **SPEC-9.36.4**: On failure the page must show, in a red card above the filter bar, "Could not record decision: {user message of the error}" and must leave the row in the queue.
+- **SPEC-9.36.5**: A shown decision error must be cleared when the next decision attempt starts or succeeds, so a stale failure is never shown beside a successful decision.
+- **SPEC-9.36.6**: While the server is unreachable, both buttons must be disabled with the tooltip "Can't record a decision while the server is unreachable", and each row must show the text "Server unreachable".
+
+### 9.37 SLA Management page: access and shell
+
+- **SPEC-9.37.1**: The SLA Management page (`SlaManagementPage`) must set the page title "SLA Management" and be usable only when the signed-in user's role is admin.
+- **SPEC-9.37.2**: For a non-admin the page must render the header "SLA Management" and a card reading "You do not have permission to manage SLA policies. Ask an administrator for access." and must not mount any tab or call any SLA endpoint.
+- **SPEC-9.37.3**: For an admin the page must show one of three tabs, "Policies" (initial), "Business Hours" and "Holiday Calendars", held in component state and not in the route; clicking a tab button must swap the active tab.
+- **SPEC-9.37.4**: The shared shell must render the header title "SLA Management" with subtitle "Define service-level policies, business hours, and holiday calendars", the tab bar with the active tab styled as active, and the active tab's create button in the header actions.
+- **SPEC-9.37.5**: Each tab must read its list with every page of the collection (not a single capped page) and must render the row count as the total with a single page of that size (25 when empty).
+- **SPEC-9.37.6**: Each tab's list load must re-run when the tenant generation or server reachability changes, and after a successful save from that tab's modal.
+- **SPEC-9.37.7**: Each tab's list load must log the failure at error level and keep a failed load distinct from an empty set.
+- **SPEC-9.37.8**: When a tab's list load has failed and the server is flagged unreachable, the tab must render only the unavailable-content component titled "SLA Management"; when the server is reachable it must keep the shell and show an error banner above the table.
+- **SPEC-9.37.9**: While the server is unreachable, each tab's create button and each modal save button must be disabled with a tooltip naming the blocked action.
+
+### 9.38 SLA Policies tab
+
+- **SPEC-9.38.1**: The Policies tab must load `GET /sla/policies` (all pages) and render a table with columns "Name", "Description", "Default" and "Actions", one row per policy keyed by id.
+- **SPEC-9.38.2**: While loading, the table must show 4 skeleton rows of 4 columns; when empty it must show the title "No SLA policies yet" with the description "Use New Policy above to define response and resolution targets."
+- **SPEC-9.38.3**: A load failure with the server reachable must show the banner "Could not load SLA policies. Refresh the page to retry."
+- **SPEC-9.38.4**: A policy with `is_default` must show a green "Default" badge in its Default cell; a missing description must render as empty text.
+- **SPEC-9.38.5**: The primary header button "New Policy" must open the policy form with an empty state; while the server is unreachable it must be disabled with the tooltip "Can't create a policy while the server is unreachable".
+- **SPEC-9.38.6**: Each row must offer an "Edit" button that opens the policy form prefilled from that row, and a "Targets" link button that opens the targets editor for that policy id and name.
+- **SPEC-9.38.7**: When the policy form reports a save, the tab must close the form and re-fetch the policy list.
+
+### 9.39 SLA policy form
+
+- **SPEC-9.39.1**: The policy form must be a large modal titled "New SLA Policy" for a create and "Edit SLA Policy" for an edit, with a "Cancel" button and a primary button "Create Policy" or "Save Changes".
+- **SPEC-9.39.2**: The form must offer a required text input "Name" (placeholder "e.g. Standard SLA"), a 3-row textarea "Description", a select "Business Hours" and a checkbox "Default policy" with the help text "Applied to tickets when no other policy matches."
+- **SPEC-9.39.3**: The Business Hours select must list an empty-valued first option "No profile (runs 24/7)" followed by one option per business-hours set from `GET /sla/business-hours` (all pages), with the help text "With no business-hours profile, the SLA clock runs continuously (24/7). Pick a profile to pause the clock outside its hours."
+- **SPEC-9.39.4**: When the business-hours option load fails, the form must log "SLA business-hours option load failed, the dropdown will be empty: {error}" at error level; when it succeeds with no rows it must log at info level that the tenant has none.
+- **SPEC-9.39.5**: Saving must be ignored while a save is in flight; a blank (whitespace-only) name must show the banner "Policy name is required." and send no request.
+- **SPEC-9.39.6**: A save must send the trimmed name, the trimmed description or null when blank, the selected business-hours id parsed as a UUID or null when empty or unparseable, and `is_default`, using `POST /sla/policies` for a create and `PUT /sla/policies/{id}` for an edit.
+- **SPEC-9.39.7**: On success the form must push the toast "SLA policy saved." and notify the tab; on failure it must push the API error and show the error's user message in a banner, and in both cases the saving state must clear.
+- **SPEC-9.39.8**: While the server is unreachable the save button must be disabled with the tooltip "Can't save while the server is unreachable".
+
+### 9.40 SLA targets editor
+
+- **SPEC-9.40.1**: The targets editor must be an extra-large modal titled "SLA Targets" with a "Close" button, introducing the policy by name with the text "Set first-response and resolution hours per priority, then Save the row."
+- **SPEC-9.40.2**: The editor must load `GET /sla/policies/{policy_id}/targets` and `GET /tickets/priorities` (all pages), logging each failure at error level naming the policy id or the priority load, and must show a loading skeleton of 4 rows of 5 columns until both resolve.
+- **SPEC-9.40.3**: When either load fails the editor must show the banner "Could not load targets or priorities. Close and retry."
+- **SPEC-9.40.4**: The table must have columns "Priority", "First Response (hrs)", "Resolution (hrs)", "Operational Hours" and "Actions", with one row per priority in server order, each paired with the existing target whose priority id matches, if any.
+- **SPEC-9.40.5**: When no priorities are loaded and no load failed, the table must show "No ticket priorities defined. Create priorities first."; a failed priority load must not be presented as this empty state.
+- **SPEC-9.40.6**: A row's hour inputs must be free text with the placeholder "2, 2.5, or 1:30", initialised from the existing target's hours when present, and its Operational Hours select must offer "24x7" and "Business Hours" (value "business_hours"), initialised to the existing value or "24x7" when absent or empty.
+- **SPEC-9.40.7**: Save must be ignored while a save or delete is in flight; an unparseable priority id must push the error toast "Invalid priority id; reload and retry." and send nothing.
+- **SPEC-9.40.8**: Save must validate first-response hours and then resolution hours with the shared hours validator, push the validator's message as an error toast on the first failure, and send nothing.
+- **SPEC-9.40.9**: A valid save must send `POST /sla/policies/{policy_id}/targets` with `priority_id`, `first_response_hours`, `resolution_hours` (each null when blank) and `operational_hours` (an empty value sent as "24x7"); the same POST must create or update the target for that policy and priority.
+- **SPEC-9.40.10**: On a successful save the row must push the toast "Target saved." and re-fetch the targets; on failure it must push the API error; the saving state must clear in both cases.
+- **SPEC-9.40.11**: A "Remove" danger button must render only for a priority that has an existing target, and clicking it must only open a confirmation dialog titled "Remove SLA target" with the message "Remove the {priority} SLA target? The policy will fall back to no target for this priority until you set a new one." and buttons "Remove" and "Cancel".
+- **SPEC-9.40.12**: Confirming must send `DELETE /sla/targets/{id}`; success must push the toast "Target removed." and re-fetch the targets, failure must push the API error, and in both cases the dialog must close and the deleting state clear.
+- **SPEC-9.40.13**: Cancelling the confirmation must close it unless a delete is in flight; the confirm action must be ignored while a delete is in flight.
+- **SPEC-9.40.14**: While the server is unreachable, row Save must be disabled with the tooltip "Can't save while the server is unreachable" and Remove with "Can't remove while the server is unreachable".
+
+### 9.41 SLA Business Hours tab and form
+
+- **SPEC-9.41.1**: The Business Hours tab must load `GET /sla/business-hours` (all pages) and render columns "Name", "Timezone", "Default" and "Actions", with a green "Default" badge for the default set and an "Edit" button per row.
+- **SPEC-9.41.2**: The tab must show a 3-row skeleton while loading, the title "No business-hours sets yet" with the description "Use New Business Hours above to define when SLA clocks run." when empty, and on a reachable failure the banner "Could not load business hours. Refresh the page to retry."
+- **SPEC-9.41.3**: The header button "New Business Hours" must open the form and, while the server is unreachable, be disabled with the tooltip "Can't create business hours while the server is unreachable".
+- **SPEC-9.41.4**: A new form must start with timezone "UTC", `is_default` false and a schedule seed of Monday to Friday with one window `{"start": "09:00", "end": "17:00"}` per day; an edit must start from the row's values with an empty timezone shown as "UTC" and the schedule shown as pretty-printed JSON (empty text for a null schedule).
+- **SPEC-9.41.5**: The form must be a large modal titled "New Business Hours" or "Edit Business Hours" with a required "Name" input, a "Timezone" input, a 10-row "Schedule (JSON)" textarea, a "Default business hours" checkbox, and buttons "Cancel" and "Create" or "Save Changes".
+- **SPEC-9.41.6**: Saving must be ignored while in flight and must validate in this order, sending nothing on the first failure: a blank name shows the banner "Name is required."; a schedule that is not valid JSON shows inline on the schedule field "Schedule is not valid JSON: {parse error}"; a non-empty timezone that is not an IANA zone name shows the banner "Time zone must be an IANA name (e.g. America/New_York)."
+- **SPEC-9.41.7**: A blank timezone must be sent as "UTC".
+- **SPEC-9.41.8**: A valid save must send the trimmed name, the timezone, the parsed schedule value and `is_default` with `POST /sla/business-hours` for a create or `PUT /sla/business-hours/{id}` for an edit, push the toast "Business hours saved." on success, and notify the tab.
+- **SPEC-9.41.9**: On failure the form must push the API error; a field error keyed "schedule" must show inline on the schedule field, and any other error must show its user message in the banner; the saving state must clear.
+- **SPEC-9.41.10**: Editing the schedule text must clear the inline schedule error.
+
+### 9.42 SLA Holiday Calendars tab and form
+
+- **SPEC-9.42.1**: The Holiday Calendars tab must load `GET /sla/holiday-calendars` (all pages) and render columns "Name", "Holidays" and "Actions", showing "{n} dates" where n is the length of the holidays array, and an "Edit" button per row.
+- **SPEC-9.42.2**: The tab must show a 3-row skeleton while loading, the title "No holiday calendars yet" with the description "Use New Holiday Calendar above to exclude holidays from SLA clocks." when empty, and on a reachable failure the banner "Could not load holiday calendars. Refresh the page to retry."
+- **SPEC-9.42.3**: The header button "New Holiday Calendar" must open the form and, while the server is unreachable, be disabled with the tooltip "Can't create a holiday calendar while the server is unreachable".
+- **SPEC-9.42.4**: A new form must seed the holidays text with one entry `{"date": "2026-01-01", "name": "New Year's Day"}`; an edit must show the row's holidays as pretty-printed JSON (empty for null).
+- **SPEC-9.42.5**: The form must be a large modal titled "New Holiday Calendar" or "Edit Holiday Calendar" with a required "Name" input, a 10-row "Holidays (JSON)" textarea and buttons "Cancel" and "Create" or "Save Changes".
+- **SPEC-9.42.6**: Saving must be ignored while in flight; a blank name must show the banner "Name is required."; holidays text that is not valid JSON must show inline "Holidays is not valid JSON: {parse error}"; either failure sends nothing.
+- **SPEC-9.42.7**: A valid save must send the trimmed name and the parsed holidays value with `POST /sla/holiday-calendars` for a create or `PUT /sla/holiday-calendars/{id}` for an edit, push the toast "Holiday calendar saved." on success and notify the tab.
+- **SPEC-9.42.8**: On failure the form must push the API error; a field error keyed "holidays" must show inline on the holidays field, and any other error must show its user message in the banner; the saving state must clear.
+- **SPEC-9.42.9**: Editing the holidays text must clear the inline holidays error.
+
+### 9.43 SLA input helpers
+
+- **SPEC-9.43.1**: Target-hours validation must first strip the input with the strict ASCII cleaner, and must treat an empty result as no commitment (null).
+- **SPEC-9.43.2**: An input containing a colon must be parsed as H:MM with the shared minute parser and converted to exact decimal hours (minutes divided by 60); any other input must be parsed as an exact decimal.
+- **SPEC-9.43.3**: A negative value must be rejected with the message "SLA target hours cannot be negative."
+- **SPEC-9.43.4**: An unparseable value must be rejected with the message "Enter SLA target hours as a number, a decimal, or H:MM (e.g. 2, 2.5, or 1:30)."; it must never be silently dropped to null.
+- **SPEC-9.43.5**: An optional text field must be trimmed and sent as null when empty.
+- **SPEC-9.43.6**: The holiday count shown in the list must be the array length and 0 for a non-array value.
+
+### 9.44 Public request form page: loading and terminal states
+
+- **SPEC-9.44.1**: The public request form page (`RequestFormPage`) must be served at `/request-forms/:token`, inside the unauthenticated layout with a maximum width of "sm:max-w-xl", and must send no bearer on any request; the token is the credential.
+- **SPEC-9.44.2**: On mount the page must load the form with `GET /public/request-forms/{token}` and show "Loading your form" followed by an ellipsis character until the load settles.
+- **SPEC-9.44.3**: A 200 response must render the form. A 410 whose message contains "form has been retired" must show the Retired terminal; any other 410 must show the Already submitted terminal; a 400 must show the Link expired terminal, without distinguishing expired, unknown or malformed.
+- **SPEC-9.44.4**: The Already submitted terminal must show the heading "Already submitted" and the text "This link has already been used, so your request is with us. Ask your account team if you need to send another."
+- **SPEC-9.44.5**: The Retired terminal must show the heading "Form retired" and the text "This form has been retired and is no longer accepting submissions. Ask your account team for a new link."
+- **SPEC-9.44.6**: The Link expired terminal must show the heading "Link expired" and the text "This link is expired or invalid. Ask your account team for a new one."
+- **SPEC-9.44.7**: A terminal message and the form must never render together; each terminal block must be a polite live status region.
+- **SPEC-9.44.8**: A load failure that is neither 410 nor 400 (network error, 5xx, 429) must not set a terminal state; with no form loaded the page must show the heading "Something went wrong" and the text "We could not load your form. Check your connection and reload the page."
+- **SPEC-9.44.9**: A non-terminal load failure must be logged with the underlying error, and a failed reload for the next person must not leave the previous person's form on screen.
+
+### 9.45 Public request form: rendering
+
+- **SPEC-9.45.1**: The form body (`RequestFormBody`) must be the single component used by both the public page and the builder preview.
+- **SPEC-9.45.2**: When the form has a non-blank `logo_url` the body must show an image from the API origin plus that path, with alt text the tenant name.
+- **SPEC-9.45.3**: The body must show the form name as the heading and the description when present; when the link covers more than one person it must show "Person {person_number} of {people}", and for a single-person link it must show no person label.
+- **SPEC-9.45.4**: A non-empty form-level error must render above the form as an alert region.
+- **SPEC-9.45.5**: Fields must render in the order the server sent, keyed by field name, as: a textarea for textarea, a date field for date, a select for select, a checkbox for boolean, an input of type "email" for email, and a text input for text and for any field type this build does not know.
+- **SPEC-9.45.6**: A select field must list the server's options with label equal to value and the placeholder "Choose one"; text, email and textarea fields must pass `max_length` as the input maximum length when present.
+- **SPEC-9.45.7**: A field must show as required when `is_required` is true or when a required-if rule applies given the current answers.
+- **SPEC-9.45.8**: Editing a field must store its value in the answers map and clear that field's error only; a checkbox must store "true" or "false".
+- **SPEC-9.45.9**: The form must end with a full-width primary submit button labelled "Send request" whose label never changes; while a submission is in flight it must be disabled and show the spinner, and all inputs must be disabled.
+- **SPEC-9.45.10**: When the tenant name is non-blank the body must end with "This form was sent to you by {tenant name}." and, when a non-blank contact line exists, "Questions before you answer? Contact {contact}."; with a blank tenant name neither line nor its rule must render.
+
+### 9.46 Public request form: validation and submission
+
+- **SPEC-9.46.1**: Submitting must be ignored while a submission is in flight or no form is loaded.
+- **SPEC-9.46.2**: Before sending, the page must evaluate every field and set an error "{label} is required" for each required field (or required by a rule) whose trimmed answer is empty, then stop without a request if any exist; a boolean field must count as answered.
+- **SPEC-9.46.3**: A required-if rule must make its target field required exactly when the trimmed answer to the rule's `when_field` equals the rule's `equals` value; an unrecognised rule kind must never make a field required.
+- **SPEC-9.46.4**: The payload must hold each boolean field as a JSON boolean (false when never touched), every other answered field as its trimmed string, and must omit blank answers.
+- **SPEC-9.46.5**: A valid submission must send `POST /public/request-forms/{token}` with the body `{"payload": {...}}`.
+- **SPEC-9.46.6**: On success the page must show the terminal heading "Request received" with "Thanks. Your request is with us as ticket {number}. Quote that number if you need to follow it up."
+- **SPEC-9.46.7**: When the receipt reports more than zero submissions remaining, the page must say "There is one more person to add on this link." for 1 or "There are {n} more people to add on this link." otherwise, and show an "Add the next person" button.
+- **SPEC-9.46.8**: "Add the next person" must clear the answers and field errors and the form error, show the loading state with no terminal state, and re-fetch the form with the same token so the person number is current.
+- **SPEC-9.46.9**: A 422 must route each field error to the input whose name matches and replace all field errors with that set; messages for a field the form does not render, or for the whole payload, must be joined with a single space into the form-level error.
+- **SPEC-9.46.10**: A 410 or 400 on submit must show the same terminal states as on load; any other failure must show the error's user message as the form-level error. In every case the submitting state must clear.
+- **SPEC-9.46.11**: A failed submission with an error other than 422, 410 and 400 must also be logged with the underlying error.
+
+### 9.47 Request-form link lists
+
+- **SPEC-9.47.1**: The company card (`CompanyRequestFormsCard`) must be a collapsible card titled "Request forms" showing the link count, loading `GET /form-request-links?company_id={id}` and logging "company request link load failed for {id}: {error}" at error level on failure.
+- **SPEC-9.47.2**: The card's table must have columns "Form", "Sent to", "Status" and "Expires", a 3-row skeleton while loading, "Could not load request forms." on failure and "No request forms sent to this client yet." when empty.
+- **SPEC-9.47.3**: A link's status badge must come from its status: "Submitted" green, "Awaiting reply" and "Awaiting the rest" blue, "Expired" gray. Status must be Submitted when `used_at` is set, else Expired when `expires_at` is not after now, else Awaiting the rest when `submissions_remaining` is less than `people`, else Awaiting reply.
+- **SPEC-9.47.4**: A link covering more than one person must show "{people - remaining} of {people} submitted" beside its badge; a one-person link must show none.
+- **SPEC-9.47.5**: The Expires cell must show the expiry formatted in the user's timezone inside a time element whose datetime attribute is the RFC 3339 value; the timezone must be resolved once per render.
+- **SPEC-9.47.6**: The card's "Send a form" link button must open the send modal; while the server is unreachable it must be disabled with the tooltip "Can't send while the server is unreachable". After a send the card must close the modal and re-fetch.
+- **SPEC-9.47.7**: The recently-sent panel (`SentRequestLinksPanel`) must load `GET /form-request-links` with no company filter, titled "Recently sent" with the subtitle "Links you have emailed clients, newest first. Open a client to see everything sent to them.", and re-fetch when its reload signal changes.
+- **SPEC-9.47.8**: The panel must show the first 8 links in the server's order (newest first), and when more exist a final row "{n} older link(s) not shown. Open a client to see their full history."
+- **SPEC-9.47.9**: The panel's columns must be "Form", "Client", "Sent to", "Status" and "Expires", with the client name as a routed link to the company detail route; its states must be a 3-row skeleton, "Could not load sent forms." on failure (logged "sent request link load failed: {error}") and "Nothing sent yet. Use Send on a form above to email a client a link." when empty.
+
+### 9.48 Send request link modal
+
+- **SPEC-9.48.1**: `SendRequestLinkModal` must be a medium modal titled "Send a request form to {company name}" with buttons "Cancel", an email preview for event type "forms.request_link", and a primary "Send link" button; an optional preselected form id must seed the Form select, which stays editable.
+- **SPEC-9.48.2**: The Form select must list only active definitions from `GET /forms?active_only=true`, be required with the placeholder "Choose a form" and help "The client is asked only for what this form defines.", and a load failure must be logged at error level.
+- **SPEC-9.48.3**: When the tenant has no active forms the modal must show a banner "No active request forms exist yet. Define one under Request Forms first." linking to the forms builder, disable the Form select, and disable "Send link" with the tooltip "Define a request form first".
+- **SPEC-9.48.4**: The Contact select must list, from `GET /contacts/companies/{id}/contacts` (all pages), only contacts with a non-empty email, labelled "{first} {last} ({email})" or the email alone when the name is blank, with the placeholder "Someone else (type an address below)" and help "Only contacts with an email address are listed."; a load failure must be logged at error level naming the company id.
+- **SPEC-9.48.5**: When the contacts loaded and none has an email, the modal must show "{company} has no contact with an email address yet." with an "Add one" link to `/contacts/new?company_id={id}&company_name={URL-encoded name}`.
+- **SPEC-9.48.6**: Choosing a contact must fill the Email input with that contact's address and clear any email error; choosing the empty option must clear the Email input; the address stays editable and a typed address must override the contact's.
+- **SPEC-9.48.7**: The "How many people?" number input must default to "1" and accept whole numbers from 1 to 50.
+- **SPEC-9.48.8**: Sending must be ignored while in flight and must evaluate all checks, sending nothing if any fail: an unparseable company id shows the banner "This company could not be identified. Reload the page."; no valid form shows "Choose a form to send." on the Form field; a people value that is not an integer from 1 to 50 shows "Enter a number of people from 1 to 50."; no contact and a blank email shows "Choose a contact or enter an email address." on the Email field.
+- **SPEC-9.48.9**: A valid send must `POST /form-request-links` with `form_definition_id`, `company_id`, `contact_id` (or null), `recipient_email` (only when the typed address is non-blank) and `people`.
+- **SPEC-9.48.10**: On success the modal must push the success toast "Request form sent to {email}." for one person, "Request form sent to {email} for {n} people." for several, with " They file under {parent}." appended when a parent ticket number exists, and notify the caller.
+- **SPEC-9.48.11**: On failure the modal must push the API error and route a field error "recipient_email" to the Email field, else a field error "people" to the people field, else show the error's user message in the banner; the saving state must clear and inputs be disabled while sending.
+- **SPEC-9.48.12**: The modal must show a note that the link expires in 7 days and is submitted once for one person ("The link can be submitted once and expires in 7 days. Their answers arrive as a ticket for this client.") or once per person otherwise ("The link can be submitted once per person and expires in 7 days. Each person arrives as their own ticket, under one parent ticket for the request.").
+- **SPEC-9.48.13**: While the server is unreachable "Send link" must be disabled with the tooltip "Can't send while the server is unreachable".
+- **SPEC-9.48.14**: A failed forms or contacts picker load must be shown to the user in the modal, not only logged, so an empty picker is distinguishable from a tenant with none.
+
+### 9.49 Send a form to a client from the builder
+
+- **SPEC-9.49.1**: `SendFormToClientModal` must be a small modal titled "Send {form name} to a client" with a required company picker labelled "Client", the note "The link is emailed to someone at this client. You choose who, and see what has already been sent, on their company page.", and buttons "Cancel" and "Continue".
+- **SPEC-9.49.2**: "Continue" with no company chosen must show "Choose the client this form is going to." and not advance; choosing a company must clear that error, and clearing the picker must reset the chosen id and name.
+- **SPEC-9.49.3**: "Continue" with a company must replace the modal with `SendRequestLinkModal` for that company, preselecting this form, and its close and sent events must pass through to the caller.
+
+### 9.50 Work day strip: placement, module gating and load states
+
+- **SPEC-9.50.1**: The work day strip (`WorkDayStrip`) must be rendered by the Time page as a card titled "Work day" with bottom margin `mb-6`; it has no route of its own.
+- **SPEC-9.50.2**: The strip must request `GET /workday` (with the query described in 9.62) through the authenticated typed fetch; on success it must stamp the response with the client instant at which the response was received.
+- **SPEC-9.50.3**: When the module flags are loaded and either the `timesheets` module or the `time_tracking` module is absent from the enabled list, the strip must not send `GET /workday` and must treat the load as modules-off.
+- **SPEC-9.50.4**: When the module flags are not yet loaded (unknown), the strip must still send `GET /workday`.
+- **SPEC-9.50.5**: When `GET /workday` answers HTTP 404, the strip must treat the load as modules-off and must not log it as a failure.
+- **SPEC-9.50.6**: In the modules-off state the strip must render only the paragraph "Clocking in and out needs the Timesheets module, which is off for this organisation. An administrator can turn it on; time entries are unaffected." and must not render a link to a module page.
+- **SPEC-9.50.7**: When `GET /workday` fails with any other error (any status other than 404, or a transport or decode error), the strip must log a warning "work day load failed: <error>" and must render an error banner "Could not load today's clock." beside a secondary "Retry" button.
+- **SPEC-9.50.8**: Activating "Retry" must restart the day load without reloading the page.
+- **SPEC-9.50.9**: The first load, before any day has been received for the current viewing context, must render nothing (no placeholder, no spinner).
+- **SPEC-9.50.10**: In a build without the `app` feature the day load must resolve to modules-off without sending a request.
+- **SPEC-9.50.11**: The day load must read the module flags with the plain accessor inside the load closure and must not call the `use_module_flags` hook there, so that a change of flags restarts the load and the render hook order is not corrupted.
+- **SPEC-9.50.12**: The strip must call the `use_module_flags` hook once at its top level so missing or stale flags are loaded.
+
+### 9.51 Work day strip: request query, refetch cadence and held day
+
+- **SPEC-9.51.1**: The day request path must be `/workday` when neither a date nor a user is picked, and otherwise `/workday?` followed by `date=YYYY-MM-DD` (when a date is picked) and `user_id=<uuid>` (when a user is picked), in that order, joined by `&`.
+- **SPEC-9.51.2**: The strip must not send a `date` query when no date is picked, so the server chooses the day (the open segment's day, else today in the caller's zone).
+- **SPEC-9.51.3**: The day load must restart when the active tenant generation changes, when server reachability changes, when the refetch tick changes, when the picked date or picked user changes, or when the module flags change.
+- **SPEC-9.51.4**: The refetch tick must advance every 60 seconds, wrapping on overflow, to refetch the day and re-anchor the elapsed figures on a fresh server value.
+- **SPEC-9.51.5**: A separate clock tick must advance every 10 seconds to re-render the elapsed figures without sending a request.
+- **SPEC-9.51.6**: Every successful or restarted action (clock in, clock out, break start, break end, segment correction, reopen, removal) must restart the day load on success.
+- **SPEC-9.51.7**: While a restarted load is in flight the strip must keep rendering the last day it received, and must not blank the card.
+- **SPEC-9.51.8**: The held day must be reused only when its key (tenant generation, picked user, picked date) equals the current key; on any difference the strip must render nothing until the new day arrives.
+- **SPEC-9.51.9**: Each newly received day must replace the held day only when the key, day or receive instant differs from the held values.
+- **SPEC-9.51.10**: A failed or modules-off result must not be stored as the held day.
+
+### 9.52 Work day strip: clock state and live elapsed figures
+
+- **SPEC-9.52.1**: The clock state must be On break when `on_break` is true (regardless of `is_clocked_in`), else Clocked in when `is_clocked_in` is true, else Clocked out.
+- **SPEC-9.52.2**: The state labels must be exactly "Clocked out", "Clocked in" and "On break".
+- **SPEC-9.52.3**: The states Clocked in and On break must be treated as running; Clocked out must not.
+- **SPEC-9.52.4**: The container classes must be `border border-line bg-surface-2` for Clocked out, `border-2 border-accent bg-accent-50 dark:bg-surface-2` for Clocked in, and `border-2 border-dashed border-line-strong bg-surface-2` for On break, so the states differ by border weight and style and not by colour alone.
+- **SPEC-9.52.5**: A live elapsed figure must equal the server's figure plus the whole minutes elapsed since the client received it; if the local clock moved backwards the added amount must be 0, so the figure never drops below the server's figure.
+- **SPEC-9.52.6**: Elapsed figures must be anchored on the server's value and the receive instant, and must not be computed as the local time minus a segment's `started_at`.
+- **SPEC-9.52.7**: Figures must accrue only when the state is running and the strip is not viewing another user's day; otherwise the server's figures must be shown unchanged.
+- **SPEC-9.52.8**: The session figure must be the open segment's (the first segment with no `ended_at`) minutes, live while accruing, and the "since" time must be that segment's start in the viewer's profile zone and time-format preference.
+- **SPEC-9.52.9**: The "Clocked" total must be live only when the state is Clocked in; the break total must be live only when the state is On break.
+- **SPEC-9.52.10**: The "since <time>" line must be omitted when the open segment has no start or there is no open segment.
+- **SPEC-9.52.11**: Only the clock face (time part) of the start instant must be shown, taken as the last space-separated token of the user-formatted datetime.
+- **SPEC-9.52.12**: While running, the card must show the state label, a clock icon, the elapsed session figure (omitted when there is no open segment) and the "since" line; while clocked out it must show the state label and the day as "Weekday, D Mon" (for example "Monday, 15 Jun"), falling back to the raw date string when it does not parse.
+
+### 9.53 Work day strip: day labelling, date picker and viewing another user
+
+- **SPEC-9.53.1**: When the shown day is not the viewer's today, the card must show "Still clocked in from <Weekday D Mon>" while running, or "Showing <Weekday D Mon>" otherwise.
+- **SPEC-9.53.2**: No day note must be shown when `date_source` is `today`, regardless of the client's own date.
+- **SPEC-9.53.3**: When `date_source` is absent or any value other than `today`, the card must compare the shown date with the viewer's today in the profile zone and must show the note only if they differ.
+- **SPEC-9.53.4**: No day note must be shown when the day's `date` does not parse as `YYYY-MM-DD`.
+- **SPEC-9.53.5**: A user who is an administrator (can manage users) and for whom the roster is non-empty must see a "Viewing" select with the option "My day" followed by one option per roster user labelled with the display name.
+- **SPEC-9.53.6**: Choosing a select value must set the picked user to the parsed id, and choosing "My day" (or any unparsable value) must clear it.
+- **SPEC-9.53.7**: When an administrator has a picked user and the roster is empty, the strip must show a secondary "Back to my day" button that clears the picked user.
+- **SPEC-9.53.8**: A non-administrator must never see the "Viewing" select or the "Back to my day" button.
+- **SPEC-9.53.9**: While viewing another user's day the strip must show "Read-only: this is <name>'s day. Clocking in and out acts on your own." and must hide the clock-in, clock-out, break, date-picker and "Log this time" controls.
+- **SPEC-9.53.10**: When the picked user id does not resolve against the roster, the strip must log the unresolved lookup (once per id) under the label `work_day.viewing_user` for kind `user` with the id, and the name in the read-only line is then empty.
+- **SPEC-9.53.11**: While clocked out and not viewing another user, a link-style "Log for another day" button must reveal the label "Clock in for" with a date input and a ghost "Back to today" button.
+- **SPEC-9.53.12**: Changing the date input must set the picked date to the parsed `YYYY-MM-DD` value, or clear it when the value does not parse; the input must be prefilled with the picked date, else the shown day's date.
+- **SPEC-9.53.13**: "Back to today" must clear the picked date and close the date input.
+- **SPEC-9.53.14**: The picked date must also be sent as the `date` query of the day request (see 9.62).
+
+### 9.54 Work day strip: clock in, clock out and breaks
+
+- **SPEC-9.54.1**: While clocked out and not viewing another user, a large primary "Clock in" button must send `POST /workday/clock-in` with body `{"date":"YYYY-MM-DD"}` when a date is picked, else `{}`.
+- **SPEC-9.54.2**: While running and not viewing another user, a danger "Clock out" button must send `POST /workday/clock-out` with body `{}`.
+- **SPEC-9.54.3**: Only when the day reports `track_breaks`, a running card must show a secondary "End break" button (`POST /workday/break/end`, body `{}`) when `on_break` is true, else a secondary "Start break" button (`POST /workday/break/start`, body `{}`).
+- **SPEC-9.54.4**: Each of these actions must be ignored when another action of the strip is in flight, and must otherwise mark the strip busy, clear any prior action error, and show the buttons as loading.
+- **SPEC-9.54.5**: When an action fails, the strip must show an error banner "Could not <verb>: <user message>" with verbs "clock in", "clock out", "start a break" and "end the break", and must not change the displayed day.
+- **SPEC-9.54.6**: When the server is unreachable (the app cannot mutate) the clock-in, clock-out, break, Correct, Save, Reopen and Remove buttons must be disabled, and the clock-in, clock-out, break and Correct buttons must carry the title "Can't change the day while the server is unreachable".
+- **SPEC-9.54.7**: The busy state must be cleared after every action completes, on success and on failure.
+- **SPEC-9.54.8**: Actions must not apply an optimistic update; the day shown changes only after the restarted load returns.
+
+### 9.55 Work day strip: forgotten clock-out warning
+
+- **SPEC-9.55.1**: When the strip is accruing and the live session figure is at least 960 minutes (16 hours), the strip must show a warning box with an exclamation icon and the text "This clock has been running for over 16 hours. If you forgot to clock out, clocking out now records the time up to this moment."
+- **SPEC-9.55.2**: The stale threshold must be a fixed client constant of 16 hours and must not be read from a tenant setting.
+- **SPEC-9.55.3**: The warning must not be shown while clocked out, or while viewing another user's day.
+
+### 9.56 Work day strip: reconciliation figures
+
+- **SPEC-9.56.1**: The strip must show three slots labelled "Clocked", "Logged to work" and "Unlogged", in a single column below the sm breakpoint and three columns from it.
+- **SPEC-9.56.2**: "Clocked" must show the live clocked duration, and the line "plus <duration> on breaks" only when the live break figure is greater than 0.
+- **SPEC-9.56.3**: "Logged to work" must show the server's `logged_minutes` unchanged.
+- **SPEC-9.56.4**: "Unlogged" must be computed on the client as live clocked minutes minus `logged_minutes` and must not use the server's `unlogged_minutes`, so it cannot contradict the clocked figure beside it.
+- **SPEC-9.56.5**: The unlogged text must be "All clocked time is logged" for 0, "<duration> not yet logged" for a positive gap, and "<duration> logged beyond the clock" (duration of the absolute value) for a negative gap.
+- **SPEC-9.56.6**: The unlogged text must use the content colour when the gap is positive and the muted colour otherwise.
+- **SPEC-9.56.7**: When the gap is positive and the viewer is not viewing another user's day, the slot must show a "Log this time" link to the new time entry page.
+- **SPEC-9.56.8**: All durations must be formatted with the shared duration formatter, which follows the user's duration preference.
+
+### 9.57 Work day strip: segment list
+
+- **SPEC-9.57.1**: When the day has at least one segment, the strip must list every segment in the order the server returned, each keyed by segment id.
+- **SPEC-9.57.2**: Each segment row must show the word "Break" when `kind` is `break` and "Work" for any other kind, then the span, then the segment minutes in parentheses.
+- **SPEC-9.57.3**: A closed segment's span must read "<start> to <end>" and an open segment's "<start> onward", each endpoint in a `time` element whose `datetime` attribute is the RFC 3339 instant, in the viewer's profile zone and time-format preference.
+- **SPEC-9.57.4**: A segment without a start must show no span.
+- **SPEC-9.57.5**: Break rows must use the muted bordered style; other rows the bordered `bg-surface-2` style.
+- **SPEC-9.57.6**: The segment shape must decode with `kind` defaulting to the empty string, `minutes` to 0 and the timestamps to absent when the server omits them, and the day must decode with all fields other than the segment `id` optional.
+
+### 9.58 Work day strip: segment correction policy and controls
+
+- **SPEC-9.58.1**: The strip must fetch `GET /settings` once (reloading on a tenant generation change) and derive the segment editing policy from it; when the fetch fails it must log a warning "segment editing policy load failed: <error>" and use the default policy.
+- **SPEC-9.58.2**: Until the policy has loaded, the strip must use the default policy.
+- **SPEC-9.58.3**: With policy `off` no one may correct segments, including the day's owner.
+- **SPEC-9.58.4**: With policy `owner_or_manager` the caller may correct when the caller is the day's owner or can manage users.
+- **SPEC-9.58.5**: With policy `owner_or_admin` and with any unrecognised or empty policy value the caller may correct when the caller is the day's owner or is an administrator.
+- **SPEC-9.58.6**: The strip must offer correction controls only when a signed-in caller exists, the day names its owner (`user_id`), and the policy allows the caller for that owner; a day with no owner must offer none.
+- **SPEC-9.58.7**: The server must remain the authority; a request the server refuses must surface the server's error text and must not be re-worded by the strip.
+- **SPEC-9.58.8**: When correction is allowed, each segment row not being corrected must show a link-style "Correct" button.
+- **SPEC-9.58.9**: Activating "Correct" must prefill the start input (and the end input for a closed segment) with the instant as `HH:MM` in the viewer's profile zone, clear the action error, and open the correction form for that segment only.
+- **SPEC-9.58.10**: At most one correction form must be open at a time.
+- **SPEC-9.58.11**: The correction form must show a "Started" time input, an "Ended" time input only for a closed segment, and the buttons "Save", "Reopen" (closed segments only), "Remove" and "Cancel".
+- **SPEC-9.58.12**: "Cancel" must close the correction form without sending a request.
+
+### 9.59 Work day strip: correction time conversion, save and reopen
+
+- **SPEC-9.59.1**: A typed `HH:MM` must be converted to an instant using the segment day's date and the viewer's profile time zone, not the browser's zone.
+- **SPEC-9.59.2**: The conversion must return no instant (and the correction must be refused) when the text does not parse as `HH:MM`, or when the time does not exist in the zone on that day or is ambiguous (a daylight-saving gap or overlap).
+- **SPEC-9.59.3**: An instant rendered back as `HH:MM` in the viewer's zone must equal the value typed for every time that exists exactly once in that zone.
+- **SPEC-9.59.4**: "Save" must send `PUT /workday/segments/{id}` with `started_at` (UTC RFC 3339) and, for a closed segment, `ended_at`; an open segment must never send `ended_at` from Save.
+- **SPEC-9.59.5**: When the shown day's date does not parse, "Save" must show "This day's date could not be read, so a correction cannot be timed." and send nothing.
+- **SPEC-9.59.6**: When the start text does not convert, "Save" must show "That start time does not exist on this day in your time zone." and send nothing; when the end text of a closed segment does not convert it must show "That end time does not exist on this day in your time zone." and send nothing.
+- **SPEC-9.59.7**: On a valid "Save" the form must close and the request must be sent; on failure the strip must show the server's error text unprefixed in the error banner, and on success the day must reload.
+- **SPEC-9.59.8**: "Reopen" must send `PUT /workday/segments/{id}` with body `{"ended_at":null}` (an explicit null) and close the form.
+- **SPEC-9.59.9**: Save and reopen must be ignored while another action is in flight.
+
+### 9.60 Work day strip: removing a segment
+
+- **SPEC-9.60.1**: The "Remove" button must open a destructive confirmation dialog titled "Remove this clock entry" with confirm text "Remove" and cancel text "Cancel", and must not send a request by itself.
+- **SPEC-9.60.2**: The dialog message must name the entry as "work <span>" or "break <span>" using the segment's kind and span, or "clock entry" when the segment is no longer in the day, and must state that the entry is removed, the day's clocked total drops by its length, the removal is recorded, and it cannot be undone.
+- **SPEC-9.60.3**: Confirming must close the correction form and the dialog and send `DELETE /workday/segments/{id}`; success must reload the day.
+- **SPEC-9.60.4**: A failed removal must show the server's error text unprefixed in the error banner.
+- **SPEC-9.60.5**: Cancelling must close the dialog only when no action is in flight.
+- **SPEC-9.60.6**: The dialog must pass the current action error and busy state to the dialog's error and loading properties.
+
+### 9.61 Work day strip: logged-time breakdown
+
+- **SPEC-9.61.1**: The breakdown must be rendered only when the day's `logged_minutes` is greater than 0.
+- **SPEC-9.61.2**: The "Tickets" list must show "None" when there are no ticket lines, else one row per ticket (keyed by ticket id) with a link to that ticket's detail page and the line's duration.
+- **SPEC-9.61.3**: A ticket link label must be "<number> <title>" when both exist, the number alone, the title alone, or "Ticket" when neither exists.
+- **SPEC-9.61.4**: The "Projects and own time" list must show one row per project line (keyed by project id) linking to the project detail page with the project name or "Project" when the name is absent, then a row "Administrative" with its duration (always shown, including 0), then a row "Unattached client work" only when its minutes are greater than 0.
+- **SPEC-9.61.5**: The breakdown must be one column below the sm breakpoint and two columns from it, and long link labels must truncate.
+
+### 9.62 Work day strip: accessibility
+
+- **SPEC-9.62.1**: The card must contain a screen-reader-only element with `role="status"` and `aria-live="polite"` holding the state label, so that a change of state is announced.
+- **SPEC-9.62.2**: The elapsed figure must have `aria-live="off"` so the timer is not announced on each update.
+- **SPEC-9.62.3**: The state must be conveyed by words and structure (label text, border weight, presence of the timer) and not by colour alone, because the accent colour can be red.
+
+## 10. Billing and finance
+
+### 10.1 Billing page formatting and text helpers
+
+- **SPEC-10.1.1**: The payment-method label helper must parse its input through the shared billing payment-method enum and return "Check", "Credit Card", "ACH Transfer", "Wire Transfer", "Cash", "PayPal" or "Other" for the matching variant; for a value the enum does not recognise it must return the raw input string unchanged.
+- **SPEC-10.1.2**: The create-form optional-string helper must trim its input and return JSON null when the trimmed value is empty, otherwise the trimmed value as a JSON string.
+- **SPEC-10.1.3**: The update-form clearable-string helper must return the trimmed value as a plain string, including the empty string for a blank input, so that an emptied field is sent as "" (clear the value) and never as null (leave unchanged).
+- **SPEC-10.1.4**: Every money amount on the billing list and detail pages must be rendered from the server's decimal string through the shared money formatter, which shows grouped thousands and two decimals.
+- **SPEC-10.1.5**: Paginated billing lists (invoices, payments) must request 25 rows per page via the `per_page` query parameter.
+- **SPEC-10.1.6**: The overdue badge text must be "Overdue (1 day)" for a day count of exactly 1 and "Overdue (N days)" for every other count, using the day count the server sent and never one computed from the browser clock.
+- **SPEC-10.1.7**: The overdue filter value "true" must add `&overdue=true` to the list request, "false" must add `&overdue=false`, and any other value (including the empty string) must add nothing.
+- **SPEC-10.1.8**: The write-off and void detail lines must be built as the optional amount followed by " on YYYY-MM-DD" (the first 10 characters of the server timestamp, omitted when the timestamp is absent or empty) followed by " by <name>" (omitted when the name is absent or blank); the void line has no amount and must have its leading space removed, and an empty result means the row is not rendered.
+- **SPEC-10.1.9**: The payment-method label used on the invoice Payments card must replace underscores with spaces and upper-case the first letter ("credit_card" becomes "Credit card"), and an empty or blank method must read "Payment".
+- **SPEC-10.1.10**: A payment row's text on the invoice Payments card must be the method label, then " on <date>" when the trimmed date is non-empty, then " (ref <reference>)" when the trimmed reference is non-empty.
+- **SPEC-10.1.11**: A refund row's text must be "Refunded on <first 10 characters of the trimmed created_at>", or "Refunded" when that timestamp is blank.
+- **SPEC-10.1.12**: An amount string must be treated as zero when it is empty after trimming or consists only of the characters "0" and "."; any other string is non-zero.
+- **SPEC-10.1.13**: The sent-date formatter must trim the input, parse it as RFC 3339, convert it to UTC, and format it with the viewer's timezone and date-format preference, falling back to the pattern "%b %d, %Y" when no preference is set; it must return no value for an absent, blank or unparseable timestamp.
+- **SPEC-10.1.14**: The "Sent" detail line must read "Emailed" for delivery method "email", "Mailed" for "postal", "Delivered: <note>" for "other" with a non-blank note and "Delivered" for "other" without one, each followed by " on <formatted date>" and " by <name>" when those parts are present; for a missing or unrecognised method with a sent date it must read "Delivery not recorded", and with no sent date and no recognised method it must return no line.
+- **SPEC-10.1.15**: The "issued elsewhere" line must be empty when the provider is absent or blank; otherwise it must name the provider ("Xero" for "xero", "QuickBooks" for "quickbooks", the server's own word for any other), reading "Issued by <provider> as <number>. That is the number your customer has." when a non-blank external number exists and "Issued by <provider>." when it does not.
+- **SPEC-10.1.16**: The billing company picker data must come from `GET /contacts/companies` (all pages, authenticated); on failure the failure must be logged at error level with the read named and the picker must fall back to an empty list; the select options must start with an empty-valued placeholder entry followed by one entry per company (value the company id, label the name).
+- **SPEC-10.1.17**: The company-invoices loader for the payment picker must request `GET /invoices?company_id=<id>` (all pages, authenticated); on failure it must log a warning naming the company id and the error and return an empty list.
+- **SPEC-10.1.18**: The Record Payment invoice options must start with an empty-valued entry labelled "(Unapplied payment)" followed by one entry per invoice, valued by the invoice id and labelled "<invoice number> - <total> (<status>)".
+
+### 10.2 Tax rate selection and preview
+
+- **SPEC-10.2.1**: The tenant default tax rate must be the first loaded rate that is both active and flagged default.
+- **SPEC-10.2.2**: The empty tax-rate picker entry must be labelled "Default: <name> (<rate>%)" when a default rate exists and "No tax" when none exists.
+- **SPEC-10.2.3**: The tax-rate select options must be the empty entry (value "") followed by one entry per active rate only, valued by the rate id and labelled "<name> (<rate>%)" with the rate trimmed.
+- **SPEC-10.2.4**: The tax preview amount must be subtotal multiplied by the rate percentage divided by 100, rounded to two decimals half away from zero; an empty rate id must use the tenant default rate, and an unknown rate id, an absent default, or an unparseable subtotal or rate must produce an empty string.
+- **SPEC-10.2.5**: An invoice body must carry either a tax amount or a tax rate id, never both: a non-blank typed tax override must send `tax_amount` (trimmed) and a null `tax_rate_id`; a blank or absent override must send the optional-string rate id and a null `tax_amount`.
+- **SPEC-10.2.6**: The totals tax label must read "Tax (<rate>%)" with trailing zeros of the percentage removed ("13.0000" shown as "13", "7.25" unchanged) when the invoice recorded a parseable rate, and "Tax" when the rate is absent, blank or unparseable.
+
+### 10.3 Billing access control
+
+- **SPEC-10.3.1**: The no-finance-permission state must set the page title to the given title, render the heading "Billing access required", the text "Invoices and payments are restricted to administrator and finance roles. Ask an administrator to grant you access.", and the line "Your current role: <role>" only when the signed-in user has a role.
+- **SPEC-10.3.2**: The invoice list page must render its body only when the signed-in user holds the finance role set (super admin, admin, finance) or holds the `invoices:read` capability, and must otherwise render a refusal state.
+- **SPEC-10.3.3**: When the invoice list refuses a caller that has a contact session, it must render the portal access-required state (title "Invoices", area invoices); when it refuses any other caller it must render the no-finance-permission state with title "Invoices".
+- **SPEC-10.3.4**: The invoice detail page must render the portal access-required state (title "Invoice", area invoices) without issuing any detail fetch when the caller has a contact session and lacks the `invoices:read` capability.
+- **SPEC-10.3.5**: The payment list page must render the no-finance-permission state with title "Payments" unless the signed-in user holds the finance role set, and must not mount the payment list body or fetch payments in that case.
+- **SPEC-10.3.6**: The invoice list header actions "Tax Rates", "Gateways" and "New Invoice", the invoice detail actions Edit, Amend, Send, Record Payment, Create Credit Note, Void and Write off, and the staff-only detail fetches must be available only to a staff-plane caller (the staff-only capability).
+- **SPEC-10.3.7**: The Write off button must be rendered only for a staff-plane caller whose role is in the finance role set.
+- **SPEC-10.3.8**: The Pay Now buttons must be rendered only when the caller has a live contact session and the `invoices:pay` capability; a staff session must never be offered them.
+
+### 10.4 Invoice list loading and filters
+
+- **SPEC-10.4.1**: The invoice list must seed its company filter from the `company_id` URL query parameter and its search text from the `q` URL query parameter, each empty when absent.
+- **SPEC-10.4.2**: The invoice list search text must be debounced by 300 ms before it affects the list request, and any change to the search, company, status or overdue filter must reset the page to 1.
+- **SPEC-10.4.3**: The invoice list must request `GET /invoices?page=<page>&per_page=25` and append `&company_id=<id>` only when the company filter parses as a UUID, `&status=<value>` when a status is chosen, the overdue parameter when the overdue filter is set, and `&q=<URI-component-encoded text>` when the debounced trimmed search text is non-empty.
+- **SPEC-10.4.4**: The invoice list must issue no request and stay in the not-loaded outcome when the caller has neither a staff access token nor a contact session.
+- **SPEC-10.4.5**: The invoice list and the company picker must refetch when the active tenant generation changes, and the invoice list must also refetch when server reachability changes.
+- **SPEC-10.4.6**: The status filter must offer "All Statuses" (empty), "Draft" (staff plane only), "Pending", "Sent", "Partially Paid", "Paid", "Void" and "Written Off", in that order, with values draft, pending, sent, partially_paid, paid, void, written_off.
+- **SPEC-10.4.7**: The overdue filter must offer "Overdue and current" (empty), "Overdue only" (true) and "Not overdue" (false); the company filter must offer "All companies" followed by the tenant's companies.
+- **SPEC-10.4.8**: A failed invoice list load must be logged at error level with the error and must show the banner "Could not load invoices. Refresh the page to retry." while the server is reachable.
+- **SPEC-10.4.9**: A failed invoice list load while the server is flagged unreachable must render the content-unavailable state titled "Invoices" instead of the table.
+
+### 10.5 Invoice list rendering
+
+- **SPEC-10.5.1**: The invoice list header must be titled "Invoices" with the subtitle "Manage customer invoices and billing" and must render the context filter banner for the invoices scope.
+- **SPEC-10.5.2**: The invoice table must have the columns Invoice, Company (staff plane) or "Billed to" (contact plane), Date, Due Date, Total, Balance and Status, and must show a 5-row loading skeleton over 7 columns while loading.
+- **SPEC-10.5.3**: When the list is empty and at least one of the company, status, overdue or search filters is active, it must show the empty state "No invoices match your filters" with a "Clear filters" button that resets the company, status, overdue and search filters.
+- **SPEC-10.5.4**: When the list is empty and no filter is active, it must show the empty state "No invoices yet" with the description "Create your first invoice to start billing customers.", and a "New Invoice" button only for a staff-plane caller.
+- **SPEC-10.5.5**: Each invoice row must show the company name on the staff plane and the billing contact name on the contact plane, a dash for an empty company, date or due date, the formatted total and balance, the status badge, and an orange overdue badge only when the server flagged the invoice overdue.
+- **SPEC-10.5.6**: Clicking an invoice row or its number must navigate to that invoice's detail route.
+
+### 10.6 Invoice detail loading and state
+
+- **SPEC-10.6.1**: The invoice detail page must load `GET /invoices/{id}` using the contact bearer when a contact session exists and the staff bearer otherwise; a failure must be logged at error level with the invoice id.
+- **SPEC-10.6.2**: While the invoice is loading the detail page must show the detail skeleton; after a failed load while the server is reachable it must show the banner "Could not load invoice." with a "Back to invoices" link; after a failed load while the server is unreachable it must render the content-unavailable state titled "Invoice".
+- **SPEC-10.6.3**: The detail page title must be "Invoice <number>" once loaded and "Invoice" before, and the header must carry breadcrumbs back to the invoice list and the issued-elsewhere line as the subtitle.
+- **SPEC-10.6.4**: The detail page must load payment readiness from `GET /invoices/{id}/payment-readiness`; a failure must be logged at error level with the invoice id and must leave the page in the not-ready state (no gateway, not payable, no partial payment, no provider list).
+- **SPEC-10.6.5**: For a staff-plane caller the detail page must load `GET /invoices/{id}/delivery-options` after the invoice loads and again whenever the invoice reloads; a failure must be logged at warn level with the invoice id and must leave every delivery method selectable with no tooltip.
+- **SPEC-10.6.6**: The detail page must load the invoice's credit notes and the payment ledger `GET /invoices/{id}/payments`, reloading the ledger whenever the invoice reloads; a ledger failure must be logged at warn level with the invoice id and must hide the Payments card without an error banner.
+- **SPEC-10.6.7**: For a staff-plane caller with an invoice that names a billing contact, the page must load `GET /contacts/contacts/{id}` for the edit modal; a failure must be logged at warn level naming the contact id and leave the contact name empty.
+- **SPEC-10.6.8**: For a staff-plane caller the page must load `GET /payment-gateways` and treat a gateway as live when any entry is both active and configured; a successful load with no live gateway must be logged at info level, and a failed load must be logged at error level and yield an unknown state.
+- **SPEC-10.6.9**: The invoice status must be parsed through the shared invoice-status enum; an unrecognised status must make the invoice not editable, not collectible and not frozen.
+- **SPEC-10.6.10**: An invoice must be editable when its status is draft or pending, collectible when pending, sent or partially paid, and frozen according to the shared status enum's frozen rule.
+- **SPEC-10.6.11**: The amount left to credit must be the invoice total less the amount already credited (not less the amount paid), and a credit note must be creatable only when the invoice is frozen and that amount is greater than zero.
+- **SPEC-10.6.12**: A staff-plane caller viewing a non-draft invoice with a locked state must see the status note: sent "Sent and locked. Record a payment, write it off, or correct it with a credit note."; partially paid "Partly paid and locked. Record the rest, write off what will not arrive, or correct with a credit note."; paid "Paid and locked. Correct it with a credit note from the Credit Notes card below."; void "Voided. Raise a new invoice to charge again."; written off "Written off as unpaid. A later payment is recorded as a recovery."; no note for other statuses and none for a contact-plane caller.
+- **SPEC-10.6.13**: When the caller landed with `?paid=1` (read from the boot-time query and honoured only for a contact session), the detail page must restart the invoice fetch every 2000 ms for up to 15 ticks.
+- **SPEC-10.6.14**: While a paid-landing contact waits and the invoice is not yet paid, the page must show the "Processing your payment" splash instead of the invoice body; after the 15 ticks expire with the invoice still unpaid it must show the notice "Your payment has not reached this invoice yet. If you completed it, this usually settles within a few minutes: reload this page to check. Do not pay again; contact us if it has not appeared by tomorrow." and the normal body.
+- **SPEC-10.6.15**: The mutating invoice actions must be disabled with an explanatory tooltip while the server is unreachable.
+
+### 10.7 Invoice action availability
+
+- **SPEC-10.7.1**: An invoice may be written off only when its status is sent or partially_paid.
+- **SPEC-10.7.2**: The Edit control must be enabled for draft and pending, and otherwise disabled with the reason "Already replaced. Amend the invoice that replaced it." for void and "Already sent. Amend it to edit the replacement draft." for every other status.
+- **SPEC-10.7.3**: The Amend control must be disabled with the reason "Not sent yet. Edit it directly." for draft and pending, "Already replaced. Amend the invoice that replaced it." for void, "A payment is recorded. Raise a credit note instead." for a sent invoice with a payment above zero, "A credit note is already against this invoice. Credit the rest or invoice the difference." for a sent invoice with a credit above zero and no payment, "Money or a decision has already moved. Raise a credit note instead." for every other status, and enabled only for a sent invoice with neither.
+- **SPEC-10.7.4**: The Create Credit Note control must be disabled with "Not sent yet. Edit it directly, or void it." for draft and pending, "Already voided. Nothing left to correct." for void, and "Already fully credited. Nothing left to credit." when nothing is left to credit, and enabled otherwise.
+- **SPEC-10.7.5**: The Write off control must be disabled with "Not sent yet. Void it instead." for draft and pending, "Already paid. Nothing to write off." for paid, "Already written off. Nothing left to collect." for written_off, and "Only an unpaid, sent invoice can be written off." for any other non-writable status.
+- **SPEC-10.7.6**: The Void control must be enabled for draft and pending, and otherwise disabled with "Already void. Nothing to back out of." for void and "Already sent. Amend it to replace, or raise a credit note." for every other status; when enabled its tooltip must read "Voids this draft invoice and keeps it on record."
+- **SPEC-10.7.7**: A server-unreachable reason must take precedence over a status reason: Edit "Can't edit while the server is unreachable", Amend "Can't amend while the server is unreachable", Create Credit Note "Can't raise a credit note while the server is unreachable", Write off "Can't write off while the server is unreachable", Void "Can't void while the server is unreachable".
+- **SPEC-10.7.8**: The Send button must be rendered only for an editable invoice on the staff plane, and the Record Payment button only for a collectible invoice on the staff plane; each must be disabled with a tooltip ("Can't send while the server is unreachable", "Can't record a payment while the server is unreachable") when the server is unreachable.
+- **SPEC-10.7.9**: Edit, Amend, Create Credit Note, Write off and Void must always be present for the permitted caller and greyed rather than hidden when unavailable.
+
+### 10.8 Sending an invoice
+
+- **SPEC-10.8.1**: The Send button must open a confirmation dialog titled "Send invoice" with the message "Sending finalizes the invoice: it locks and nothing on it can change afterwards." and must not send until the dialog is confirmed.
+- **SPEC-10.8.2**: The Send dialog must offer the delivery methods Email (default), Postal mail and Other; the Email option must be disabled with the server's reason as its tooltip when the delivery options mark email unavailable, and the Send button must be disabled when email is selected but unavailable or when Other is selected with a blank note.
+- **SPEC-10.8.3**: Choosing Postal mail must show an "Open PDF" link to `/api/v1/invoices/{id}/pdf` opening in a new tab, and choosing Other must reveal a required note field labelled "How was it delivered?".
+- **SPEC-10.8.4**: Confirming Send with method Other and a blank note must not send a request and must show "Describe how the invoice was delivered." in the dialog.
+- **SPEC-10.8.5**: Confirming Send must `PUT /invoices/{id}` with `{"status":"sent","delivery":{"method":<method>}}`, adding `"note"` inside `delivery` only for method other.
+- **SPEC-10.8.6**: Confirming Send while another invoice action is in flight must do nothing.
+- **SPEC-10.8.7**: A successful Send must close the dialog, clear the blocked-send and send-failed panels, reset the method to email and the note to empty, and reload the invoice.
+- **SPEC-10.8.8**: A 409 response to Send must close the dialog and show the warning panel "The invoice was not emailed." with the server message, a billing contact picker scoped to the invoice's company, and (when the invoice has a company) a link "Open the company to set its default billing contact".
+- **SPEC-10.8.9**: A 5xx response to Send must be logged at warn level with the invoice id and message, close the dialog, and show the warning banner "The email was not sent." with a "Show details" disclosure containing the server message and the buttons "Retry" (reopens the Send dialog) and "Dismiss".
+- **SPEC-10.8.10**: Any other Send failure must be logged at warn level with the invoice id and must keep the dialog open showing "Could not send invoice: <error>".
+- **SPEC-10.8.11**: Picking a billing contact from the blocked-send panel must `PUT /invoices/{id}` with `{"billing_contact_id": <id>}`; success must clear the panel and reload the invoice, and failure must show "Could not set the billing contact: <error>" in the page error banner.
+- **SPEC-10.8.12**: The Send dialog's Email option must show a preview of the pay-now email whose recipient is the delivery-option recipient (or "The billing contact" when none is known), whose subject is "Invoice <number> from <org>" (suffixed " is ready to pay" when a payment gateway is connected), and whose body lists the invoice number, "Amount due: <balance> <currency>" (currency defaulting to USD) and the due date.
+- **SPEC-10.8.13**: The email preview must add the note "No payment gateway is connected, so the email carries no Pay Now link. Connect one under Settings, Payment Gateways." when no gateway is connected, and "Could not check whether a payment gateway is connected; the Pay Now link is included only when one is." when the gateway state is unknown; it must never predict a refusal to send.
+- **SPEC-10.8.14**: The send request path must be built by the named send-path helper, `/invoices/{id}`.
+- **SPEC-10.8.15**: The delivery-option lookup must return the entry whose method equals the requested method, and no entry when the options are absent or do not name that method.
+
+### 10.9 Voiding, writing off and amending
+
+- **SPEC-10.9.1**: The Void button must open a destructive confirmation titled "Void invoice" with the message "Void this invoice? Raise a new invoice to charge again." and an optional "Reason" field (maximum 2000 characters).
+- **SPEC-10.9.2**: Confirming Void must `POST /invoices/{id}/void` with a body containing `reason` only when the trimmed reason is non-empty; success must clear the reason, close the dialog and reload the invoice, and failure must show "Could not void invoice: <error>" in the dialog and page banner.
+- **SPEC-10.9.3**: Cancelling the Void dialog while no action is in flight must close it and clear the reason and the action error.
+- **SPEC-10.9.4**: The Write off button must open a modal titled "Write off invoice" with a required "Reason" textarea (maximum 2000 characters) and the explanation that the customer owes the balance and will not pay it, that a later payment is recorded as a recovery and that a credit note is the correction path.
+- **SPEC-10.9.5**: The modal's "Write off" button must be disabled while the server is unreachable or the trimmed reason is empty, and confirming with an empty reason must not send a request and must show "A reason is required."
+- **SPEC-10.9.6**: Confirming a write-off must `POST /invoices/{id}/write-off` with `{"reason": <trimmed reason>}`; success must clear the reason, close the modal and reload the invoice, and failure must show "Could not write off invoice: <error>" inside the modal.
+- **SPEC-10.9.7**: Closing or cancelling the write-off modal must be ignored while an action is in flight, and otherwise must close it and clear its error.
+- **SPEC-10.9.8**: The Amend button must `POST /invoices/{id}/amend` with an empty JSON object; on success it must navigate to the returned invoice's detail route, and when the response carries no id it must show "The amendment was created but the server did not say which invoice it is."; a failure must show the error text in the page banner.
+- **SPEC-10.9.9**: Void, write-off, amend, send and contact-pick requests must not start while another invoice action is in flight (the shared busy flag), and the flag must be cleared when each request finishes.
+- **SPEC-10.9.10**: The Edit button must open the invoice edit modal seeded from the loaded invoice; saving must close the modal and reload the invoice. Record Payment must open the payment modal seeded with the invoice's company and id, and a saved payment must close it and reload the invoice. Create Credit Note must open the credit-note modal for this invoice, and a created note must close it and reload both the invoice and its credit notes.
+
+### 10.10 Paying an invoice from the contact plane
+
+- **SPEC-10.10.1**: Pay buttons must render only for a pay-capable caller when the invoice is not paid and the server reports it payable.
+- **SPEC-10.10.2**: The pay options must be one button per provider the server lists (non-blank provider and label), in server order and labelled by the server; when the list is empty a single unnamed button must be derived from a non-blank `button_label`, and when neither exists no option must be derived. Before readiness loads a single "Pay Now" button must be shown.
+- **SPEC-10.10.3**: A Pay button must be disabled while the server is unreachable (tooltip "Can't start a payment while the server is unreachable"), while no gateway is ready (tooltip "Your MSP has not connected an online payment provider yet. Contact them to arrange payment."), and while any payment start is in flight; only the button that was pressed may show its loading state.
+- **SPEC-10.10.4**: Pressing Pay must `POST /invoices/{id}/pay` with `success_url` set to the page origin plus the invoice detail route plus `?paid=1`, `cancel_url` set to the origin plus the invoice detail route, `provider` only when the button names one, and `amount` only when the trimmed amount field is non-empty.
+- **SPEC-10.10.5**: A pay response with a non-empty `checkout_url` must replace the browser location with it on the web build; on a non-web build the page must show "Payment checkout is only available in the web portal. Open your portal in a browser to pay."
+- **SPEC-10.10.6**: An empty `checkout_url` must show "Payment provider returned an empty response. Try again."; a failed request must show "Could not start payment: <user message>"; in both cases the buttons must be re-enabled.
+- **SPEC-10.10.7**: The partial-amount input ("Amount to pay", placeholder the balance due) must be shown only when the server reports partial payment allowed, with help text "Between <minimum or "the minimum"> and <balance due>. Leave blank to pay the full balance."; editing it must clear the pay error.
+- **SPEC-10.10.8**: When the invoice currency differs (case-insensitively) from the browser-locale currency and Pay is rendered for an unpaid payable invoice, the page must show "You will be charged <amount>. Your card statement may show this in a different currency at your bank's exchange rate." where <amount> is the server's balance display, or "this invoice's <currency> balance" when that display is empty; it must show nothing when the browser locale yields no currency.
+
+### 10.11 Invoice detail rendering
+
+- **SPEC-10.11.1**: The invoice PDF button must be rendered only when the caller holds `invoices:download_pdf` and the invoice is not issued by an external provider; it must read "Preview PDF" and open in a new tab for draft and pending invoices and "Download PDF" (downloading the stored file named "<invoice number>.pdf") for all others.
+- **SPEC-10.11.2**: For an editable invoice and a caller who can download the PDF, the page must offer a "Preview template" selector (current template, Classic, Modern, Compact) that appends `?template=<value>` to the preview request when non-empty and saves nothing.
+- **SPEC-10.11.3**: The document card must show "INVOICE", the invoice number, "Invoice Date", "Due Date" (a dash when empty), "Terms" when a payment term name exists, a line-item table (Description, Qty, Unit Price, Amount) marking non-taxable lines "tax exempt", the message "This invoice has no line items." when empty, the totals Subtotal, tax (labelled per the tax label rule), Discount and Total, and the notes when non-empty.
+- **SPEC-10.11.4**: The Status card must show the status badge (plus the overdue badge when flagged), Total, Paid, Credited and Balance Due.
+- **SPEC-10.11.5**: The Payments card must be rendered only when the ledger loaded; it must show "No payments recorded." when empty, otherwise each payment line with its amount, each refund of that payment indented with a leading minus, and "Total paid <amount>" followed by ", refunded <amount>" only when the refunded total is non-zero.
+- **SPEC-10.11.6**: The Credit Notes card must list each note's number (linking to its detail), total and status badge plus its issued-elsewhere line when non-empty; with no notes it must read "No credit notes. Use Create Credit Note to correct this invoice." when creditable, "No credit notes, and nothing is left to credit." when frozen but not creditable, and "A credit note can be raised once this invoice has been sent." otherwise.
+- **SPEC-10.11.7**: The Details card must show Currency, PO Number and Company only when present; Company and Billing Contact must be links on the staff plane and plain text (the contact name, or a dash when unknown) on the contact plane; and it must show the "Sent", "Written off" (with its reason) and "Voided" (with its reason) rows only when the data exists.
+- **SPEC-10.11.8**: The "Written off" row must show the formatted frozen write-off amount followed by the date and the person who wrote it off, and an absent amount alongside a write-off timestamp must not be presented as a real zero amount.
+
+### 10.12 Creating an invoice
+
+- **SPEC-10.12.1**: The new-invoice page must be titled "New Invoice", prefill the company from the `company_id` URL query parameter, seed the payment term with the tenant's active default term once the terms load, and offer the terms "Default term" followed by the active terms.
+- **SPEC-10.12.2**: Selecting a different company on the new-invoice form must clear the chosen billing contact; the billing contact picker must appear only once a company is chosen and be scoped to that company.
+- **SPEC-10.12.3**: Creating an invoice must validate all fields together and focus the first invalid one: the company is required ("Company is required."), the invoice date is required, the description is required, and quantity and unit price are required, numeric and non-negative; each message must appear inline at its field.
+- **SPEC-10.12.4**: When both dates are present and the due date is earlier than the invoice date the form must show "Due date must be on or after the invoice date." at the due date field; a blank due date is allowed and its help text must state the date the server will derive from the term (thirty days when the term has no count).
+- **SPEC-10.12.5**: A valid create must `POST /invoices` with the company, optional billing contact, invoice date, optional due date, optional payment term, PO number and notes, the tax rate or tax amount (never both), optional discount, and one line of type "service" with product id, taxable flag, description, quantity, unit price and sort order 0; success must navigate to the new invoice, failure must show "Could not create invoice: <error>".
+- **SPEC-10.12.6**: Picking a product from the price list must fill the description and unit price, remember the product id and set the line's taxable flag from the product; the Taxable checkbox must be disabled while a product is chosen, and clearing the product must reset the flag to taxable.
+- **SPEC-10.12.7**: The Tax field must show the previewed tax (quantity times unit price when the line is taxable, else zero, against the chosen or default rate) until the user types an amount; typing an override must stick until another tax rate is picked, which must clear the override.
+- **SPEC-10.12.8**: "Generate from Time Entries" must require a chosen company ("Company is required."), then `POST /invoices/from-time-entries` with the company, optional billing contact, dates, PO number and notes; success must navigate to the new invoice and failure must show "Could not generate invoice: <error>".
+- **SPEC-10.12.9**: Create and Generate must both be disabled with the tooltips "Can't create an invoice while the server is unreachable" and "Can't generate an invoice while the server is unreachable" when the server is unreachable, and neither may start while the other is in flight.
+- **SPEC-10.12.10**: The form fields must enforce maximum lengths of 100 (PO number), 1000 (line description) and 2000 (notes) characters.
+
+### 10.13 Payment list page
+
+- **SPEC-10.13.1**: The payment list must request `GET /payments?page=<page>&per_page=25` with the staff bearer, refetching on tenant generation and reachability changes, and must log a load failure at error level.
+- **SPEC-10.13.2**: A failed payment list load must show "Could not load payments. Refresh the page to retry." while the server is reachable and the content-unavailable state titled "Payments" while it is unreachable.
+- **SPEC-10.13.3**: The payment table must have the columns Date, Company, Invoice, Method, Reference, Amount and Actions, a 5-row loading skeleton, and the empty state "No payments yet" with the description "Record a payment to track what your customers have paid."
+- **SPEC-10.13.4**: The header "Record Payment" button and the empty-state button must open the record-payment modal, and must be disabled with "Can't record a payment while the server is unreachable" when the server is unreachable; a saved payment must close the modal and reload the list.
+- **SPEC-10.13.5**: Each payment row must show the method through the payment-method label helper, and its Edit action must open the payment modal seeded from that row, closing and reloading the list when saved.
+- **SPEC-10.13.6**: A successful payment deletion must reload the list.
+
+### 10.14 Payment row actions
+- **SPEC-10.14.1**: The payment row in the Payments table must render, in order, the cells Date, Company, Invoice, Method, Reference, Amount and Actions, and the Date, Company and Reference cells must show a muted "-" when their value is empty.
+- **SPEC-10.14.2**: The Invoice cell of a payment row must show a muted "Unapplied" when the payment has no invoice id, and otherwise a link to the invoice detail route of that id whose text is the invoice number, or "View invoice" when the number is empty.
+- **SPEC-10.14.3**: The Amount cell of a payment row must be right-aligned and rendered in the green success colour.
+- **SPEC-10.14.4**: The Edit button of a payment row must be disabled while a delete is in flight and while the server is unreachable (the shared can-mutate state is false), and while unreachable it must carry the title "Can't edit while the server is unreachable". Clicking it must call the row's edit handler.
+- **SPEC-10.14.5**: The Delete button of a payment row must be disabled while the server is unreachable with the title "Can't delete while the server is unreachable", must show a loading state while a delete is in flight, and must open the confirmation dialog only when no delete is in flight.
+- **SPEC-10.14.6**: The payment delete confirmation dialog must be titled "Delete payment", must read "Delete this payment? The linked invoice balance will be restored.", must label its buttons "Delete" and "Cancel", and must be styled destructive. Cancel must close the dialog unless a delete is in flight.
+- **SPEC-10.14.7**: Confirming the payment delete must clear any previous row error and send `DELETE /payments/{id}`, and a second confirmation while the first request is in flight must be ignored. On success the row must call its deleted handler, which reloads the payments list.
+- **SPEC-10.14.8**: When `DELETE /payments/{id}` fails, the payment row must show "Could not delete payment: {error}" in small red text beneath the action buttons, and in both the success and failure case the in-flight state must clear and the confirmation dialog must close.
+
+### 10.15 Record and edit payment: form layout and seeding
+- **SPEC-10.15.1**: The payment modal must be in create mode when its payment id prop is empty (title "Record Payment", primary button "Record Payment") and in edit mode otherwise (title "Edit Payment", primary button "Save Changes"), and it must open at the large modal size.
+- **SPEC-10.15.2**: The payment modal must seed its company id, invoice id, payment date, amount, method, reference number and notes from its props, and the payment method must default to "check" when the seeded method is empty.
+- **SPEC-10.15.3**: The Method select (name `payment_method`) must offer exactly these value/label pairs in this order: check/"Check", credit_card/"Credit Card", ach/"ACH Transfer", wire/"Wire Transfer", cash/"Cash", other/"Other".
+- **SPEC-10.15.4**: The company field must be the shared company picker, required, with inline company creation allowed. Selecting a company must store its id and name and clear the chosen invoice, and clearing the picker must clear the company id, company name and invoice.
+- **SPEC-10.15.5**: The Invoice select (name `payment_invoice_id`, label "Invoice", help "Select a company first. Choose (Unapplied payment) to leave this payment unapplied.") must list first an empty-valued option "(Unapplied payment)" and then each invoice of the chosen company labelled "{invoice number} - {total} ({status})" and keyed by the invoice id.
+- **SPEC-10.15.6**: The invoice options must be loaded with `GET /invoices?company_id={id}` (all pages) and reloaded whenever the company id changes. When the company id is not a valid UUID the option list must hold only "(Unapplied payment)" and no request must be made.
+- **SPEC-10.15.7**: When loading a company's invoices fails, the picker must log a warning naming the company id and the error and must still offer "(Unapplied payment)".
+- **SPEC-10.15.8**: The Amount input (name `payment_amount`, label "Amount") must be a required number input with min "0.01" and step "0.01".
+- **SPEC-10.15.9**: The Reference Number input must have a maximum length of 100 characters and the Notes textarea (2 rows) must have a maximum length of 2000 characters, matching the server column limits.
+- **SPEC-10.15.10**: The primary button of the payment modal must show a loading state while saving and must be disabled while the server is unreachable with the title "Can't save while the server is unreachable". Cancel and the modal close control must call the close handler.
+- **SPEC-10.15.11**: Editing the Invoice select, the Amount input or the Payment Date field must clear that field's own inline error.
+
+### 10.16 Record and edit payment: validation and submit
+- **SPEC-10.16.1**: Pressing save while a save is in flight must do nothing. Otherwise it must first clear the banner and the amount, invoice and payment-date inline errors.
+- **SPEC-10.16.2**: The save must collect every validation failure before stopping, show each in its own slot, and focus the first invalid field (`payment_date`, `payment_amount` or `payment_invoice_id`). No request may be sent while any failure is present.
+- **SPEC-10.16.3**: When the company id (trimmed) is not a valid UUID, the save must show the banner "A valid company ID (UUID) is required." and block the submit.
+- **SPEC-10.16.4**: The Payment Date must be required, with the message produced by the shared required-field rule for the label "Payment date", shown inline.
+- **SPEC-10.16.5**: An empty Amount (after trimming) must show "Amount is required." inline.
+- **SPEC-10.16.6**: A non-empty Amount must be parsed as a decimal and rejected inline with "Amount must be a number." when it does not parse, "Amount must be greater than zero." when it is zero or negative, "Amount must have at most 2 decimal places." when its scale exceeds 2, and "Amount is out of range." when it exceeds 10,000,000,000, checked in that order after parsing.
+- **SPEC-10.16.7**: A non-empty Invoice id that is not a valid UUID must show "Invoice ID must be a valid UUID, or leave it blank for an unapplied payment." inline and block the submit. A blank invoice id must be allowed and must produce an unapplied payment.
+- **SPEC-10.16.8**: The request body must contain `company_id`, `invoice_id` (the UUID string, or null when blank), `payment_date` (trimmed), `amount` (the validated string), `payment_method`, `reference_number` and `notes` (each trimmed, or null when empty).
+- **SPEC-10.16.9**: When an invoice id is present, the save must first request `GET /invoices/{id}`. If the invoice is not found it must show "No invoice found with that ID." on the Invoice field; any other failure must log the error with the invoice id and show the banner "Could not verify the invoice: {error}". In both cases it must clear the saving state and send no payment request.
+- **SPEC-10.16.10**: In create mode the save must send `POST /payments`, and in edit mode `PUT /payments/{payment id}`, with the same body.
+- **SPEC-10.16.11**: On success the modal must call its saved handler, after which the Payments page closes the modal and reloads its list.
+- **SPEC-10.16.12**: On failure the modal must show the banner "Could not record payment: {error}" in create mode or "Could not save payment: {error}" in edit mode, keep the modal open with the entered values, and clear the saving state.
+
+### 10.17 Invoice edit modal: header fields
+- **SPEC-10.17.1**: The invoice edit modal must open at the large size titled "Edit Invoice", with a Cancel button and a "Save" primary button that shows a loading state while saving and is disabled while the server is unreachable with the title "Can't save while the server is unreachable".
+- **SPEC-10.17.2**: The modal must seed its company, billing contact, invoice date, due date, payment term, PO number, notes, lines, tax rate, tax override and discount from its props.
+- **SPEC-10.17.3**: The company field must be the required company picker. Selecting a different company must clear the billing contact id and name, clear the company error and store the new id and name. Clearing the picker must clear the company and the billing contact.
+- **SPEC-10.17.4**: While the chosen company differs from the one the modal opened with and is non-empty, the modal must show the note "This draft moves to {company name} when you save. The billing contact is cleared, because it belonged to the previous company. A draft that bills time or mileage, comes from a contract, or has a payment recorded cannot move."
+- **SPEC-10.17.5**: The Billing Contact field must be the contact picker labelled "Billing Contact" and filtered to the currently chosen company (not the company the modal opened with), and clearing it must clear the contact id and name.
+- **SPEC-10.17.6**: Invoice Date (name `invoice_date`) must be a required date field and Due Date (name `due_date`) an optional date field with the help text "Change the payment term and leave this as it is to take the due date from that term."
+- **SPEC-10.17.7**: The Payment Terms select (name `payment_term_id`) must list the payment terms from the shared payment-terms cache, offering only active terms plus the invoice's current term even when it is inactive.
+- **SPEC-10.17.8**: The Payment Terms select must offer an empty "No payment term" option only while the invoice has no term, because the server update cannot clear a term that is already set.
+- **SPEC-10.17.9**: The PO Number input (name `po_number`) and the Notes textarea (name `invoice_notes`, 3 rows) must seed from the invoice and update on input.
+- **SPEC-10.17.10**: Editing the Invoice Date or Due Date must clear that field's own inline error, and editing the Due Date must additionally mark the due date as touched.
+
+### 10.18 Invoice edit modal: line items
+- **SPEC-10.18.1**: The editable lines must be seeded from the invoice lines keeping description, quantity, unit price, product id and taxable flag as strings or values received, with an empty line type replaced by "service".
+- **SPEC-10.18.2**: The "Add line" button must append an empty line of type "service" that is taxable.
+- **SPEC-10.18.3**: The price-list picker (label "Add from the price list", placeholder "Search the price list to add a line" followed by an ellipsis character) must, on selection, append a line of type "product" whose description is the product name, quantity is "1", unit price is the product's price, product id is the product's id and taxable flag is the product's, and the picker must clear itself after selection.
+- **SPEC-10.18.4**: While there are no lines the modal must show "No line items. Add at least one before saving."
+- **SPEC-10.18.5**: Each line row must have a required Description input (maximum 1000 characters, placeholder "What was delivered"), a required Qty number input (step "0.01", min "0"), a required Unit Price number input (step "0.01", min "0"), a Taxable checkbox and a Remove button.
+- **SPEC-10.18.6**: The Taxable checkbox of a line that carries a product id must be disabled, because a product line follows the product's taxable flag; for other lines toggling it must flip the line's flag.
+- **SPEC-10.18.7**: The Remove button must delete that row from the line set.
+- **SPEC-10.18.8**: Editing a line's Description, Qty or Unit Price must clear that line's own inline error for that field. Each line must carry its own three error messages so they stay aligned with the line through additions and removals.
+
+### 10.19 Invoice edit modal: tax, discount and due date
+- **SPEC-10.19.1**: The Tax Rate select (name `tax_rate_id`) must list first an empty-valued option labelled by the tenant's active default rate ("Default: {name} ({rate}%)") or "No tax" when none, then each active rate as "{name} ({rate}%)", from the shared tax-rates cache.
+- **SPEC-10.19.2**: Choosing a tax rate must store its id and discard any tax override.
+- **SPEC-10.19.3**: The modal must seed the tax rate id from the invoice, and must seed the tax override with the invoice's tax amount only when the invoice has no tax rate id; otherwise the override is unset.
+- **SPEC-10.19.4**: The Tax input (name `tax_amount`, number, step "0.01", min "0") must show the override when one is set and otherwise a preview computed from the selected rate (or the tenant default rate when none is chosen) over the sum of quantity times unit price of the taxable lines, rounded to two decimals half away from zero. A line quantity or price that does not parse must count as zero in the preview, and the preview must be empty when no rate applies.
+- **SPEC-10.19.5**: Typing in the Tax input must set the override to the typed text. The help text must read "Worked out from your tax rate. Type your own amount to override it; an override is saved as you enter it and records no rate."
+- **SPEC-10.19.6**: The Discount input (name `discount_amount`, number, step "0.01", min "0") must seed from the invoice discount and be sent as a trimmed string, or null when empty.
+- **SPEC-10.19.7**: The save body must name the tax rate or the tax override, never both: a non-blank override must send `tax_amount` with a null `tax_rate_id`, and otherwise the chosen rate id (null when none) must be sent with a null `tax_amount`.
+- **SPEC-10.19.8**: The save body must send `due_date` only when the operator edited the Due Date field in this session, as the trimmed value or null when blank. When the field was not edited it must send null so the server keeps or re-derives the date.
+
+### 10.20 Invoice edit modal: validation and save
+- **SPEC-10.20.1**: Pressing Save while a save is in flight must do nothing. Otherwise it must clear the banner, collect every validation failure, show each failure in its own slot and focus the first invalid field.
+- **SPEC-10.20.2**: The Invoice Date must be required, shown inline with the label "Invoice date".
+- **SPEC-10.20.3**: An invoice with no lines must show the banner "An invoice must have at least one line item." and block the save.
+- **SPEC-10.20.4**: Every line must have a non-empty trimmed Description, and Quantity and Unit price that are non-empty numbers of at least 0, with the failures shown inline on that line.
+- **SPEC-10.20.5**: When the company id is empty the save must show "Choose the company this invoice is for." on the company picker and send no request.
+- **SPEC-10.20.6**: The save must send `PUT /invoices/{id}` with `company_id` (the new id only when it differs from the id the modal opened with, otherwise null), `billing_contact_id` (trimmed, or null to leave the contact unchanged), `invoice_date`, `due_date`, `payment_term_id` (trimmed or null), `po_number` and `notes` (trimmed strings where an empty string clears the value), the tax fields, `discount_amount` and `lines`.
+- **SPEC-10.20.7**: Each element of `lines` must carry `line_type` (trimmed, "service" when empty), `product_id` (string or null), `is_taxable`, `description` (trimmed), `quantity` and `unit_price` (trimmed strings), and `sort_order` equal to the row position starting at 0.
+- **SPEC-10.20.8**: On success the modal must call its saved handler. On failure it must show the banner "Could not save invoice: {error}", keep the entered values and clear the saving state.
+
+### 10.21 Due date derivation hint
+- **SPEC-10.21.1**: The derived due date must be the invoice date plus the payment term's day count, formatted `YYYY-MM-DD`, and must use 30 days when the term names no day count.
+- **SPEC-10.21.2**: The derived due date must be absent when the invoice date (trimmed) is not a valid `YYYY-MM-DD` date or the addition overflows.
+
+### 10.22 Tax rates page
+- **SPEC-10.22.1**: The tax rates page must set the page title "Tax Rates" and must render the no-finance-permission state titled "Tax Rates" instead of the list for any user whose role cannot manage billing.
+- **SPEC-10.22.2**: For permitted users the page must load `GET /tax-rates?page={page}&per_page=25` with the current access token, reload when the active tenant changes or the server becomes reachable again, and treat a missing access token as a failed load that is logged.
+- **SPEC-10.22.3**: A failed tax rate load must be logged as an error "tax rate list load failed: {error}".
+- **SPEC-10.22.4**: When the load failed and the server is flagged unreachable the page must show only the content-unavailable state titled "Tax Rates". When it failed while reachable it must keep the page and show the banner "Could not load tax rates. Refresh the page to retry."
+- **SPEC-10.22.5**: The page header must read "Tax Rates" with the subtitle "Manage tax rates applied to invoices", a "Back to Invoices" link to the invoice list, and a "New Tax Rate" button disabled while unreachable with the title "Can't add a tax rate while the server is unreachable".
+- **SPEC-10.22.6**: The table must have the columns Name, Rate, Default and Active, show a loading skeleton while loading, and when empty show the title "No tax rates yet", the description "Add a tax rate to apply it to your invoices." and a "New Tax Rate" button with the same unreachable gating.
+- **SPEC-10.22.7**: Each row must show the name as the first cell, the rate followed by "%", a blue "Default" badge for the default rate, and a green "Active" or gray "Inactive" badge.
+- **SPEC-10.22.8**: Clicking a row, or activating its name cell by keyboard, must open the form modal seeded from that rate.
+- **SPEC-10.22.9**: The table must page at 25 rows per page, and changing page must reload the list. On the modal's saved event the modal must close and the list must reload.
+
+### 10.23 Tax rate form modal
+- **SPEC-10.23.1**: The tax rate modal must be titled "Edit Tax Rate" for an existing rate and "New Tax Rate" otherwise, at the medium size, and a new rate must start with an empty name, an empty rate, Default off and Active on.
+- **SPEC-10.23.2**: The Name input (name `tax_rate_name`) must be required, limited to 100 characters, with the placeholder "e.g. US-CA or Standard VAT".
+- **SPEC-10.23.3**: The Rate (%) input (name `tax_rate_rate`) must be required and a number from 0 to 100 inclusive with at most 2 decimal places, with step "0.01", min "0", max "100" and the placeholder "e.g. 8.25".
+- **SPEC-10.23.4**: The modal must show checkboxes "Default rate" (help "Used when no specific jurisdiction matches.") and "Active".
+- **SPEC-10.23.5**: Pressing save while a save or delete is in flight must do nothing. Otherwise it must validate Name and Rate together, show each failure inline, focus the first invalid field and send nothing while a failure exists.
+- **SPEC-10.23.6**: A valid save must send `name` and `rate` (both trimmed) with `is_default` and `is_active`, using `POST /tax-rates` for a new rate and `PUT /tax-rates/{id}` for an existing one.
+- **SPEC-10.23.7**: On save success the modal must call its saved handler. On failure it must show the banner "Could not save tax rate: {error}" and clear the saving state.
+- **SPEC-10.23.8**: Editing the Name or Rate must clear that field's inline error.
+- **SPEC-10.23.9**: The "Delete" button must appear only for an existing rate, must be disabled while unreachable with the title "Can't delete while the server is unreachable", must do nothing while a save or delete is in flight, and must open the confirmation dialog titled "Delete tax rate" reading "Delete this tax rate? This cannot be undone."
+- **SPEC-10.23.10**: Confirming the delete must send `DELETE /tax-rates/{id}` once (further confirmations while in flight are ignored). On success it must call the saved handler. On failure it must show the banner "Could not delete tax rate: {error}". In both cases the dialog must close and the in-flight state clear.
+- **SPEC-10.23.11**: The primary button must read "Save Changes" for an existing rate and "Create Tax Rate" for a new one, show a loading state while saving and be disabled while unreachable with the title "Can't save while the server is unreachable".
+
+### 10.24 Payment gateways page
+- **SPEC-10.24.1**: The payment gateways page must set the page title "Payment Gateways" and must render the no-finance-permission state titled "Payment Gateways" for any user whose role cannot manage billing.
+- **SPEC-10.24.2**: For permitted users the page must load every page of `GET /payment-gateways` with the current access token, reload when the active tenant changes or the server becomes reachable again, and treat a missing access token as a failed load that is logged.
+- **SPEC-10.24.3**: A failed gateway load must be logged as an error "payment gateway list load failed: {error}".
+- **SPEC-10.24.4**: When the load failed and the server is flagged unreachable the page must show only the content-unavailable state titled "Payment Gateways". When it failed while reachable it must keep the page and show the banner "Could not load payment gateways. Refresh the page to retry."
+- **SPEC-10.24.5**: The header must read "Payment Gateways" with the subtitle "Configure payment gateway integrations" and a "Configure Gateway" button disabled while unreachable with the title "Can't configure a gateway while the server is unreachable", which opens the form for a new gateway.
+- **SPEC-10.24.6**: When the page is shown at the settings gateways route it must show the settings breadcrumb and no "Back to Invoices" link; elsewhere it must show a "Back to Invoices" link and no breadcrumb.
+- **SPEC-10.24.7**: The table must have the columns Provider, Mode, Active and Credentials, show a loading skeleton while loading, and when empty show the title "No payment gateways yet", the description "Configure a gateway to accept online payments." and a "Configure Gateway" button with the same unreachable gating.
+- **SPEC-10.24.8**: Each row must show the provider name ("Stripe", "Authorize.Net", "PayPal", or the raw provider string otherwise), a yellow "Test" or green "Live" badge, a green "Active" or gray "Inactive" badge, and a green "Configured" or gray "Not configured" badge.
+- **SPEC-10.24.9**: Clicking a row, or activating its provider cell by keyboard, must open the gateway form for that gateway. On the modal's saved event the modal must close and the list must reload.
+- **SPEC-10.24.10**: A new gateway form must start with provider "stripe", Active off, Test mode on, not configured, an empty button label and no stored credentials. A form for an existing gateway must seed provider, Active, Test mode, configured, button label (empty when unset) and stored credentials from the row and must lock the provider.
+
+### 10.25 Gateway credential rules
+- **SPEC-10.25.1**: The configurable providers must be exactly "stripe" (Stripe) and "paypal" (PayPal), in that order; `authorize_net` must not be offered for configuration.
+- **SPEC-10.25.2**: The credential fields for "stripe" must be `secret_key` ("Secret key") and `webhook_secret` ("Webhook signing secret"), in that order.
+- **SPEC-10.25.3**: The credential fields for "paypal" must be `client_id` ("Client ID"), `client_secret` ("Client secret") and `webhook_id` ("Webhook ID"), in that order.
+- **SPEC-10.25.4**: A provider that is not configurable must have no credential fields, so that nothing typed can be sent for it.
+- **SPEC-10.25.5**: The config body for a provider with credential fields must be absent (the stored credentials are kept) when every field is blank after trimming.
+- **SPEC-10.25.6**: When at least one credential field is filled, every field must be required, and the keys of the empty fields (after trimming) must be returned as the error in field order.
+- **SPEC-10.25.7**: A complete config must be an object keyed by the server's credential key names with trimmed values.
+- **SPEC-10.25.8**: For "paypal" the config must additionally carry `sandbox` equal to the Test mode switch, and for "stripe" it must carry no sandbox key.
+- **SPEC-10.25.9**: The provider choices must be the configurable providers, plus the current provider appended with its display name when it is non-empty and not configurable, and never a provider twice.
+- **SPEC-10.25.10**: The provider display name must be "Stripe", "Authorize.Net" and "PayPal" for those three provider ids and the raw string for any other.
+
+### 10.26 Gateway form: layout and save
+- **SPEC-10.26.1**: The gateway modal must be titled "Edit Gateway" for an existing gateway and "Configure Gateway" otherwise, at the large size, and the Provider select (name `gateway_provider`) must be disabled for an existing gateway.
+- **SPEC-10.26.2**: The modal must show an "Active" checkbox and a "Test mode" checkbox (help "Use the provider's sandbox credentials.").
+- **SPEC-10.26.3**: The modal must show a "Credentials" heading with a green "Configured" or gray "Not configured" badge reflecting whether credentials are stored.
+- **SPEC-10.26.4**: For the selected provider the modal must render one masked password input (name `gateway_cred_{key}`) per credential field with that field's label, placeholder and help text, required only while the gateway is not configured, always starting blank. For a provider without credential fields it must instead show "{provider name} cannot be configured from this app. You can remove it here."
+- **SPEC-10.26.5**: Below the credential fields the modal must show "Stored encrypted. You will not see these again after you save." for an unconfigured gateway, and "Secrets are stored encrypted and are never shown again in full. Leave them all blank to keep what is stored; filling any one replaces the whole set, so enter all of them." for a configured one.
+- **SPEC-10.26.6**: Pressing save while a save or delete is in flight must do nothing. Otherwise it must clear the banner, credential errors and button-label error.
+- **SPEC-10.26.7**: When some but not all credential fields are filled, the save must send nothing and must show on each empty field "Required. Saving replaces the whole credential set, so every field has to be filled in."
+- **SPEC-10.26.8**: When no credential is filled and the gateway is not yet configured, the save must send nothing; for a provider with fields it must show "Required to configure this gateway." on every credential field, and for a provider without fields it must show the banner "{provider name} cannot be configured from this app."
+- **SPEC-10.26.9**: The save must send `PUT /payment-gateways` with `provider`, `is_active`, `is_test_mode`, `client_display_name` (trimmed, an empty string clearing the override) and, only when a complete credential set was typed, `config`.
+- **SPEC-10.26.10**: On success the modal must call its saved handler. On failure it must show the banner "Could not save gateway: {user message}", keep the entered values and clear the saving state.
+- **SPEC-10.26.11**: Editing a credential input must clear that field's error and store the typed value under its credential key, so that switching provider on a new gateway never carries a value into another provider's field.
+
+### 10.27 Gateway form: stored credentials and configuration check
+- **SPEC-10.27.1**: Under each credential input the modal must show a note derived from the server's stored-credential state for that key: nothing when the server sent no state for the key, "Not stored." when it is not present, "Stored: {value}" for a present non-secret field with a value, "Stored, ending {tail}" for a present secret field with a value, and "Stored." when present with no value.
+- **SPEC-10.27.2**: The modal must display the server-provided value as sent and must not derive a masked tail itself; a value that is blank after trimming must be treated as no value.
+- **SPEC-10.27.3**: The "Check this configuration" panel with a "Run check" button must appear only for a gateway that is configured and whose provider is locked (an existing gateway).
+- **SPEC-10.27.4**: Pressing "Run check" must do nothing while a check is running. Otherwise it must clear the previous result and error and send `POST /payment-gateways/{provider}/check` with an empty JSON object, using the provider the gateway was opened with and not the select's current value.
+- **SPEC-10.27.5**: The "Run check" button must show a loading state while running, and be disabled while running or while the server is unreachable with the title "Can't reach the server to run a check".
+- **SPEC-10.27.6**: A failed check request must show the banner "Could not check this gateway: {user message}".
+- **SPEC-10.27.7**: A successful check must show a one-line summary followed by one row per check reading "{name}: {label}" with the check's detail appended when non-empty, the label coloured green for "passed", red for "failed" and muted otherwise.
+- **SPEC-10.27.8**: The check labels must be "Passed" for `passed`, "Failed" for `failed`, "Not checked" for `not_checkable` and "Unknown" for any other outcome, and `not_checkable` must never be shown as a pass.
+- **SPEC-10.27.9**: The summary must read "This gateway reported no checks." for an empty result; "{names joined by ' and '} did not pass." when any check failed; "Everything that can be checked from here passed." when none failed and at least one is `not_checkable`; and "Everything passed." otherwise.
+
+### 10.28 Gateway form: webhook endpoint and provider setup guidance
+- **SPEC-10.28.1**: The modal must request `GET /payment-gateways/webhook-endpoints` once per open, reloading when the active tenant changes. A failure must be logged as a warning "webhook endpoint lookup failed: {error}" and must not remove the credential fields.
+- **SPEC-10.28.2**: The "Webhook endpoint" block must be shown only for a selected provider that has webhook events, and must be absent for any other provider.
+- **SPEC-10.28.3**: The endpoint for the selected provider must be classified as known when the server listed a non-blank URL for it, as having no public base when the server listed the provider with an absent or blank URL, and as unknown when the provider is not listed or the lookup failed.
+- **SPEC-10.28.4**: A known endpoint must be shown in full with a "Copy" button that copies it to the clipboard and, only after the clipboard write succeeds, shows the success toast "Webhook endpoint copied to clipboard."; a failed write must be logged and shown to the user. It must be followed by "Create a webhook in {provider name} for this URL, subscribed to the events below. It will give you a signing secret: paste that into the field above."
+- **SPEC-10.28.5**: An endpoint with no public base must show "This deployment has no public API address set, so the endpoint cannot be shown. Whoever runs the server sets PUBLIC_API_BASE_URL."
+- **SPEC-10.28.6**: An unknown endpoint must show "The endpoint for this provider could not be read from the server."
+- **SPEC-10.28.7**: The events to subscribe to must be listed for "stripe" as `checkout.session.completed` and `charge.refunded`, and for "paypal" as `CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED` and `PAYMENT.CAPTURE.REFUNDED`, with no events for any other provider, followed by "All of them. Without the refund event a refund never reaches the invoice."
+- **SPEC-10.28.8**: Setup guidance must exist for exactly the providers that have webhook events: for "stripe" the location text "In Stripe, open Workbench and the Webhooks tab, then create a destination." with the documentation link https://docs.stripe.com/webhooks, and for "paypal" the text "In the PayPal Developer dashboard, open your app and add a webhook." with the link https://developer.paypal.com/api/rest/webhooks/.
+- **SPEC-10.28.9**: Each provider's guidance must carry a warning about its silent failure: for "stripe" that the destination must send the full event data (snapshot events) because an event-ID-only destination is accepted and never reaches the invoice, and for "paypal" that the Webhook ID field wants the ID PayPal shows after saving the webhook and not its URL.
+- **SPEC-10.28.10**: The guidance block must show the location text, the warning when non-empty and a link "{provider name}'s setup guide" that opens in a new tab with `rel="noopener noreferrer"`. The guidance text must not quote a provider button label.
+
+### 10.29 Gateway removal and button label
+- **SPEC-10.29.1**: The "Remove" button must appear only for an existing gateway, must be disabled while unreachable with the title "Can't remove while the server is unreachable", and must do nothing while a save or removal is in flight; otherwise it must open the confirmation dialog titled "Remove gateway" reading "Remove this gateway configuration?".
+- **SPEC-10.29.2**: Confirming the removal must clear the banner and send `DELETE /payment-gateways/{provider}` once for the provider the gateway was opened with; further confirmations while in flight must be ignored.
+- **SPEC-10.29.3**: On removal success the modal must call its saved handler. On failure it must show the banner "Could not remove gateway: {error}". In both cases the dialog must close and the in-flight state clear. Cancel must close the dialog unless a removal is in flight.
+- **SPEC-10.29.4**: The "Button label (optional)" input (name `gateway_client_display_name`, placeholder "Pay with card") must have a maximum length of 64 characters and the help text "What your customer sees on the Pay Now button. Leave blank for the provider's default."
+- **SPEC-10.29.5**: A button label longer than 64 characters must show "Button label must be 64 characters or fewer." on that field and send nothing.
+- **SPEC-10.29.6**: The "Save Gateway" button must show a loading state while saving and be disabled while the server is unreachable with the title "Can't save while the server is unreachable".
+
+### 10.30 Bills list page
+
+- **SPEC-10.30.1**: The Bills list page (route `BillList`, page title "Bills") must render only for a signed-in user whose role satisfies `can_manage_billing()`; any other user must see the `NoFinancePermission` panel titled "Bills" and no bill data request must be made.
+- **SPEC-10.30.2**: The Bills list must load `GET /bills?page=<n>&per_page=25`, where `<n>` is the current page clamped to at least 1, and must re-fetch whenever the page, the status filter or the debounced search text changes.
+- **SPEC-10.30.3**: The Bills list path must append `&status=<status>` only when the trimmed status is non-empty and `&q=<text>` only when the trimmed search text is non-empty; the status value is appended as given and the search text must be percent-encoded with `urlencoding_minimal`.
+- **SPEC-10.30.4**: The Bills search box (label "Search", placeholder "Vendor or their bill number") must be debounced by 300 ms before it changes the request, and any change to the search text or the status select must reset the page to 1.
+- **SPEC-10.30.5**: The Bills status select (label "Status") must offer "All bills" (empty value) followed by Draft, Approved, Paid and Void in that order, taken from the single `BILL_STATUSES` list.
+- **SPEC-10.30.6**: The Bills list must load vendor names with `GET /vendors` (all pages) and show the vendor name in the Vendor column; a row whose vendor id is not found, or every row when the vendor load fails, must show "Unknown vendor", and a vendor load failure must be logged at error level as "vendor list load failed".
+- **SPEC-10.30.7**: The Bills table must have the columns Vendor, Number, Issued, Due, Total (right aligned) and Status; Number and Due must show "-" when absent, Total must be `total_minor` rendered with `format_money_minor`, and Status must be the `status_badge` of the row status.
+- **SPEC-10.30.8**: A Bills row whose `external_provider` is set must show a purple badge "In <provider>" beside the vendor name; the list must not show the external bill id.
+- **SPEC-10.30.9**: Clicking a Bills row, or activating its first (Vendor) cell from the keyboard, must navigate to `BillDetail` for that bill id.
+- **SPEC-10.30.10**: While the Bills list is loading it must show a table skeleton of 4 rows and 6 columns.
+- **SPEC-10.30.11**: When the Bills list loads with no rows and no failure it must show "No bills match this filter." if the status or search is non-blank, otherwise the title "No bills yet" with the description "Enter what a vendor billed you, with its lines, and approve it when you have checked it." and a "New Bill" button.
+- **SPEC-10.30.12**: When the Bills list fetch fails it must log at error level "bill list load failed: <cause>"; if the server is also flagged unreachable the page must render the `ContentUnavailable` panel titled "Bills", otherwise it must show the error banner "Could not load bills. Refresh the page to retry." above the table.
+- **SPEC-10.30.13**: Every "New Bill" button must be disabled when the app cannot mutate (server unreachable) and must then carry the title "Can't do this while the server is unreachable".
+- **SPEC-10.30.14**: The Bills list must page 25 rows at a time using the server `meta.total` as the item count, and when the New Bill modal reports a save it must close the modal and re-fetch the list.
+
+### 10.31 Bill status rules and amount parsing
+
+- **SPEC-10.31.1**: `status_badge` must map `draft` to "Draft" gray, `approved` to "Approved" blue, `paid` to "Paid" green and `void` to "Void" red.
+- **SPEC-10.31.2**: A bill status the build does not know must render as its raw string in a gray badge and must not be hidden.
+- **SPEC-10.31.3**: `can_approve` must be true only for `draft`, and `can_void` must be true only for `draft` and `approved`; `paid` and `void` bills are terminal.
+- **SPEC-10.31.4**: `can_record_payment` must be true only for status `approved`, so a part-paid bill (which stays `approved`) can take further payments.
+- **SPEC-10.31.5**: `BILL_STATUSES` must contain exactly draft, approved, paid and void with the labels Draft, Approved, Paid and Void, and the filter and the column must both read from it.
+- **SPEC-10.31.6**: `minor_from_str` and `hundredths_from_str` must trim the input, accept an optional leading `-`, digits and at most one `.` with at most 2 fractional digits, and scale to an `i64` (so "50" is 5000, "50.5" is 5050, ".5" is 50, "1.25" as hundredths is 125, "-5.00" is -500).
+- **SPEC-10.31.7**: `minor_from_str` and `hundredths_from_str` must return `None` (and the caller must refuse) for empty input, input with no digits, any non-digit character (including `+`, spaces inside, or exponent notation), more than 2 fractional digits, or a value that overflows `i64`; they must never truncate or round.
+- **SPEC-10.31.8**: `BILL_PAYMENT_METHODS` must list exactly check, credit_card, ach, wire, cash and other with the labels Check, Credit card, ACH, Wire, Cash and Other, matching the set the server accepts.
+
+### 10.32 New bill form
+
+- **SPEC-10.32.1**: The New Bill modal (title "New Bill", buttons "Cancel" and "Create Bill") must open from a "New Bill" button on the Bills list and must close on Cancel or the modal close control without sending a request.
+- **SPEC-10.32.2**: The New Bill form must start with an empty vendor, bill number, issue date, due date and notes, currency "USD", and exactly one blank line whose quantity is "1".
+- **SPEC-10.32.3**: The New Bill vendor select must offer "Pick a vendor" followed by the vendors from `GET /vendors`, and each line's category select must offer "No category" followed by the categories from `GET /expense-categories`; a failed load of either must be logged at error level and leaves only the placeholder option.
+- **SPEC-10.32.4**: The New Bill inputs must limit the bill number to 100 characters, the currency to 3, each line description to 500, and quantity, unit price and tax must be number inputs with step 0.01 and minimum 0.
+- **SPEC-10.32.5**: The New Bill form must show a live "Total" equal to the sum over lines of `quantity_hundredths * unit_price_minor / 100` (saturating multiply, integer division) plus the line tax, treating any unparseable field as 0.
+- **SPEC-10.32.6**: "Add line" must append a line with quantity "1", and "Remove last line" must be shown only while more than one line exists and must remove the last line, so the form never has zero lines.
+- **SPEC-10.32.7**: `bill_body` must refuse, in this order and with these messages, an empty vendor ("Pick the vendor this bill is from."), an empty issue date ("A bill needs the date it was issued."), a currency whose trimmed length is not 3 characters ("Currency is a 3-letter code, like USD."), and no lines ("A bill needs at least one line.").
+- **SPEC-10.32.8**: `bill_body` must refuse a line with a blank description with "Line <n> needs a description." (n is 1-based), and a line whose quantity, unit price or tax does not parse with "<description>: quantity is an amount with at most 2 decimals.", "<description>: unit price is an amount with at most 2 decimals." or "<description>: tax is an amount with at most 2 decimals."; a blank tax must be 0.
+- **SPEC-10.32.9**: `bill_body` must produce `vendor_id`, `issue_date`, upper-cased `currency` and `lines` (each with `category_id`, `description`, `quantity_hundredths`, `unit_price_minor`, `tax_minor` and a 0-based `position`), with every string trimmed and `bill_number`, `due_date`, `notes` and a blank `category_id` sent as null.
+- **SPEC-10.32.10**: Pressing "Create Bill" while a save is in flight must do nothing; otherwise it must clear the previous error, show a `bill_body` refusal in the error banner without any request, and on success send `POST /bills` with the body.
+- **SPEC-10.32.11**: When `POST /bills` succeeds the New Bill modal must report saved; when it fails the modal must stay open and show "Could not create the bill: <server message>" with the server message unmodified, and the saving state must clear in both cases.
+
+### 10.33 Bill detail page
+
+- **SPEC-10.33.1**: The Bill detail page (route `BillDetail`, path parameter `id`, page title "Bill") must render only for a user whose role satisfies `can_manage_billing()`; any other user must see the `NoFinancePermission` panel titled "Bill".
+- **SPEC-10.33.2**: The Bill detail page must load `GET /bills/{id}` as a flattened response (bill fields at the top level with `lines` beside them, not under a `bill` key), plus `GET /bills/{id}/payments`, `GET /vendors` and `GET /expense-categories`.
+- **SPEC-10.33.3**: Until the bill has loaded the page must show the detail skeleton; a failed bill load must be logged at error level as "bill load failed: <cause>" and the page must tell the user the bill could not be loaded instead of staying on the skeleton.
+- **SPEC-10.33.4**: The bill card must be titled with the vendor name ("Unknown vendor" when not resolved) with the status badge, and must show Their number ("-" when absent), Issued, Due ("-" when absent), Currency, and the notes when non-empty.
+- **SPEC-10.33.5**: When both `external_provider` and `external_bill_id` are set the bill card must show an info banner "This bill is held in <provider> as <external id>. It was raised there when it was created here, and that copy is what your accountant reconciles."
+- **SPEC-10.33.6**: The detail page must offer "Approve" only when `can_approve` and the app can mutate, "Void" only when `can_void` and the app can mutate, and "Record a payment" only when `can_record_payment` and the app can mutate.
+- **SPEC-10.33.7**: When none of Approve, Void and Record a payment is offered the page must show "A paid or voided bill is final here. A correction is a new bill, the way an invoice amendment is a new invoice."
+- **SPEC-10.33.8**: "Approve" must send `POST /bills/{id}/approve` without confirmation.
+- **SPEC-10.33.9**: "Void" must open a destructive confirmation titled "Void this bill?" with the message "The bill stays on record with its lines and stops counting as owed. It cannot be brought back; enter a new one if it was voided by mistake." and confirm text "Void"; confirming must send `POST /bills/{id}/void` and cancelling must close the dialog without a request.
+- **SPEC-10.33.10**: A bill transition must set the busy state, clear the previous error, close the void dialog, and on a failed request show "Could not <action> the bill: <cause>" in an error banner; whether it succeeded or failed it must clear busy and re-fetch the bill.
+- **SPEC-10.33.11**: The Lines card must list Description, Category ("-" when absent or unresolved), Qty (hundredths divided by 100 shown with 2 decimals, right aligned), Unit price, Tax and Total, each money value rendered from minor units.
+- **SPEC-10.33.12**: Below the lines the page must show Subtotal, Tax and Total, and must show Paid and Remaining only when `paid_minor` is greater than 0, where Remaining is `total_minor - paid_minor` floored at 0.
+
+### 10.34 Bill payments
+
+- **SPEC-10.34.1**: The Payments card must render only when the payments list is non-empty; a failed payments load must be logged at error level as "bill payments load failed: <cause>" and the user must be told the payments could not be loaded rather than seeing no card.
+- **SPEC-10.34.2**: Each payment row must show Paid on, Method (the label from `BILL_PAYMENT_METHODS`, or the raw value when unknown), Reference ("-" when absent) and Amount (right aligned, from minor units).
+- **SPEC-10.34.3**: The "Record a payment" modal must show "Remaining to pay: <amount> <currency>" using the bill's remaining minor units and currency.
+- **SPEC-10.34.4**: The payment form must default Paid on to today's local date as `YYYY-MM-DD`, Method to `check`, and Amount, Reference and Notes to empty.
+- **SPEC-10.34.5**: Recording a payment must refuse, before any request and in this order, an amount that does not parse with "Enter an amount in <currency> with up to two decimals (for example 50.00).", an amount of 0 or less with "Enter a positive amount.", and a blank date with "Enter the date you paid.".
+- **SPEC-10.34.6**: The payment request must be `POST /bills/{id}/payments` with `paid_on`, `amount_minor`, `payment_method`, and `reference` and `notes` sent as null when empty.
+- **SPEC-10.34.7**: When the payment request fails the modal must stay open and show "Could not record the payment: <server message>" unmodified (including the over-payment and voided-bill refusals); when it succeeds the modal must close and the bill and its payments must be re-fetched.
+- **SPEC-10.34.8**: Pressing "Record" while a payment save is in flight must do nothing, and the saving state must clear after the request ends.
+
+### 10.35 Credit note list page
+
+- **SPEC-10.35.1**: The Credit Notes list page (route `CreditNoteList`, page title "Credit Notes") must render only for a user whose role satisfies `can_manage_billing()`; any other user must see the `NoFinancePermission` panel titled "Credit Notes".
+- **SPEC-10.35.2**: The list must load `GET /credit-notes?page=<n>&per_page=25` with `&status=<status>` appended only when a status is selected, using the caller's access token; when no access token exists the request must not be sent and the failure must be visible and logged.
+- **SPEC-10.35.3**: The status select (label "Status") must offer "All Statuses", "Issued" (`issued`) and "Void" (`void`), and changing it must reset the page to 1.
+- **SPEC-10.35.4**: The page header must read "Credit Notes" with the subtitle "Corrections issued against sent invoices" and an "Invoices" button linking to the invoice list, and must show the hint "To raise a credit note, open the sent invoice it corrects and choose Create Credit Note." and no create button.
+- **SPEC-10.35.5**: The table must have the columns Number, Invoice, Date, Reason, Total (right aligned) and Status.
+- **SPEC-10.35.6**: Each row must show the credit note number as a link to its detail, the invoice number as a link to the invoice (or "View invoice" when the number is blank, or "-" when there is no invoice), the issue date or "-", the reason cut to its first line and 80 characters (with "..." appended when cut) with the full reason as the cell title, the total through `format_money_str`, and the status badge from `credit_note_status_badge`.
+- **SPEC-10.35.7**: Clicking a row must navigate to `CreditNoteDetail`, and clicking the invoice link inside a row must go to the invoice only and must not also navigate to the credit note.
+- **SPEC-10.35.8**: While loading the list must show a 5-row skeleton; with no rows it must show "No credit notes match this filter." under a status filter, otherwise the title "No credit notes yet" with the description "A credit note corrects an invoice that has already been sent. Open that invoice to raise one." and a "Go to Invoices" button.
+- **SPEC-10.35.9**: When the list fetch fails it must log at error level "credit note list load failed: <cause>"; if the server is flagged unreachable the page must render `ContentUnavailable` titled "Credit Notes", otherwise it must show the banner "Could not load credit notes. Refresh the page to retry."
+- **SPEC-10.35.10**: The list must page 25 rows at a time using the server `meta.total` as the item count.
+
+### 10.36 Credit note rules and helpers
+
+- **SPEC-10.36.1**: `remaining_to_credit` must return the invoice total minus the amount already credited, floored at zero and ignoring the amount paid, and must return `None` (reported as "unknown") when either decimal string does not parse.
+- **SPEC-10.36.2**: `line_amount` must return quantity times unit price only when both parse as decimals strictly greater than zero, otherwise `None`.
+- **SPEC-10.36.3**: `subtotal` must sum only the lines whose `line_amount` is `Some`.
+- **SPEC-10.36.4**: `tax` must treat a blank value as zero, refuse a non-decimal with "Tax must be a number", refuse a negative with "Tax cannot be negative", and otherwise return the decimal.
+- **SPEC-10.36.5**: `document_error` must refuse a total of 0 or less with "A credit note must credit something: add at least one line with a positive amount." and a total above the remaining amount with "This credit note comes to <total> but only <remaining> is left to credit on this invoice."; a total equal to the remaining amount must be allowed.
+- **SPEC-10.36.6**: `load_invoice_credit_notes` must call `GET /credit-notes?invoice_id=<id>` for all pages and on failure must log at warn level "credit note load failed for invoice <id>: <cause>" and return an empty list; callers must not treat the empty list as proof that no credit note exists.
+- **SPEC-10.36.7**: The copy constants must read exactly: `VOID_CONFIRM_MESSAGE` "Void this credit note? The invoice's balance due goes back up by the credited amount.", `VOID_BUTTON_TOOLTIP` "Voids this credit note and keeps it on record. The invoice's balance due goes back up.", `VOIDED_NOTE` "Voided. The credited amount no longer counts against the invoice." and `ISSUED_LOCKED_NOTE` "Issued and locked. To correct it, void it and raise another."; all must be ASCII.
+- **SPEC-10.36.8**: `requires_product_id` must be true only when the trimmed invoice provider equals `quickbooks`.
+- **SPEC-10.36.9**: `credit_line_json` must produce a line with `line_type` "service", `product_id` (null when none), `description`, `quantity` and `unit_price` as the typed strings, and `sort_order`.
+
+### 10.37 Credit note detail page
+
+- **SPEC-10.37.1**: The Credit Note detail page (route `CreditNoteDetail`, path parameter `id`, page title "Credit Note") must render only for a user whose role satisfies `can_manage_billing()`; any other user must see the `NoFinancePermission` panel titled "Credit Note".
+- **SPEC-10.37.2**: The page must load `GET /credit-notes/{id}` and, once the note names an invoice, `GET /invoices/{invoice_id}`; a note with no invoice must not trigger the invoice request.
+- **SPEC-10.37.3**: The page title and header must read "Credit Note <number>" once loaded (otherwise "Credit Note"), with the subtitle from `issued_elsewhere_line` using the external provider and external number, each treated as absent when blank.
+- **SPEC-10.37.4**: Once the note is loaded the header must show a PDF download control for `GET /credit-notes/{id}/pdf` with fallback file name "<number>.pdf" and title "The credit note as it was issued. It was stored when it was created and never changes."
+- **SPEC-10.37.5**: The "Void" button must be shown only when the status parses to the shared `Issued` variant (an unknown status counts as not issued), must be disabled when the app cannot mutate with the title "Can't void while the server is unreachable" (otherwise the `VOID_BUTTON_TOOLTIP`), and its click must be ignored while busy.
+- **SPEC-10.37.6**: Once loaded the page must show `VOIDED_NOTE` when the status parses to `Void` and `ISSUED_LOCKED_NOTE` otherwise.
+- **SPEC-10.37.7**: The void confirmation must be a destructive dialog titled "Void credit note" with the `VOID_CONFIRM_MESSAGE`, confirm text "Void" and cancel text "Cancel"; cancelling while busy must be ignored.
+- **SPEC-10.37.8**: Confirming must send `POST /credit-notes/{id}/void` with body `{}`; on success it must show the success toast "Credit note voided" and re-fetch the note and the invoice; on failure it must show "Could not void credit note: <cause>" in an error banner; in both cases busy must clear and the dialog must close, and a confirm while busy must be ignored.
+- **SPEC-10.37.9**: A failed note load must be logged at error level "credit note detail load failed for <id>: <cause>"; if the server is flagged unreachable the page must render `ContentUnavailable` titled "Credit Note", otherwise it must show "Could not load credit note." with a "Back to credit notes" link; while loading it must show the detail skeleton.
+- **SPEC-10.37.10**: The document card must show the heading "CREDIT NOTE", the number, "Issue Date" ("-" when absent), a "Corrects" link to the invoice when present, the Reason (line breaks preserved), a lines table (Description, Qty, Unit Price, Amount) or "This credit note has no line items.", Subtotal, Tax, "Total credited", and Notes when non-empty.
+- **SPEC-10.37.11**: The Status card must show the status badge, "Total credited", and when `voided_at` is set a "Voided" time formatted in the user's own date-time format and zone, or the raw string when it is not RFC 3339.
+- **SPEC-10.37.12**: The Invoice card must show the invoice number link, status badge, Total, Paid, Credited and Balance Due once the invoice loads; with no invoice id it must say "This credit note is not linked to an invoice."; a failed invoice load must be logged at error level "credit note invoice balance load failed for <id>: <cause>" and the card must say the invoice could not be loaded instead of showing "Loading the invoice..." indefinitely.
+- **SPEC-10.37.13**: The Details card must show Currency when non-empty and, when a company id is present, a Company link to the company showing its name or "View company" when the name is blank.
+
+### 10.38 Create credit note form
+
+- **SPEC-10.38.1**: `CreditNoteFormModal` must be a large modal titled "Credit Note for Invoice <invoice number>" with buttons "Cancel" and "Issue Credit Note", where "Issue Credit Note" is disabled with the title "Can't issue a credit note while the server is unreachable" when the app cannot mutate; the credit note is issued immediately on creation (no draft).
+- **SPEC-10.38.2**: The form must start with one blank line and empty reason, issue date, tax and notes, and must show "Crediting the whole balance voids the invoice." and "Enter the amount to credit as a positive number."
+- **SPEC-10.38.3**: The form must show live Subtotal, Tax, "Total to credit" and "Left on this invoice" (the `remaining_to_credit` value, or "unknown"), and when the live total exceeds the remaining amount must colour the total red and show "That is more than is left on this invoice."
+- **SPEC-10.38.4**: On submit the Reason must be required and at most 2000 characters, each line Description must be required and at most 1000 characters, and each line Quantity and Unit price must be required numbers strictly greater than zero, reported as "<label> must be greater than zero"; the errors must show on their own fields and block the request.
+- **SPEC-10.38.5**: The Tax field, when non-blank, must be a number of at least zero, reported through `credit_note_math::tax`, and a blank tax must be omitted from the request.
+- **SPEC-10.38.6**: When the invoice provider requires a product, a ProductPicker (label "Product", required, placeholder "Search the price list...") must be shown on every line with the hint "This invoice is issued through QuickBooks, so every line must name the product it credits.", and a line without a product must be refused with "Choose the product this line credits: QuickBooks requires one on every credit-note line."; invoices of any other provider must show no picker.
+- **SPEC-10.38.7**: A form with zero lines (after "Remove" on each) must show "No lines. Add at least one before issuing." and a submit must be refused with "Add at least one line: a credit note must credit something."
+- **SPEC-10.38.8**: After field validation passes, when the remaining amount is known the form must refuse a document whose subtotal plus tax fails `document_error` and show its message in the error banner; when the remaining amount cannot be parsed this check is skipped and the server decides.
+- **SPEC-10.38.9**: The request body must contain `invoice_id`, the trimmed `reason` and `lines` (from `credit_line_json` with trimmed text and 0-based `sort_order`), plus `issue_date`, `tax_amount` and `notes` only when non-blank after trimming.
+- **SPEC-10.38.10**: The form must send `POST /credit-notes`; on success it must show the toast "Credit note <number> issued" and call `oncreated` with the new id, and on failure it must stay open and show "Could not issue credit note: <cause>"; the saving state must clear after the request and a submit while saving must be ignored.
+- **SPEC-10.38.11**: The line "Remove" button must remove that line, and "Add line" must append a blank line; the quantity and unit price inputs must use step 0.01 and minimum 0.01 and the tax input step 0.01 and minimum 0.
+
+### 10.39 Expense claims list page
+
+- **SPEC-10.39.1**: The Expense Claims list page (route `ExpenseList`, page title "Expense Claims") must render for every signed-in user and must not show a finance-permission panel; the server scopes a non-finance caller's list to their own claims.
+- **SPEC-10.39.2**: The list must load `GET /expenses?page=<n>&per_page=25` with `&status=` only when the trimmed status is non-empty and `&q=` (percent-encoded) only when the trimmed search is non-empty, re-fetching when page, status or the search (debounced 300 ms) changes.
+- **SPEC-10.39.3**: A user whose role satisfies `can_manage_billing()` must see a "Who" column (5 columns) and the subtitle "What your people spent, and what has been paid back"; any other user must see no Who column (4 columns) and the subtitle "What you spent, and what has been paid back".
+- **SPEC-10.39.4**: The list must show an intro line per role: for deciders "A claim is submitted by the person who spent the money, approved or rejected by somebody else, and marked reimbursed once it has been paid back. A claim you create here is yours.", otherwise "These are your own claims. Enter what you spent and submit it; somebody in finance approves it and marks it reimbursed once you have been paid back."
+- **SPEC-10.39.5**: The search box (label "Search", placeholder "What it was for") and the status select ("All claims" then Draft, Submitted, Approved, Reimbursed, Rejected from `EXPENSE_STATUSES`) must each reset the page to 1 when changed.
+- **SPEC-10.39.6**: Each row must show Who (for deciders, through `member_label`), Incurred, Total (from minor units, right aligned), "Decided by" (the approver name, or "-" when there is no approver) and the `status_badge`.
+- **SPEC-10.39.7**: Clicking a row, or activating its first cell from the keyboard (Who for deciders, Incurred otherwise), must navigate to `ExpenseDetail` for the claim.
+- **SPEC-10.39.8**: While loading the list must show a 4-row skeleton; with no rows it must show "No claims match this filter." under a non-blank filter, otherwise the title "No claims yet" with the description "Enter what was spent, with a line per receipt, and submit it for approval." and a "New Claim" button.
+- **SPEC-10.39.9**: When the list fetch fails it must log at error level "expense list load failed: <cause>"; if the server is flagged unreachable the page must render `ContentUnavailable` titled "Expense Claims", otherwise it must show "Could not load expense claims. Refresh the page to retry."
+- **SPEC-10.39.10**: Every "New Claim" button must be disabled with the title "Can't do this while the server is unreachable" when the app cannot mutate, and a saved claim must close the modal and re-fetch the list.
+- **SPEC-10.39.11**: `status_badge` must map draft to "Draft" gray, submitted to "Submitted" yellow, approved to "Approved" blue, reimbursed to "Reimbursed" green and rejected to "Rejected" red, and any other value must render as itself in gray.
+
+### 10.40 Expense transitions and member names
+
+- **SPEC-10.40.1**: `transitions_for` must offer ("Submit", "submit") on `draft` to any user; ("Approve", "approve") and ("Reject", "reject") on `submitted` and ("Mark reimbursed", "reimburse") on `approved` only when the caller can decide; and nothing on `reimbursed`, `rejected` or any unrecognized status.
+- **SPEC-10.40.2**: `needs_confirmation` must be true only for the action `reject`.
+- **SPEC-10.40.3**: `member_names` must read `GET /members?page=<n>&per_page=50` page by page up to 20 pages, stop at the first page with fewer than 50 rows, and map each row of kind `user` to its id and "<first> <last>" trimmed, ignoring rows of any other kind.
+- **SPEC-10.40.4**: When a `/members` page request fails `member_names` must log at error level "member list load failed: <cause>" and the pages that show member names must tell the user the names could not be loaded instead of labelling every unresolved member "A former member".
+- **SPEC-10.40.5**: `member_names` must report truncation as true only when all 20 pages were full, and `member_label` must then show "Member <first 8 characters of the id>" for an unresolved id.
+- **SPEC-10.40.6**: `member_label` must return the member name when present and non-empty, otherwise "Member <first 8 characters of the id>" when the map is truncated, otherwise "A former member".
+- **SPEC-10.40.7**: A user may decide claims exactly when their role satisfies `can_manage_billing()`; with no signed-in user the answer must be no.
+
+### 10.41 New expense claim form
+
+- **SPEC-10.41.1**: The New Claim modal (title "New Claim", buttons "Cancel" and "Create Claim") must start with empty date and notes, currency "USD" and one blank line, and the date input must carry the help "The day the money was spent, not today."
+- **SPEC-10.41.2**: The currency input must allow at most 3 characters, each line description at most 500, and each line amount and tax must be number inputs with step 0.01 and minimum 0.
+- **SPEC-10.41.3**: The category select must offer "No category" followed by `GET /expense-categories`; a failed load must be logged at error level "expense category list load failed".
+- **SPEC-10.41.4**: The form must show a live "Total" equal to the sum of each line amount plus tax in minor units, treating unparseable fields as 0.
+- **SPEC-10.41.5**: "Add line" must append a blank line and "Remove last line" must be shown only while more than one line exists.
+- **SPEC-10.41.6**: `expense_body` must refuse, in this order, a blank date ("A claim needs the date the cost was incurred."), a currency whose trimmed length is not 3 ("Currency is a 3-letter code, like USD."), no lines ("A claim needs at least one line."), a blank description ("Line <n> needs a description."), and an amount or tax that does not parse ("<description>: amount is a value with at most 2 decimals." and "<description>: tax is a value with at most 2 decimals."); a blank tax must be 0.
+- **SPEC-10.41.7**: `expense_body` must produce `incurred_on`, upper-cased `currency`, `notes` (null when blank) and `lines` each with `category_id` (null when blank), `description`, `amount_minor`, `tax_minor` and a 0-based `position`, and must not send a quantity.
+- **SPEC-10.41.8**: Pressing "Create Claim" while a save is in flight must do nothing; a refusal from `expense_body` must show in the error banner with no request; otherwise it must send `POST /expenses`, report saved on success, and on failure keep the modal open and show "Could not create the claim: <cause>" and clear the saving state.
+
+### 10.42 Expense claim detail page
+
+- **SPEC-10.42.1**: The Expense Claim detail page (route `ExpenseDetail`, path parameter `id`, page title "Expense Claim") must render for every signed-in user; a claim the server refuses (for example another member's claim) must be shown to the user as a load error.
+- **SPEC-10.42.2**: The page must load `GET /expenses/{id}` as a flattened response (claim fields at the top level with `lines` beside them), plus the member names and `GET /expense-categories`.
+- **SPEC-10.42.3**: Until the claim loads the page must show the detail skeleton; a failed load must be logged at error level "expense load failed: <cause>" and the page must show that the claim could not be loaded instead of staying on the skeleton.
+- **SPEC-10.42.4**: The claim card must be titled with the submitter name through `member_label` and show the status badge, Incurred, Currency, "Decided by" (the approver name, or "Nobody yet" only when there is no approver), Total, and the notes when non-empty.
+- **SPEC-10.42.5**: When both `external_provider` and `external_expense_id` are set the card must show an info banner "This reimbursement is recorded in <provider> as <external id>. It was written there when the claim was marked reimbursed."
+- **SPEC-10.42.6**: The action buttons must be exactly `transitions_for(status, can_decide)` and must be shown only when the app can mutate; "Reject" must use the danger style, the others the primary style, and each button must carry the test id `expense-<action>`.
+- **SPEC-10.42.7**: Clicking "Reject" must open a destructive confirmation titled "Reject this claim?" with the message "The claim stays on record as rejected and cannot be moved again. If it was rejected by mistake, the person who spent the money has to enter it a second time." and confirm text "Reject"; every other action must fire immediately.
+- **SPEC-10.42.8**: A claim transition must send `POST /expenses/{id}/<action>`, set busy, clear the previous error and close the confirmation; on failure it must show "Could not <action> the claim: <cause>" in an error banner, and whether it succeeded or failed it must clear busy and re-fetch the claim.
+- **SPEC-10.42.9**: When no button is offered the page must say "This claim is with finance now. They approve it and mark it reimbursed once you have been paid back." for `submitted` and `approved` claims, and "This claim is finished: a reimbursed or rejected claim cannot be moved again. A correction is a new claim, the way an invoice amendment is a new invoice." only for claims in a terminal status.
+- **SPEC-10.42.10**: The Lines card must list Description, Category ("-" when absent or unresolved), Amount and Tax from minor units, followed by Subtotal, Tax and Total.
+
+### 10.43 Expense categories list page
+
+- **SPEC-10.43.1**: The expense categories page at `/settings/expense-categories` must render only for a user whose role allows billing management (super admin, admin or finance); any other user must see the no-finance-permission notice titled "Expense Categories" and the page must not request the category list.
+- **SPEC-10.43.2**: The page must set the document title to "Expense Categories" and show the header title "Expense Categories" with the subtitle "What a cost was for, on a bill line or an expense claim" and the settings breadcrumb.
+- **SPEC-10.43.3**: The page must load `GET /expense-categories?page={page}&per_page=25`, starting at page 1, with a minimum page of 1, and must send no search or filter parameter.
+- **SPEC-10.43.4**: The list must reload when the page number changes, when the active tenant changes, and when server reachability changes.
+- **SPEC-10.43.5**: When the list request fails, the page must log the error and show the banner "Could not load expense categories. Refresh the page to retry."; when the server is also unreachable, the page must instead render the content-unavailable state titled "Expense Categories".
+- **SPEC-10.43.6**: While the list is loading the table must show a 4-row, 2-column skeleton under the column headers "Name" and "Status".
+- **SPEC-10.43.7**: When the load succeeded and returned no rows the table must show the empty state "No categories yet" with a "New Category" button; a failed load must not be shown as the empty state.
+- **SPEC-10.43.8**: Each row must show the category name and a green "Active" badge when active or a gray "Retired" badge when not.
+- **SPEC-10.43.9**: The "New Category" buttons (header and empty state) must be disabled with the title "Can't do this while the server is unreachable" when mutation is not currently possible.
+- **SPEC-10.43.10**: Clicking a row, or activating its name cell by keyboard, must open the edit modal for that category.
+- **SPEC-10.43.11**: After a successful save the modal must close and the current list page must be reloaded.
+- **SPEC-10.43.12**: The page must not offer deletion of a category; a category is retired by clearing its Active flag.
+- **SPEC-10.43.13**: The pager must show 25 rows per page and the total from the server's pagination metadata.
+
+### 10.44 Expense category form
+
+- **SPEC-10.44.1**: The new-category form must start with an empty name and Active ticked.
+- **SPEC-10.44.2**: On save the form must trim the name and reject it, showing the field error beside the name and sending no request, when it is empty or longer than 100 characters; editing the name must clear its error.
+- **SPEC-10.44.3**: The request body must contain exactly two fields: `name` (trimmed) and `is_active` (boolean).
+- **SPEC-10.44.4**: A new category must be sent with `POST /expense-categories` and an existing one with `PUT /expense-categories/{id}`.
+- **SPEC-10.44.5**: A save activation while a save is in flight must be ignored.
+- **SPEC-10.44.6**: When the save request fails the modal must stay open and show "Could not save category: {error}".
+- **SPEC-10.44.7**: The modal must be titled "New Category" for a new row and "Edit Category" for an existing one, with the create button labelled "Create Category", a name field with placeholder "e.g. Colocation" and the help "Unique in your list, ignoring case.", and an Active checkbox whose help says an unticked category stays on lines already classified and is not offered on new ones.
+- **SPEC-10.44.8**: The modal must render no Delete control for a new or an existing category.
+
+### 10.45 Statement page access and inputs
+
+- **SPEC-10.45.1**: The statement page must render only for a user whose role allows billing management; any other user must see the no-finance-permission notice titled "Statement" and no statement request must be made.
+- **SPEC-10.45.2**: The company must be seeded from the `company_id` query parameter of the page URL, and be empty when the parameter is absent.
+- **SPEC-10.45.3**: When a seeded company id is present the page must request `GET /contacts/companies/{id}` once to fill the picker with the company name, using the name only when it is non-blank.
+- **SPEC-10.45.4**: The period must default to the "This month to date" preset computed from the user's local today, with From and To dates filled from it.
+- **SPEC-10.45.5**: The company picker must be required, must not allow inline company creation, and clearing it must empty the company id and name and show "Choose a company to see its statement." instead of a statement.
+- **SPEC-10.45.6**: The page must request `GET /statements?company_id={id}&period_start={start}&period_end={end}` only when a company is chosen and the period is valid, and must refetch when the company, either date, the tenant, or server reachability changes.
+- **SPEC-10.45.7**: While the statement loads the page must show the detail skeleton.
+- **SPEC-10.45.8**: When the statement request fails the page must log the error and show the banner "Could not load the statement. Check the period and try again."; when the server is also unreachable, the page must instead render the content-unavailable state titled "Statement".
+- **SPEC-10.45.9**: The header title must be "Statement for {company name}" when the loaded statement carries a non-blank company name and "Statement" otherwise, and the document title must follow it.
+- **SPEC-10.45.10**: Once a statement is loaded the header must offer a primary download button for `GET /statements/pdf` with the same three query parameters, a fallback file name `statement-{start}-{end}.pdf`, and the label noun "the statement PDF"; no download button may show before a statement is loaded.
+- **SPEC-10.45.11**: The header must always offer an "Invoices" button linking to the invoice list.
+- **SPEC-10.45.12**: The page must state in text that a statement is computed, not stored or numbered, and that the PDF is the document to send.
+
+### 10.46 Statement period
+
+- **SPEC-10.46.1**: The period select must offer, in order, "This month to date", "Last month", "Last 90 days", "Year to date" and "Custom".
+- **SPEC-10.46.2**: Choosing "This month to date" must set the range from the first of the current month to today; "Last month" from the first to the last day of the previous month; "Last 90 days" from 89 days before today to today (90 days inclusive); "Year to date" from 1 January of the current year to today.
+- **SPEC-10.46.3**: Choosing "Custom", or any key with no range, must leave both dates unchanged.
+- **SPEC-10.46.4**: Editing either date by hand must switch the select to "Custom".
+- **SPEC-10.46.5**: The period must be invalid, with no statement request sent, when either date does not parse as `YYYY-MM-DD` (after trimming), showing "Choose a start and an end date."; or when the end is before the start, showing "The end date is before the start date."; a one-day period (end equal to start) must be valid.
+- **SPEC-10.46.6**: The period error must be shown on the To field.
+
+### 10.47 Statement document
+
+- **SPEC-10.47.1**: The statement must show the period as "{start} to {end}" and, when the invoices, payments, refunds, credit notes and write-offs are all empty, the sentence "No activity in this period. The balance carried in is the balance carried out."
+- **SPEC-10.47.2**: The Balance card must list, in order: Opening balance, "+ Invoiced", "+ Refunded", "- Paid", "- Credited", "- Written off", and Closing balance, each formatted as money from the server's decimal strings.
+- **SPEC-10.47.3**: A missing or empty written-off total must display as zero money rather than blank.
+- **SPEC-10.47.4**: The Invoices table must list invoice number (linking to the invoice detail), date, due date, status badge and right-aligned total, or "No invoices in this period." when empty.
+- **SPEC-10.47.5**: The Payments table must list date, method (humanized), reference, applied-to invoice number and amount, or "No payments in this period." when empty; a missing or blank reference or invoice number must display as a dash.
+- **SPEC-10.47.6**: The Refunds table must list date, the invoice it is against (dash when missing or blank) and amount, or "No refunds in this period." when empty.
+- **SPEC-10.47.7**: The Credit Notes table must list the credit note number (linking to its detail), date, against-invoice (dash when missing), reason (single line, full text on hover) and total, or "No credit notes in this period." when empty.
+- **SPEC-10.47.8**: The Write-offs table must list invoice number (linking to the invoice detail), date, reason (single line, full text on hover) and amount, or "No write-offs in this period." when empty.
+- **SPEC-10.47.9**: A response that omits the write-off list must be shown as an empty write-off section rather than failing.
+
+### 10.48 Contact payment methods page
+
+- **SPEC-10.48.1**: The contact payment methods page must render its content only for a contact holding the `payment_methods:manage_own` capability; any other contact must see the portal access-required state titled "Payment Methods" for the payment methods area, and no payment method request may be made.
+- **SPEC-10.48.2**: The page must set the document title and header to "Payment Methods".
+- **SPEC-10.48.3**: The page must load the saved cards with `GET /contact/payment-methods` and reload them after any successful add-return, default change or removal.
+- **SPEC-10.48.4**: While loading, the card must show three skeleton lines; when the list is empty it must show "You have not saved any cards yet. Click Add a card to save one for future invoices."
+- **SPEC-10.48.5**: A load failure must show an error banner with the error's user message, and no list.
+- **SPEC-10.48.6**: Each card row must show "{Brand} " followed by four bullet characters and the last four digits, "expires {MM}/{YYYY}" with a two-digit month, and a "Default" label when it is the default card.
+- **SPEC-10.48.7**: The brand label must map `visa`, `mastercard`, `amex` or `american_express`, `discover`, `diners`, `jcb` and `unionpay` to Visa, Mastercard, American Express, Discover, Diners, JCB and UnionPay, an empty brand to "Card", and any other brand to the brand with its first character upper-cased.
+- **SPEC-10.48.8**: A response missing any row field must decode with blank or zero defaults rather than failing the list.
+
+### 10.49 Contact payment method actions
+
+- **SPEC-10.49.1**: "Add a card" must send `POST /contact/payment-methods` with `success_url` equal to the browser origin plus the payment methods route plus `?added=1` and `cancel_url` equal to the origin plus the route, and must show a loading state and ignore further clicks while in flight.
+- **SPEC-10.49.2**: On a non-empty `checkout_url` in a browser the page must navigate the window to it; where no browser window exists it must show "Adding a card is only available in the web portal. Open your portal in a browser to add a card."
+- **SPEC-10.49.3**: When the response carries an empty `checkout_url` the page must show "The payment provider returned an empty response. Try again."
+- **SPEC-10.49.4**: When the add request fails the page must show "Could not start adding a card: {user message}".
+- **SPEC-10.49.5**: "Set default" must appear only on a card that is not the default and must call `PUT /contact/payment-methods/{id}/default`; on success the list reloads, on failure the page must show "Could not set default card: {user message}".
+- **SPEC-10.49.6**: "Remove" must open a destructive confirmation titled "Remove card" with the message "Remove {brand} bullets {last4}?" and buttons "Remove" and "Cancel", and must not call the server until confirmed.
+- **SPEC-10.49.7**: Confirming must call `DELETE /contact/payment-methods/{id}`, ignore repeat confirmations while in flight, show a loading state, reload the list on success, and on failure show "Could not remove card: {user message}"; in both cases the dialog must close afterwards.
+- **SPEC-10.49.8**: Cancelling must close the dialog unless a removal is in flight.
+- **SPEC-10.49.9**: Each action must clear the previous action error before it starts.
+
+### 10.50 Products list page
+
+- **SPEC-10.50.1**: The products page at `/settings/products` must render only for a user whose role allows billing management; any other user must see the no-finance-permission notice titled "Products" and no product request may be made.
+- **SPEC-10.50.2**: The page must load `GET /products?page={page}&per_page=25` with `&q={text}` appended when the trimmed search is non-empty (percent-encoded) and `&is_active=true` or `&is_active=false` appended for the Active or Retired status filter, and neither for "All products".
+- **SPEC-10.50.3**: Search input must be debounced by 300 ms before it triggers a reload, and changing the search or the status filter must reset the page to 1.
+- **SPEC-10.50.4**: The status select must offer "All products", "Active" and "Retired".
+- **SPEC-10.50.5**: Changing the page, search or status alone must restart the list request, as must a tenant change or a reachability change.
+- **SPEC-10.50.6**: A failed load must log the error and show the banner "Could not load products. Refresh the page to retry."; when the server is also unreachable the page must render the content-unavailable state titled "Products".
+- **SPEC-10.50.7**: The table must show columns Name, SKU, Unit Price (right-aligned money), Unit, Taxable and Status, with a 6-column skeleton of 4 rows while loading.
+- **SPEC-10.50.8**: With no rows after a successful load the table must show "No products match this filter." when a search or status filter is set, and otherwise "No products yet" with a "New Product" button.
+- **SPEC-10.50.9**: A blank SKU must display as a dash; a taxable product must show a blue "Taxable" badge and a non-taxable one a dash; the status cell must show "Active" (green) or "Retired" (gray) and, when the server reports `in_use`, an additional purple "In use" badge.
+- **SPEC-10.50.10**: The "New Product" buttons must be disabled with the title "Can't do this while the server is unreachable" when mutation is not currently possible.
+- **SPEC-10.50.11**: Clicking a row, or activating its name cell by keyboard, must open the edit modal; after a successful save or delete the modal must close and the list must reload.
+
+### 10.51 Product form
+
+- **SPEC-10.51.1**: The new-product form must start with an empty SKU, name, description and price, unit "each", Taxable ticked and Active ticked.
+- **SPEC-10.51.2**: On save all fields must be validated together and every error shown at once: SKU at most 64 characters; Name required and at most 255; Unit price required and a number of at least 0; Unit required and at most 30; no request may be sent while any error remains.
+- **SPEC-10.51.3**: The request body must carry `sku` and `description` as null when blank, `name` and `unit_price` trimmed, `unit` trimmed with "each" substituted when blank, and `is_taxable` and `is_active` as booleans.
+- **SPEC-10.51.4**: A new product must be sent with `POST /products` and an existing one with `PUT /products/{id}`; a save while saving or deleting must be ignored.
+- **SPEC-10.51.5**: A failed save must keep the modal open and show "Could not save product: {error}".
+- **SPEC-10.51.6**: Delete must be offered only for an existing product that the server does not report as in use.
+- **SPEC-10.51.7**: Delete must send `DELETE /products/{id}` after confirmation titled "Delete product"; on failure (including the server's refusal of a sold product) the modal must stay open and show "Could not delete product: {error}".
+- **SPEC-10.51.8**: The edit form (not the create form) must show the note that changing the price does not re-price anything already sold.
+- **SPEC-10.51.9**: The unit price input must be a number field with step 0.01 and minimum 0.
+
+### 10.52 Vendors list page
+
+- **SPEC-10.52.1**: The vendors page at `/settings/vendors` must render only for a user whose role allows billing management; any other user must see the no-finance-permission notice titled "Vendors" and no vendor request may be made.
+- **SPEC-10.52.2**: The page must load `GET /vendors?page={page}&per_page=25` and must send no search or filter parameter.
+- **SPEC-10.52.3**: A failed load must log the error and show the banner "Could not load vendors. Refresh the page to retry."; when the server is also unreachable the page must render the content-unavailable state titled "Vendors".
+- **SPEC-10.52.4**: The table must show columns Name, Account number, Bills in and Notes, with a 4-column, 4-row skeleton while loading.
+- **SPEC-10.52.5**: With no rows after a successful load the table must show "No vendors yet" with a "New Vendor" button; a failed load must not be shown as empty.
+- **SPEC-10.52.6**: A blank account number or currency must display as a dash; a missing note must display as empty.
+- **SPEC-10.52.7**: The "New Vendor" buttons must be disabled with the title "Can't do this while the server is unreachable" when mutation is not currently possible.
+- **SPEC-10.52.8**: Clicking a row, or activating its name cell by keyboard, must open the edit modal; after a successful save or delete the modal must close and the list must reload.
+
+### 10.53 Vendor form
+
+- **SPEC-10.53.1**: On save the form must validate every field at once: Name required and at most 200 characters; Account number at most 100; Bills in empty or exactly 3 characters, otherwise "Currency is a 3-letter code, like USD."; no request may be sent while any error remains.
+- **SPEC-10.53.2**: The request body must carry `name` trimmed, `account_number` and `notes` as trimmed text or null when blank, and `default_currency` upper-cased or null when blank.
+- **SPEC-10.53.3**: A new vendor must be sent with `POST /vendors` and an existing one with `PUT /vendors/{id}`; a save while saving or deleting must be ignored.
+- **SPEC-10.53.4**: A failed save must keep the modal open and show "Could not save vendor: {error}".
+- **SPEC-10.53.5**: Delete must be offered for an existing vendor only and must send `DELETE /vendors/{id}` after confirmation titled "Delete vendor"; on failure, including the server's refusal of a vendor named by a bill, the modal must stay open and show "Could not delete vendor: {error}".
+- **SPEC-10.53.6**: The currency input must accept at most 3 characters with placeholder "USD", and the name input at most 200.
+
+### 10.54 Invoice issuer connection card
+
+- **SPEC-10.54.1**: The Xero and QuickBooks settings pages must share one implementation parameterised by provider key (`xero` or `quickbooks`), display name, organisation noun ("organisation" for Xero, "company" for QuickBooks), description and payment-account hint, and no provider name may be written into the shared body.
+- **SPEC-10.54.2**: The page must render only for an administrator; any other user must see the admin-only notice titled with the provider display name.
+- **SPEC-10.54.3**: The page must load `GET /integrations/invoice-issuer/{provider}`; while it loads the page must show the detail skeleton, and on failure the page must log the error and show a visible error message instead of the skeleton.
+- **SPEC-10.54.4**: The card state must be "not available" whenever the overview's `configured` is false, regardless of status; otherwise "connected" status gives the connected state, "error" gives the failing state carrying `last_error`, and any other status (including `not_connected` and `disconnected`) gives the never-connected state.
+- **SPEC-10.54.5**: The badge must read "Not available here" (gray) for not available, "Not connected" (gray) for never connected, "Error" (red) for failing, "Connected" (green) when connected with invoices delegated and the deployment invoice switch on or bills delegated and the deployment bills switch on, and "Connected, not issuing" (gray) otherwise.
+- **SPEC-10.54.6**: An overview that omits `delegation_enabled` must be read as true; one that omits `bills_delegation_enabled`, `bills_delegated`, `delegated` or `configured` must be read as false.
+- **SPEC-10.54.7**: The not-available card must say the deployment has no application configured for the provider and must offer no Connect button.
+- **SPEC-10.54.8**: The never-connected card must offer "Connect {provider}" and the failing card must show the provider's `last_error` (or "The last thing {provider} said was a failure." when absent) and offer "Reconnect {provider}".
+- **SPEC-10.54.9**: The connected card must show the organisation id when present, and exactly one of three messages: invoices issued by the provider (delegated and switch on), a warning that invoicing is switched off for the deployment (switch off), or a warning that nothing is delegated (switch on, not delegated).
+- **SPEC-10.54.10**: The connected card must link to the provider's mappings page (Xero mappings route for Xero, QuickBooks mappings route for QuickBooks).
+- **SPEC-10.54.11**: Connect, Reconnect, Disconnect and the bills and payment-account controls must be disabled while mutation is not currently possible.
+
+### 10.55 Invoice issuer connect and disconnect
+
+- **SPEC-10.55.1**: Connect and Reconnect must call `POST /integrations/invoice-issuer/{provider}/authorize` with an empty object, show a busy state, clear the previous error, and on success in a browser navigate the window to the returned `authorize_url`, leaving the busy state on.
+- **SPEC-10.55.2**: When navigation fails the page must show "Could not open the sign-in page: {error}" and clear the busy state; on a host without a browser document it must show "Open this to continue: {authorize_url}".
+- **SPEC-10.55.3**: When the authorize request fails the page must show "Could not start the connection: {error}" and clear the busy state.
+- **SPEC-10.55.4**: Disconnect must be offered only on the connected card and must first open a destructive confirmation titled "Disconnect {provider}?" saying new invoices return to being issued by Mokosh with its own numbers, invoices already issued stay, and what was delegated is remembered on reconnect.
+- **SPEC-10.55.5**: Confirming must close the dialog, call `POST /integrations/invoice-issuer/{provider}/disconnect`, show "Could not disconnect: {error}" on failure, and reload the overview whether or not it failed.
+
+### 10.56 Delegated bills and payment account
+
+- **SPEC-10.56.1**: The connected card must show a "Bills and expenses" section with a button reading "Send bills to {provider} too" when bills are not delegated (primary) or "Stop sending bills" when they are (secondary).
+- **SPEC-10.56.2**: The button must call `PUT /integrations/invoice-issuer/{provider}/bills` with `{"enabled": <desired value>}` (the explicit value, never a toggle), show "Could not change what is delegated: {error}" on failure, and reload the overview afterwards in both cases.
+- **SPEC-10.56.3**: When bills are delegated and the deployment bills switch is off the section must show a warning that bills are still recorded only in Mokosh; when delegated and the switch is on it must say new bills are raised in the provider and that a bill for an unmapped vendor is refused.
+- **SPEC-10.56.4**: The "Reimburse from" field must render only when bills are delegated, with the provider-specific placeholder, prefilled with the current `payment_account_id`, and disabled while busy or when mutation is not possible.
+- **SPEC-10.56.5**: When no payment account is set the field must show "Not set, so reimbursing a claim through {provider} is refused until it is."
+- **SPEC-10.56.6**: "Save account" must call `PUT /integrations/invoice-issuer/{provider}/payment-account` with `{"account_id": <trimmed text>}` or `{"account_id": null}` when the trimmed text is empty, show "Could not save the account: {error}" on failure, and reload the overview afterwards in both cases.
+- **SPEC-10.56.7**: The field must keep the text being typed across an overview reload.
+
+### 10.57 Invoice issuer mappings loading
+
+- **SPEC-10.57.1**: The mappings page for each provider must render only for an administrator; any other user must see the admin-only notice titled "Mappings". The header must read "{provider} mappings".
+- **SPEC-10.57.2**: The Clients table must list every company, loaded with all pages of `GET /contacts/companies` sorted by name, joined with `GET /invoice-issuer-mappings/companies` (company id to `external_customer_id`).
+- **SPEC-10.57.3**: The Vendors table must list every vendor from `GET /vendors` joined with `GET /invoice-issuer-mappings/vendors` (`vendor_id` to `external_vendor_id`), on both providers.
+- **SPEC-10.57.4**: The People table must list every member, sorted case-insensitively by name with a blank name shown as "A member with no name set", joined with `GET /invoice-issuer-mappings/people` (`user_id` to `external_contact_id`), on both providers.
+- **SPEC-10.57.5**: For QuickBooks only, the page must also show Expense accounts (all of `GET /expense-categories` joined with `GET /invoice-issuer-mappings/expense-accounts`, `category_id` to `external_account_id`) and Products (all of `GET /products` joined with `GET /invoice-issuer-mappings/products`, `product_id` to `external_item_id`); for Xero neither table may render and neither list may be requested.
+- **SPEC-10.57.6**: Each table must be loaded independently, and a failure of either of its two requests must log the error naming that list and the page must show a visible error for that table, never an empty list.
+- **SPEC-10.57.7**: A record absent from the mapping response must be listed with an empty external id.
+- **SPEC-10.57.8**: All lists must reload when the active tenant changes.
+
+### 10.58 Invoice issuer mapping tables and save
+
+- **SPEC-10.58.1**: Each table must show a badge "{mapped} of {total} mapped", green only when every row is mapped and there is at least one row, gray otherwise; a row counts as mapped only when its external id is non-blank after trimming.
+- **SPEC-10.58.2**: A table with no rows must show its empty text: "This organization has no clients yet.", "This organization has no vendors yet.", "This organization has no members yet.", "This organization has no expense categories yet." or "This organization has no products yet."
+- **SPEC-10.58.3**: Each row must show the record name and, when unmapped, "Not mapped, so an invoice for this one is refused.", with an input labelled "{provider} customer", "{provider} vendor", "{provider} contact", "{provider} account" or "{provider} item" for its table.
+- **SPEC-10.58.4**: The People help text must say, for Xero, that a contact is needed on every reimbursement and a claim from an unmapped person is refused, and for QuickBooks that mapping is optional.
+- **SPEC-10.58.5**: "Save" must be disabled while mutation is not possible or the trimmed input is empty, and the input and button must show a busy state while saving.
+- **SPEC-10.58.6**: Save must call `PUT /invoice-issuer-mappings/{companies|vendors|people|expense-accounts|products}/{provider}/{record id}` with a body of exactly one field holding the trimmed value, named `external_customer_id`, `external_vendor_id`, `external_contact_id`, `external_account_id` or `external_item_id` for its table.
+- **SPEC-10.58.7**: On success the page must show a success notice "{record name} is mapped."; on failure it must show the error banner "Could not save the mapping: {error}".
+
+### 10.59 Invoice numbering settings page: access and load
+
+- **SPEC-10.59.1**: The Invoice Numbering settings page (route `Route::SettingsInvoiceNumbering`, under Settings > Billing & SLA) must set the page title to "Invoice Numbering".
+- **SPEC-10.59.2**: When the current user is not an administrator (`use_is_admin()` is false), the page must render only the admin-only notice titled "Invoice Numbering" and must not issue the settings request or render the select.
+- **SPEC-10.59.3**: For an administrator, the page must load all tenant settings with an authenticated `GET /settings` (all pages, via `get_all_authed`) and must re-run that load when the active tenant generation or server reachability changes.
+- **SPEC-10.59.4**: While the settings request has not resolved, the page must render the detail skeleton in place of the card.
+- **SPEC-10.59.5**: When the settings request fails, the page must log `tenant settings load failed: <error>` at error level and render a card containing the error banner "Could not load the invoice numbering scheme." instead of the select.
+- **SPEC-10.59.6**: The page header must show the title "Invoice Numbering", the subtitle "What a new invoice's number looks like. Invoices you have already issued keep the numbers they were issued with.", and the settings breadcrumb for the invoice numbering route.
+
+### 10.60 Invoice numbering scheme resolution
+
+- **SPEC-10.60.1**: The page must identify the scheme in force from the settings row whose `category` is `billing_prefs` and whose `key` is `invoice_numbering`; rows with any other category or key must be ignored.
+- **SPEC-10.60.2**: The recognised schemes must be exactly two: `tenant_sequence` (label "One sequence for the whole business", example `INV-000042`) and `company_prefix` (label "A sequence per customer", example `A7QF-000001`).
+- **SPEC-10.60.3**: When no row exists for `billing_prefs/invoice_numbering`, the page must treat `tenant_sequence` as the scheme in force, matching the server default.
+- **SPEC-10.60.4**: When the stored value is not a string, or is a string that is not one of the two recognised scheme names, the page must treat `tenant_sequence` as the scheme in force, matching the server.
+- **SPEC-10.60.5**: A settings row missing `category`, `key` or `value` must deserialize with an empty string for the first two and JSON null for the value, and must not match the invoice numbering row.
+
+### 10.61 Scheme selector display
+
+- **SPEC-10.61.1**: When settings loaded, the page must render a select named `invoice_numbering`, labelled "How new invoices are numbered", with one option per recognised scheme (value is the scheme name, text is its label) in the order `tenant_sequence`, `company_prefix`, and with the scheme in force selected.
+- **SPEC-10.61.2**: The select must be disabled while a save is in flight, and whenever the user may not mutate (`use_can_mutate()` is false).
+- **SPEC-10.61.3**: Below the select the page must show "For example: <example>" and the meaning text of the scheme in force.
+- **SPEC-10.61.4**: The meaning of `tenant_sequence` must state that every invoice takes the next number whoever it is for and that a customer can infer the total issued; the meaning of `company_prefix` must state that each customer gets a prefix assigned on their first invoice, not derived from their name, and unchanged if they are renamed.
+- **SPEC-10.61.5**: The page must always show the note "Changing this never renumbers an invoice. Each invoice keeps the number it was issued with, and records which scheme produced it, so your history stays exactly as your customers received it."
+
+### 10.62 Changing the scheme: confirmation and write
+
+- **SPEC-10.62.1**: When the select changes to a value different from the scheme in force, the page must record that value as pending and open the confirm dialog, and must not send any request from the select handler.
+- **SPEC-10.62.2**: When the select changes to the value already in force, the page must not open the dialog.
+- **SPEC-10.62.3**: The confirm dialog must be open exactly while a pending scheme exists, titled "Change invoice numbering", with confirm text "Change numbering" and cancel text "Keep current", and its loading state must follow the saving flag.
+- **SPEC-10.62.4**: Cancelling the dialog while no save is in flight must clear the pending scheme, close the dialog and leave the select showing the scheme in force; cancel must be ignored while a save is in flight.
+- **SPEC-10.62.5**: Confirming must set the saving flag, clear any previous error text, and send an authenticated `PUT /settings` with the JSON body `{"category": "billing_prefs", "key": "invoice_numbering", "value": "<pending scheme>"}`.
+- **SPEC-10.62.6**: When the PUT succeeds, the page must clear the pending scheme (closing the dialog) and re-fetch the settings, so the displayed scheme is the one the server reports and not the locally chosen value.
+- **SPEC-10.62.7**: When the PUT fails, the page must show the error banner "Could not change the numbering scheme: <error>", keep the pending scheme set, and leave the shown scheme unchanged until a successful re-read.
+- **SPEC-10.62.8**: The saving flag must be cleared after the PUT completes, whether it succeeded or failed.
+- **SPEC-10.62.9**: Confirming with no pending scheme must do nothing.
+- **SPEC-10.62.10**: In builds without the `app` feature, confirming must send no request and must only clear the pending scheme before clearing the saving flag.
+
+### 10.63 Switch warning wording
+
+- **SPEC-10.63.1**: When the pending scheme is `company_prefix`, the dialog message must state that issued invoices keep their numbers and are never renumbered, that each customer starts at 000001 under a new prefix so the next invoice will not continue from the last one sent, and that switching back is possible but does not undo the numbers issued in between.
+- **SPEC-10.63.2**: When the pending scheme is anything other than `company_prefix`, the dialog message must state that issued invoices keep their numbers including per-customer ones, and that every invoice takes the next number in the single sequence, continuing from where that sequence was left.
+- **SPEC-10.63.3**: While no scheme is pending, the dialog message must be computed as for `tenant_sequence`; the dialog is closed so it is not shown.
+
+## 11. Settings
+
+### 11.1 Settings hub index and surface registry
+
+- **SPEC-11.1.1**: The settings hub at route `/settings` (`SettingsHomePage`) must be driven by one static registry of surfaces (route, title, description, group, advanced flag, optional section, visibility rule); the hub, the group landings, the breadcrumb trail and the search must all read that registry and make no server request to build the page.
+- **SPEC-11.1.2**: The settings hub must set the page title "Settings" and show the header subtitle "Manage the standard types and configuration that shape how your workspace behaves".
+- **SPEC-11.1.3**: The registry must define six groups with these titles, landing routes and card colours: Personalization (no landing route, rose), "Service & Asset Types" (`/settings/group/service-types`, emerald), "Billing & SLA" (`/settings/group/billing`, amber), "Tickets" (`/settings/group/tickets`, blue), "Integrations" (`/settings/group/integrations`, violet), "Organization & Data" (`/settings/group/data`, teal).
+- **SPEC-11.1.4**: Only the "Service & Asset Types" and "Billing & SLA" groups must render as prominent (two cards per row from the `sm` breakpoint); every other group, and the hub index, must render a grid of one column, two from `sm` and three from `lg`.
+- **SPEC-11.1.5**: When the search box is empty the hub must show first the Personalization surfaces that are not advanced and visible to the caller (under the heading "Personalization"), then a "Configuration" heading holding one card per nested group in the order Service & Asset Types, Billing & SLA, Tickets, Integrations, Organization & Data.
+- **SPEC-11.1.6**: The hub must show a group card only when the group holds at least one surface (advanced or not) visible to the caller; a group with no visible surface must not appear.
+- **SPEC-11.1.7**: The hub must not list advanced surfaces as cards while the search box is empty; advanced surfaces are reachable from their group landing or by search.
+- **SPEC-11.1.8**: A surface with visibility `Always` must show to every caller; `StaffAdmin` must show only when the signed-in staff user's role reports admin; `RequiresCap` must show only to a caller that holds a contact session and the named capability, and a `RequiresCap` value other than `settings:manage_company_branding` must show to no one.
+- **SPEC-11.1.9**: A staff session must not be shown the contact-only "My Portal Branding" card even though the capability hook returns true for staff, because the card's target page loads from a contact-only endpoint.
+- **SPEC-11.1.10**: Typing in the hub search box must replace the grouped view with a flat grid of every visible surface, advanced or not, whose title or description contains the trimmed query, compared case-insensitively, in registry order, each card coloured by its group.
+- **SPEC-11.1.11**: When a non-empty search matches no visible surface the hub must show the text `No settings match "<query>".` using the query as typed (untrimmed).
+- **SPEC-11.1.12**: The registry must list the surfaces of each group in this display order: Personalization: Appearance, TV View, My Portal Branding; Service & Asset Types: Work Types, Task Statuses, Asset Types, Company Industries, Project Types, Contact Roles; Billing & SLA: SLA Management, Scheduling, Payment Reminders, Time Tracking, Rate Cards, Tax Rates, Payment Gateways, Payment Terms, Products, Vendors, Expense Categories, Invoice Numbering, Segment Editing; Tickets: Ticket Statuses, Ticket Priorities, Ticket Types, Ticket Queues, Ticket Categories, Note Editing; Integrations: Email, Connected Services, Google sign-in client, Google Contacts, iCloud Contacts, Xero, QuickBooks, Microsoft 365 Contacts, vCard Import, RMM Connections, RMM Device Mappings, RMM Alert Rules; Organization & Data: Import & Export, Portal Branding, Organization, Modules.
+- **SPEC-11.1.13**: The registry must mark exactly these surfaces advanced: Payment Reminders, Tax Rates, Payment Terms, Products, Vendors, Expense Categories, Invoice Numbering, Ticket Categories, Google sign-in client, RMM Connections, RMM Device Mappings, RMM Alert Rules; every other surface must be basic. Payment Gateways must be basic.
+- **SPEC-11.1.14**: The registry must assign these surfaces to the section "Products & invoicing" (Billing & SLA group): Payment Reminders, Payment Terms, Products, Vendors, Expense Categories, Invoice Numbering; to "Connected services" (Integrations group): Connected Services, Google Contacts, iCloud Contacts, Xero, QuickBooks, Microsoft 365 Contacts, vCard Import; to "Remote monitoring": the three RMM surfaces; to "Deployment": Email and Google sign-in client. Every other surface must have no section.
+- **SPEC-11.1.15**: Every surface except Appearance, TV View and My Portal Branding must be visible only to staff admins; Appearance and TV View must be visible to every caller, and My Portal Branding must follow the capability rule.
+- **SPEC-11.1.16**: The surface registered for the route `SettingsIntegrations` must be titled "Connected Services" (not "Integrations") so the breadcrumb never reads "Settings > Integrations > Integrations"; the route path must stay unchanged.
+
+- **SPEC-11.1.17**: A group of cards on the hub must render under an upper-case heading coloured by the group colour; the "Configuration" heading must be neutral (muted) and each of its cards must carry its own group colour.
+- **SPEC-11.1.18**: Each settings card must be a link to its surface route showing the title and the description, with a left accent border in the card colour (the card's own colour, else the enclosing group's, else blue) and padding of 1.5rem in a prominent group and 1rem otherwise.
+
+### 11.2 Group landings, advanced disclosure and breadcrumbs
+
+- **SPEC-11.2.1**: The routes `/settings/group/service-types`, `/settings/group/billing`, `/settings/group/tickets`, `/settings/group/integrations` and `/settings/group/data` must each render the group landing for the matching group, with the group title as page title and header, the group description as subtitle, and a "Back to Settings" secondary button linking to `/settings`.
+- **SPEC-11.2.2**: A group landing breadcrumb must read "Settings" (linked to `/settings`) then the group title (not linked).
+- **SPEC-11.2.3**: A group landing must show the group's basic visible surfaces as cards at all times and must show its advanced visible surfaces only while that group's disclosure is expanded.
+- **SPEC-11.2.4**: A group landing must show the disclosure button, labelled "Advanced (N)" where N is the count of advanced surfaces visible to the caller, only when N is greater than zero; with N equal to zero no disclosure row may render.
+- **SPEC-11.2.5**: The disclosure button must carry `aria-expanded` of "true" or "false" and the test id `settings-advanced-disclosure`, and its chevron must be rotated -90 degrees while collapsed.
+- **SPEC-11.2.6**: The disclosure state must be stored per group in the browser preference `settings_advanced_<slug>` (boolean, default false) where slug is `personalization`, `service_types`, `billing`, `tickets`, `integrations` or `data`; the slug must not be derived from the display title.
+- **SPEC-11.2.7**: Clicking the disclosure button must toggle the group's state, update the view in place and write the new boolean to that preference.
+- **SPEC-11.2.8**: The retired preference `settings_show_advanced` must not be read.
+- **SPEC-11.2.9**: Within a landing, surfaces with no section must render first in one grid with no heading; each non-empty section must then render in the order Connected services, Remote monitoring, Deployment, Products & invoicing, under an upper-case heading with its label; a section with no member in the current pass must render nothing, including its heading.
+- **SPEC-11.2.10**: The section "Deployment" must show the note "These apply to every organization on this deployment, not only yours."; no other section has a note.
+- **SPEC-11.2.11**: The basic pass and the advanced pass of a landing must each split their own surfaces into ungrouped and sectioned parts, so one section may appear in both passes.
+- **SPEC-11.2.12**: A leaf settings page breadcrumb (`SettingsBreadcrumb`) must read "Settings" (linked), the group title (linked to the group landing, omitted for Personalization), then the surface title (not linked); a route that is not in the registry must produce only the "Settings" crumb.
+
+### 11.3 Personal preference pages and the admin gate
+
+- **SPEC-11.3.1**: `use_is_admin` must return true only when an authenticated user exists and the user's role reports admin; with no user it must return false. It is a UX gate only and the server must re-check.
+- **SPEC-11.3.2**: A settings page gated by `use_is_admin` that is opened by a non-admin must show the page header with the page title and subtitle "Settings", and the card text "You need an administrator role to manage these settings.".
+- **SPEC-11.3.3**: The Appearance page (`SettingsAppearance`, `/settings/appearance`) must not be admin-gated and must set the page title "Appearance" with the subtitle "Theme and accent color, saved to your account; article reading density, saved to this browser".
+- **SPEC-11.3.4**: The Appearance page must show the theme picker and a "Reading" card holding a select named `kb_density` labelled "Knowledge base article density" with the options "Comfortable" and "Compact".
+- **SPEC-11.3.5**: The Appearance page must seed the density select from the boolean browser preference `kb_density` (default true, which is Comfortable); choosing an option must update the select and write `true` to `kb_density` for any value other than "compact" and `false` for "compact".
+- **SPEC-11.3.6**: The TV View page (`SettingsTvView`, `/settings/tv-view`) must not be admin-gated and must set the page title "TV View" with the subtitle "Full-screen wall-monitor dashboard, scoped to your team, saved to this browser".
+- **SPEC-11.3.7**: The TV View page must seed its checkbox `tv_view_enabled` from `tv_view::is_enabled` and its text input `tv_view_team` (label "Team id (optional)") from `tv_view::selected_team`; toggling the checkbox must call `tv_view::set_enabled` and every keystroke in the input must call `tv_view::set_selected_team` with the raw value.
+- **SPEC-11.3.8**: The TV View page must show the "Open TV view" button, which navigates to the `DashboardTv` route, only while the TV view is enabled.
+
+### 11.4 Organization profile page
+
+- **SPEC-11.4.1**: The route `SettingsOrganization` (`/settings/organization`) must set the page title "Organization" and, for a non-admin, render only the admin-only notice (SPEC-11.3.2); for an admin it must render the organization form.
+- **SPEC-11.4.2**: The organization form must load the caller's tenant with `GET /tenants/current` (never by tenant id), re-fetching when the active tenant generation or server reachability changes; the form must not seed from cached auth context.
+- **SPEC-11.4.3**: A failed tenant load must be logged at error level with the cause and must render the load-error banner "your organization" above the form, and the form inputs must stay disabled while loading.
+- **SPEC-11.4.4**: When the tenant load failed and the server is unreachable the page must render the content-unavailable view titled "Organization" instead of the form.
+- **SPEC-11.4.5**: The form must seed once from the first loaded tenant that has a non-empty name (name, support contact name, phone, email, legal name, tax id, postal address, website, brand colour, logo URL) and must not overwrite typed input on later renders; a missing invoice template must seed as "classic".
+- **SPEC-11.4.6**: The form must offer these inputs: "Organization name" (required), "Contact name" (optional), "Contact phone" (required), "Contact email" (required, type email), "Legal name" (max length 120), "Tax identifier" (max length 60), "Postal address" (textarea of 6 rows, max length 300), "Website" (type url, max length 255), "Brand color" (max length 7), the "Invoice template" radio group, and the logo field.
+- **SPEC-11.4.7**: The invoice template radio group must offer exactly Classic, Modern and Compact with their descriptions, in that order, always with one selected, and the stored key must be one of `classic`, `modern`, `compact`.
+- **SPEC-11.4.8**: On Save the form must clear all field errors and the banner, then validate in this order and stop at the first failure without any request: blank trimmed name sets "Enter the name clients should see."; a name over 255 characters sets "Use 255 characters or fewer."; blank trimmed phone sets "Enter a phone number clients can reach you on."; blank trimmed email sets "Enter an email address clients can reach you on."; a postal address with more than 6 lines (carriage returns removed) sets "Use 6 lines or fewer; this has N." where N is the line count.
+- **SPEC-11.4.9**: Save must be ignored while a save is in flight, and the Save Changes button must be disabled while the tenant is loading or the server cannot be mutated, with the tooltip "Can't save while the server is unreachable" when it cannot be mutated.
+- **SPEC-11.4.10**: A valid Save must first `PUT /tenants/current/organization` with name (trimmed), contact name, phone, email and website, each blank value (after trimming) sent as null, and only after that succeeds must it `PUT /tenants/current` with `name` null and a branding patch holding exactly legal name, tax id, postal address, brand colour (blank sent as null) and the invoice template key.
+- **SPEC-11.4.11**: After the organization call succeeds the page must write the name returned by the server (not the typed name) into the cached active organization name so the top bar follows the rename.
+- **SPEC-11.4.12**: When both calls succeed the page must show the success toast "Organization saved. New emails will use it."
+- **SPEC-11.4.13**: When the organization call fails the page must push the API error and place the server message for field `name`, `phone`, `email` or `website` (first match in that order) on that field, otherwise show the user message in the banner; the second call must not be made.
+- **SPEC-11.4.14**: When the branding call fails the page must push the API error and place the server message for `branding.postal_address` or `branding.primary_color` (first match in that order) on that field, otherwise show the user message in the banner; the organization record stays saved and the page must not claim success.
+- **SPEC-11.4.15**: Editing a required or validated field (name, phone, email, postal address, website, brand colour) must clear that field's error.
+- **SPEC-11.4.16**: The branding patch must omit the support contact keys, the logo URL and every key the page does not own, so the merge on the server cannot null them; the logo URL must be deserialised but never serialised.
+
+### 11.5 Organization logo
+
+- **SPEC-11.5.1**: The logo field must accept `image/png,image/jpeg,image/webp,image/gif`, state "up to 1 MB" in its help, and be disabled while an upload or removal runs or the server cannot be mutated.
+- **SPEC-11.5.2**: Choosing a file must upload it immediately (not on Save) as a multipart `PUT /tenants/current/logo` with the file name, its content type (`application/octet-stream` when unknown) and its bytes, showing the status "Uploading..." while it runs, and on success must show the returned logo URL and clear the broken-image flag.
+- **SPEC-11.5.3**: A failed upload must show the API user message under the logo field; a file whose bytes cannot be read must show "Could not read the selected file." under the logo field; choosing a new file must clear the previous logo error first, and an empty selection must do nothing.
+- **SPEC-11.5.4**: The current logo must render from the API origin plus the stored path with alt text "Current organization logo"; when the image fails to load the page must replace it with the text "A logo is set but could not be loaded."
+- **SPEC-11.5.5**: The "Remove" button (danger variant) must open a confirm dialog titled "Remove logo" with the message "Remove the organization logo?" and a destructive "Remove" confirm button; confirming must send `DELETE /tenants/current/logo` and, on success, clear the logo and the broken-image flag.
+- **SPEC-11.5.6**: A failed logo removal must show "Could not remove the logo: <error>" under the logo field; the dialog must close after the request ends in either case, and cancelling must be ignored while the request is in flight.
+
+### 11.6 Deployment app name and operator-only settings
+
+- **SPEC-11.6.1**: `load_operator_setting` must return Loaded with the decoded value on success, NotOperator on an HTTP 403 (logged at debug level as not being the operator), and Failed on any other error (logged at error level with the setting name and cause).
+- **SPEC-11.6.2**: The "App name" card on the organization page must load `GET /settings/app-name` (re-fetching on server reachability change) and must not render for a caller whose load returned NotOperator.
+- **SPEC-11.6.3**: The app name card must seed once, from the first Loaded response: the input from the override (empty when none) and the effective name from `effective`.
+- **SPEC-11.6.4**: The app name input must be named `app_name`, have max length 64 and its help must state that a blank value renders the effective name, falling back to "Mokosh" when the effective name is empty.
+- **SPEC-11.6.5**: Saving the app name must trim it and refuse a value over 64 characters with "Use 64 characters or fewer." before any request, ignore a second click while saving, and otherwise `PUT /settings/app-name` with `{ "app_name": <trimmed> }`; an empty string clears the override.
+- **SPEC-11.6.6**: A successful app name save must show the returned override and effective name and the toast "App name saved. Applies to every tenant on this deployment."
+- **SPEC-11.6.7**: A failed app name save must push the API error and show the server message for field `app_name` if present, otherwise the user message, in a banner above the input; editing the input must clear that banner.
+- **SPEC-11.6.8**: The app name card's Save button must be disabled while the server cannot be mutated.
+
+### 11.7 Request bodies and field parsers
+
+- **SPEC-11.7.1**: Every settings write whose request type exists in the shared types crate must be sent through a typed body struct with the same field names and types as that request (work type, company industry, ticket status, ticket priority, ticket type, ticket queue, ticket category, organization profile, tenant update), so a field change on the server breaks compilation.
+- **SPEC-11.7.2**: Every settings lookup list must request `page` and `per_page=25` (`PER_PAGE`) from its endpoint.
+- **SPEC-11.7.3**: `parse_sort_order` must return 0 for a blank value, the integer for a trimmed 32-bit signed integer, and otherwise log a warning with the raw value and return "Enter a whole number between 0 and 2147483647."
+- **SPEC-11.7.4**: `parse_rate` must return no rate for a blank value, the exact decimal for a parseable value, and otherwise log a warning with the raw value and return "Enter an amount like 150.00, or leave it blank."
+- **SPEC-11.7.5**: `parse_parent_id` must return no parent for a blank value, the UUID for a valid one, and otherwise log a warning with the raw value and return "Pick a parent category from the list."
+- **SPEC-11.7.6**: `optional_text` must return the trimmed string, or no value when the trimmed string is empty.
+- **SPEC-11.7.7**: The default rate of a work type must serialise as a JSON string (decimal), or null when blank.
+
+### 11.8 Import and export
+
+- **SPEC-11.8.1**: The route `SettingsImportExport` (`/settings/import-export`) must set the page title "Import & Export", show for a non-admin only the admin-only notice titled "Import & Export", and for an admin show, in order, the "Load demo data" card, the "Export" card and the "Import" card under the subtitle "Download a snapshot of this tenant's data, or restore it from a previous export".
+- **SPEC-11.8.2**: The page must read the authentication state and request `GET /tenants/current` before the admin check so that the number of hooks per render does not change when the admin state changes.
+- **SPEC-11.8.3**: The import confirmation phrase must be the tenant name returned by `GET /tenants/current` when that is non-empty; when the read fails or the name is empty it must fall back to the cached active organization name (empty when none), and a failed read must be logged at warn level with the cause.
+- **SPEC-11.8.4**: The Export card must show the text "Download a JSON snapshot of all of this tenant's data. The file contains your records. Store it somewhere safe." and a "Download export" button.
+- **SPEC-11.8.5**: Clicking "Download export" must be ignored while a download runs, clear the previous error and saved-to path, call `GET /data/export` as bytes, and save the bytes under the server-provided file name or `mokosh-export.json` when the response names none.
+- **SPEC-11.8.6**: When the host reports the path the export was written to, the Export card must show the success banner "Saved to <path>"; when the host reports none (a browser) it must show nothing extra.
+- **SPEC-11.8.7**: A failed export request must show the banner "Could not export: <error>"; a failure to save the fetched bytes must show "Fetched the export but could not save it: <error>".
+- **SPEC-11.8.8**: The Import card must show an error banner stating "This replaces all current data for this tenant." followed by the text that importing wipes every existing record, cannot be undone, and that a fresh export should be taken first.
+- **SPEC-11.8.9**: The import file field must accept `application/json,.json`; choosing a file must clear the previous error and summary, show "Selected: <file name>" in the help, and read the file as text; a read failure must show "Could not read the selected file."
+- **SPEC-11.8.10**: The confirmation input named `import_confirm` (label "Type the tenant name to confirm") must show the expected tenant name as placeholder and the help `Type "<name>" exactly to enable import.`; when no expected name exists the help must read "No active tenant name is available; import is unavailable."
+- **SPEC-11.8.11**: The "Import and replace all data" button (danger variant) must be enabled only when the expected name is non-empty, the trimmed confirmation equals the trimmed expected name, a file has been read, the server can be mutated and no import is running.
+- **SPEC-11.8.12**: Clicking import must parse the file text as JSON before any request; invalid JSON must show "The selected file is not valid JSON: <error>" and send nothing.
+- **SPEC-11.8.13**: A valid import must `POST /data/import` with `{ "confirm": <trimmed confirmation>, "export": <parsed file> }`, clearing the previous error and summary first.
+- **SPEC-11.8.14**: A successful import must show a success banner "Import complete." with one line "<table>: <row count>" per restored table in table-name order, the text "Every record was replaced and re-keyed. Reload the app so the rest of the pages show the imported data.", and a "Reload the app" button.
+- **SPEC-11.8.15**: A failed import must show the banner "Import failed: <user message>".
+- **SPEC-11.8.16**: The "Reload the app" button must reload the document where the host can, and otherwise must bump the tenant generation so every tenant-scoped resource refetches.
+
+### 11.9 Demo data
+
+- **SPEC-11.9.1**: The "Load demo data" card must show the subtitle describing a small sample dataset (a company, two contacts and a few tickets) using the product name, stating that it loads only into an empty tenant and never overwrites existing data.
+- **SPEC-11.9.2**: The "Load demo data" button must be disabled while the server cannot be mutated, ignore clicks while a load runs, clear the previous result and error, and `POST /data/seed-demo` with an empty JSON object.
+- **SPEC-11.9.3**: When the response has `seeded` true the card must show the server's message in a success banner; when `seeded` is false (the tenant already had data) it must show the server's message in a warning banner, not as an error.
+- **SPEC-11.9.4**: A failed demo load must show the banner "Could not load demo data: <user message>".
+
+### 11.10 Scheduling: standard due date
+
+- **SPEC-11.10.1**: The route `SettingsScheduling` (`/settings/scheduling`) must set the page title "Scheduling" and for a non-admin render only the admin-only notice titled "Scheduling"; for an admin it must load the tenant setting `scheduling/default_due_business_days` and show the header subtitle "Standard due date applied to new work when none is set".
+- **SPEC-11.10.2**: The setting load must re-run on an active-tenant change and on a server-reachability change.
+- **SPEC-11.10.3**: A stored whole-number value must seed the form, limited to at most 365; an unset setting must seed 0 (no default due date); a stored value that is not a whole number must be logged at warn level with the path and value and read as 0.
+- **SPEC-11.10.4**: A failed setting load must be logged at error level with the cause; while loading the page must show the detail skeleton; after a failure while the server is reachable it must show the banner "Could not load scheduling settings. Refresh the page to retry."; after a failure while the server is unreachable it must show the content-unavailable view titled "Scheduling".
+- **SPEC-11.10.5**: The form must offer one number input named `default_due_business_days` (label "Default due date (business days)", min 0, max 365, step 1) and explain that 0 leaves new work with no default due date.
+- **SPEC-11.10.6**: On Save the form must be ignored while saving, trim the value and require an integer from 0 to 365; otherwise it must show "Enter a whole number of business days from 0 to 365 (0 disables the default)." and send nothing.
+- **SPEC-11.10.7**: A valid Save must `PUT /settings/scheduling/default_due_business_days` with `{ "value": <integer> }`; success must show "Scheduling settings saved." and failure must show "Could not save scheduling settings: <user message>".
+- **SPEC-11.10.8**: Editing the value must hide the "saved" confirmation, and the Save Changes button must be disabled while the server cannot be mutated, with the tooltip "Can't save while the server is unreachable".
+
+### 11.11 Payment reminders
+
+- **SPEC-11.11.1**: The route `SettingsPaymentReminders` (`/settings/payment-reminders`) must set the page title "Payment Reminders" and for a non-admin render only the admin-only notice titled "Payment Reminders"; for an admin it must show the header subtitle "Re-send an overdue invoice to the customer on a schedule".
+- **SPEC-11.11.2**: The page must load `GET /settings/billing_reminders` (re-running on tenant change and reachability change) and build the form from the rows with keys `enabled` (boolean), `schedule` (array of whole numbers) and `send_hour` (whole number), defaulting to disabled, no steps and hour 8 for any row that is absent.
+- **SPEC-11.11.3**: A 404 from the category read must be treated as the unconfigured state and seed the defaults; any other failure must show the banner "Could not load payment reminder settings. Refresh the page to retry." (or the content-unavailable view titled "Payment Reminders" when the server is unreachable), and while loading the page must show the detail skeleton.
+- **SPEC-11.11.4**: `parse_reminder_schedule` must split the text on commas and whitespace, and must reject: a non-numeric token with `"<token>" is not a whole number of days.`; a step outside 1 to 365 with "Each step must be between 1 and 365 days past due."; a step not greater than the one before with "List the steps in ascending order, each later than the one before."; an empty list with "Enter at least one step, for example 3, 7, 14, 30."; more than 10 steps with "At most 10 steps."
+- **SPEC-11.11.5**: Save must be ignored while saving, validate the schedule first and then the sending hour (a whole number from 0 to 23, else "Enter the sending hour as a whole number from 0 to 23."), and send nothing when either is invalid.
+- **SPEC-11.11.6**: A valid Save must issue three sequential PUTs to `/settings/billing_reminders/<key>`, each with `{ "value": <v> }`, in the order `schedule`, `send_hour`, `enabled`, and must stop at the first failure so a refused schedule never leaves reminders enabled against old steps.
+- **SPEC-11.11.7**: A failed write must show "Could not save payment reminder settings (<key>): <user message>" naming the key that failed; a fully successful save must rewrite the schedule field in normalised "3, 7, 14" form and show "Payment reminder settings saved."
+- **SPEC-11.11.8**: The form must offer the checkbox "Send payment reminders" (`billing_reminders_enabled`), the text input "Days past due" (`billing_reminders_schedule`, placeholder "3, 7, 14, 30") and the number input "Sending hour (local time, 0 to 23)" (`billing_reminders_send_hour`, min 0, max 23); editing any of them must hide the "saved" confirmation, and Save must be disabled while the server cannot be mutated.
+
+### 11.12 Time tracking: maximum hours per day
+
+- **SPEC-11.12.1**: The route `SettingsTimeTracking` (`/settings/time-tracking`) must set the page title "Time Tracking" and for a non-admin render only the admin-only notice titled "Time Tracking"; for an admin it must load the tenant setting `time_tracking/max_hours_per_day` and show the header subtitle "Maximum hours a user may log against a single day".
+- **SPEC-11.12.2**: A stored whole-number value must seed the form clamped to 1 to 24; an unset setting must seed 24; a stored value that is not a whole number must be logged at warn level with the path and value and read as 24.
+- **SPEC-11.12.3**: A failed load must be logged at error level with the cause and shown as the banner "Could not load time tracking settings. Refresh the page to retry." (or the content-unavailable view titled "Time Tracking" when the server is unreachable); while loading the page must show the detail skeleton; the load must re-run on tenant change and reachability change.
+- **SPEC-11.12.4**: Save must be ignored while saving, trim the value and require an integer from 1 to 24, otherwise show "Enter a whole number of hours from 1 to 24." and send nothing.
+- **SPEC-11.12.5**: A valid Save must `PUT /settings/time_tracking/max_hours_per_day` with `{ "value": <integer> }`; success must show "Time tracking settings saved." and failure "Could not save time tracking settings: <user message>".
+- **SPEC-11.12.6**: The number input named `max_hours_per_day` (label "Maximum hours per day", min 1, max 24, step 1) must explain that a user's entries for one day cannot total more than the cap, editing it must hide the "saved" confirmation, and Save must be disabled while the server cannot be mutated.
+
+### 11.13 Lookup editor conventions (work types, task statuses, asset types, company industries, project types)
+
+- **SPEC-11.13.1**: Each lookup editor page must set its page title, and for a non-admin render only the admin-only notice with that title and make no list request; for an admin it must render the list under the header with breadcrumbs from the settings registry.
+- **SPEC-11.13.2**: Each lookup list must request `GET <collection>?page=<n>&per_page=25` with `n` starting at 1 and never below 1, re-fetch when the active tenant generation or server reachability changes, and re-fetch after a successful save or delete.
+- **SPEC-11.13.3**: A failed list load must be logged at error level with the cause, must not render the empty state, and while the server is reachable must render the banner "Could not load <plural name>. Refresh the page to retry." above the table; while the server is unreachable it must render the content-unavailable view titled with the page title instead of the page.
+- **SPEC-11.13.4**: While a list is loading the table must show four loading rows; a successful load with no rows must show the empty state (title, description, and a primary create button).
+- **SPEC-11.13.5**: The paginator must take its total from the response `meta.total`, use a page size of 25, and set the page on a page change.
+- **SPEC-11.13.6**: The header create button and the empty-state create button must open a blank form, and must be disabled with the tooltip "Can't do this while the server is unreachable" while the server cannot be mutated.
+- **SPEC-11.13.7**: Clicking a row, or activating the name cell from the keyboard, must open the edit form pre-filled from that row.
+- **SPEC-11.13.8**: A lookup form must create with `POST <collection>` and edit with `PUT <collection>/<id>`; Save must be ignored while a save or delete is running.
+- **SPEC-11.13.9**: A lookup form must refuse a blank (trimmed) name with the banner "Name is required." and no request; the name must be sent trimmed.
+- **SPEC-11.13.10**: A successful save or delete must close the form and refresh the list; a failed save must keep the form open and show the banner "Could not save <noun>: <error>"; a failed delete must keep the form open and show "Could not delete <noun>: <error>".
+- **SPEC-11.13.11**: The Delete button must appear only when editing an existing row (and not for a row the page marks undeletable); it must open the confirmation dialog titled "Confirm deletion" with the message "Are you sure you want to delete this item? This action cannot be undone.", and only a confirmation must send `DELETE <collection>/<id>`; a delete request must be ignored while a save or delete runs.
+- **SPEC-11.13.12**: The Sort order field on the work type, task status and project type forms must be a number input with min 0 and max 2147483647, default "0" for a new row, and must go through `parse_sort_order` (SPEC-11.7.3); an invalid value must show its message under the field, send nothing, and be cleared when the field is edited.
+- **SPEC-11.13.13**: The Active column, where a page has one, must show a green "Active" badge or a gray "Inactive" badge; the Active checkbox, where a form has one, must default to checked for a new row.
+
+### 11.14 Work types
+
+- **SPEC-11.14.1**: The route `SettingsWorkTypes` (`/settings/work-types`) must list work types from `/work-types` with the subtitle "Billable work categories used when logging time entries", columns Name, Billable, Default Rate (right-aligned), Active, the create button "New Work Type", the empty state "No work types yet" (description "Work types are the billable categories you pick when logging a time entry."), and the load-failure noun "work types".
+- **SPEC-11.14.2**: The Billable column must show a blue "Billable" badge or a gray "Non-billable" badge; the Default Rate column must show "-" when the rate is blank and otherwise the rate formatted by the shared money formatter.
+- **SPEC-11.14.3**: The work type form must be titled "New Work Type" or "Edit Work Type", offer Name (required, placeholder "e.g. On-site Support"), Description (optional), "Default rate" (number, step 0.01, min 0), Sort order, "Billable by default" (default checked for a new row) and Active, and its create button must read "Create Work Type".
+- **SPEC-11.14.4**: Saving a work type must validate in this order: blank name, then the rate through `parse_rate` (error shown under the rate field), then the sort order; a blank description must be sent as null, a blank rate as null, and the failure noun is "work type".
+
+### 11.15 Task statuses
+
+- **SPEC-11.15.1**: The route `SettingsTaskStatuses` (`/settings/task-statuses`) must list task statuses from `/task-statuses` with the subtitle "Workflow states a project task can move through", columns Name, Color, Completed, the create button "New Status", the empty state "No task statuses yet" (description "Task statuses are the workflow states a project task moves through."), and the load-failure noun "task statuses".
+- **SPEC-11.15.2**: The Color column must show a swatch with the hex value, and the Completed column must show a green "Completed" badge or a gray "Open" badge.
+- **SPEC-11.15.3**: The task status form must be titled "New Task Status" or "Edit Task Status", offer Name (placeholder "e.g. In Progress"), Color (color picker), Sort order and the checkbox "Counts as completed" with the help "Tasks in this status are treated as done.", and its create button must read "Create Status".
+- **SPEC-11.15.4**: A new task status must start with color `#6b7280`, not completed and sort order "0"; an existing row with a blank color must open with `#6b7280`.
+- **SPEC-11.15.5**: Saving a task status must validate in this order: blank name, blank color ("Color is required."), then the sort order; the body must be `{ name, color, is_completed, sort_order }`, and the failure noun is "task status".
+
+### 11.16 Asset types
+
+- **SPEC-11.16.1**: The route `SettingsAssetTypes` (`/settings/asset-types`) must list asset types from `/asset-types` with the subtitle "Categories for the assets you track per company", columns Name, Icon, Active, the create button "New Asset Type", the empty state "No asset types yet" (description "Asset types categorize the equipment you track for each company."), and the load-failure noun "asset types".
+- **SPEC-11.16.2**: The Icon column must show the icon text, or "-" when blank.
+- **SPEC-11.16.3**: The asset type form must be titled "New Asset Type" or "Edit Asset Type", offer Name (placeholder "e.g. Laptop"), Icon (optional icon name), "ITIL category" (free text, help "Standard: hardware, software, service, network, document, location. Leave blank for unclassified.") and Active, and its create button must read "Create Asset Type".
+- **SPEC-11.16.4**: The asset type save body must be `{ name (trimmed), icon, parent_type_id: null, is_active, itil_category }` with a blank icon and a blank ITIL category sent as null; this editor manages only top-level types and always sends `parent_type_id` as null.
+- **SPEC-11.16.5**: The asset type form must use the endpoint constant of the asset type hook, and the failure noun is "asset type".
+
+### 11.17 Company industries
+
+- **SPEC-11.17.1**: The route `SettingsCompanyIndustries` (`/settings/company-industries`) must list industries from `/contacts/company-industries` with the subtitle "Suggested industries when categorizing a company", columns Name and Active, the create button "New Industry", the empty state "No industries yet" (description "Industries are the suggestions offered when you categorize a company."), and the load-failure noun "company industries".
+- **SPEC-11.17.2**: The industry form must be titled "New Industry" or "Edit Industry", offer Name (placeholder "e.g. Healthcare") and Active, and its create button must read "Create Industry".
+- **SPEC-11.17.3**: The industry save body must be `{ name (trimmed), is_active }` and the failure noun is "industry".
+
+### 11.18 Project types
+
+- **SPEC-11.18.1**: The route `SettingsProjectTypes` (`/settings/project-types`) must list project types from `/project-types` with the subtitle "Classify projects (e.g. client vs internal)", columns Name, Default, Active, the create button "New Project Type", the empty state "No project types yet" (description "Project types classify projects, for example client work against internal work."), and the load-failure noun "project types".
+- **SPEC-11.18.2**: A system row must show a gray "System" badge beside its name, and the Default column must show a blue "Default" badge for the default row and nothing otherwise.
+- **SPEC-11.18.3**: The project type form must be titled "New Project Type" or "Edit Project Type", offer Name (placeholder "e.g. Client"), Sort order, "Default project type" (help "Applied to new projects when none is chosen.") and Active, and its create button must read "Create Project Type".
+- **SPEC-11.18.4**: For a system row the form must show the notice "System project type: its name is fixed and it cannot be deleted. You can still change default, active, and sort order.", disable the name input, and hide the Delete button.
+- **SPEC-11.18.5**: The project type save body must be `{ name (trimmed), is_default, is_active, sort_order }` and must not include `is_system`; validation order is blank name then sort order; the failure noun is "project type".
+
+### 11.19 Lookup list pages: shared behavior
+
+Applies to the payment terms, ticket statuses, ticket priorities, ticket types, ticket queues, ticket categories and RMM connections list pages.
+
+- **SPEC-11.19.1**: Each of these pages must set the document title to its own page title ("Payment Terms", "Ticket Statuses", "Ticket Priorities", "Ticket Types", "Ticket Queues", "Ticket Categories", "RMM Connections") and, when the signed-in user is not an administrator, must render the admin-only notice carrying that same title instead of the page body, so that no list request is issued.
+- **SPEC-11.19.2**: The list body must request `GET <collection>?page=<n>&per_page=25`, where `<n>` is the current page clamped to a minimum of 1, starting at page 1, and must request again whenever the page changes.
+- **SPEC-11.19.3**: The list request must be re-run when the active tenant changes and when the server reachability flag changes, so that the list refills as soon as the server is reachable again.
+- **SPEC-11.19.4**: When the list request fails, the page must log at error level "<what> settings load failed: <cause>" (for example "ticket status settings load failed: ...").
+- **SPEC-11.19.5**: While the first response is pending, the table must render the loading state with 4 skeleton rows and the page's column count.
+- **SPEC-11.19.6**: When the list request fails while the server is not flagged unreachable, the page must show the banner "Could not load <what>. Refresh the page to retry." above the table, must not show the empty state, and must render a table body with zero rows. The `<what>` values are "payment terms", "ticket statuses", "ticket priorities", "ticket types", "ticket queues", "ticket categories" and "RMM connections".
+- **SPEC-11.19.7**: When the list request fails while the server is flagged unreachable, the page must render only the content-unavailable state titled with the page title, replacing the header and the table.
+- **SPEC-11.19.8**: When the request succeeds with zero rows, the table must show the empty state with the page's fixed title and description and a primary create button identical to the header button.
+- **SPEC-11.19.9**: The header create button must be a primary button with a leading plus icon, and both it and the empty-state create button must be disabled with the tooltip "Can't do this while the server is unreachable" when the server cannot accept changes.
+- **SPEC-11.19.10**: The pagination control must be driven by the response's `meta.total`, with 25 rows per page, and rows must be shown in the order the server returned them with no client-side sort.
+- **SPEC-11.19.11**: Clicking a row must open the editor prefilled from that row, and the first (name) cell must also open it from the keyboard, because the editor is a modal and there is no route to link to.
+- **SPEC-11.19.12**: Each page must render a settings breadcrumb whose current entry is the page's own settings route.
+- **SPEC-11.19.13**: After an editor reports a successful save or delete, the page must close the editor and re-request the current page of the list.
+
+### 11.20 Lookup editors: shared save and delete behavior
+
+Applies to the editors for payment terms, ticket statuses, priorities, types, queues, categories and RMM connections, all built on the shared create/edit modal.
+
+- **SPEC-11.20.1**: A save or delete action must be ignored while a save or a delete from the same editor is already in flight.
+- **SPEC-11.20.2**: Saving with a name that is empty after trimming must show the banner "Name is required." and send no request.
+- **SPEC-11.20.3**: The sort order field of the payment term, status, priority, type, queue and category editors must be a number input with minimum 0 and maximum 2147483647. A blank value must be sent as 0, a value that parses as a 32-bit integer must be sent as that integer, and any other value must show the inline field error "Enter a whole number between 0 and 2147483647.", log a warning naming the value, and send no request.
+- **SPEC-11.20.4**: The inline sort order error must clear as soon as the user edits the field, and must be cleared at the start of every save attempt.
+- **SPEC-11.20.5**: A valid save must send the trimmed name and the editor's fields as JSON with `POST <collection>` when creating and `PUT <collection>/<id>` when editing.
+- **SPEC-11.20.6**: When the save succeeds, the editor must report success to the list page. When it fails, the editor must stay open with the entered values, show the banner "Could not save <noun>: <cause>", and re-enable the save action.
+- **SPEC-11.20.7**: The nouns used in the save and delete banners must be "payment term", "status", "priority", "type", "queue", "category" and "connection" for the respective editors.
+- **SPEC-11.20.8**: A delete must be available only when editing an existing row, must go through the shared confirmation dialog, and after confirmation must send `DELETE <collection>/<id>`. On success the editor must report success; on failure it must show the banner "Could not delete <noun>: <cause>" and stay open.
+- **SPEC-11.20.9**: Each editor's modal title must be "New <Entity>" when creating and "Edit <Entity>" when editing, with the creating action labelled "Create <Entity>" (see the per-entity sections), and the boolean fields must toggle on each click of their checkbox.
+
+### 11.21 Payment terms
+
+- **SPEC-11.21.1**: The payment terms page must load `/payment-terms` and show the columns Name, Net days (right-aligned), Default and Active, under the subtitle "Options for the invoice payment-terms dropdown" with the header button "New Payment Term".
+- **SPEC-11.21.2**: The empty state must read "No payment terms yet" with the description "Payment terms fill the terms dropdown when you build an invoice."
+- **SPEC-11.21.3**: A row's Net days cell must show the number of days, or "-" with the tooltip "No fixed count" when the term has no day count; the Default cell must show a blue "Default" badge only for the default term; the Active cell must show the shared Active/Inactive badge.
+- **SPEC-11.21.4**: A new payment term must start with an empty name, not default, active, sort order "0" and a blank net days field.
+- **SPEC-11.21.5**: The Net days field must be a number input with minimum 0, maximum 3650 and step 1, and the saved value must be null when blank, the integer when it is a whole number from 0 to 3650, and otherwise the field must show the inline error "Net days must be a whole number from 0 to 3650, or blank." and no request must be sent.
+- **SPEC-11.21.6**: The net days error must clear when the user edits that field.
+- **SPEC-11.21.7**: A save must validate in the order name, net days, sort order, and must send the keys `name`, `is_default`, `is_active`, `sort_order` and `net_days` to `/payment-terms`.
+- **SPEC-11.21.8**: The editor must be titled "New Payment Term" or "Edit Payment Term", create with "Create Payment Term", and offer a Name input (placeholder "e.g. Net 30"), Net days, Sort order, "Default payment term" ("Applied to new invoices when none is chosen.") and "Active" checkboxes.
+
+### 11.22 Ticket statuses
+
+- **SPEC-11.22.1**: The ticket statuses page must load `/tickets/statuses` and show the columns Name, Color, Closed and Default, under the subtitle "Workflow states a ticket can move through" with the header button "New Status".
+- **SPEC-11.22.2**: The empty state must read "No ticket statuses yet" with the description "Ticket statuses are the workflow states a ticket moves through."
+- **SPEC-11.22.3**: A row must show a color swatch with its hex value, a gray "Closed" badge when the status counts as closed and a green "Open" badge otherwise, and a blue "Default" badge only for the default status.
+- **SPEC-11.22.4**: A new status must start with an empty name, color "#6b7280", not closed, not default and sort order "0"; an existing status whose stored color is blank must open with "#6b7280".
+- **SPEC-11.22.5**: A save must send `name` and `color` (both trimmed), `is_closed`, `is_default` and `sort_order` to `/tickets/statuses`.
+- **SPEC-11.22.6**: The editor must be titled "New Ticket Status" or "Edit Ticket Status", create with "Create Status", and offer a Name input (placeholder "e.g. Waiting on Customer"), a color input, Sort order, "Counts as closed" and "Default status" checkboxes.
+
+### 11.23 Ticket priorities
+
+- **SPEC-11.23.1**: The ticket priorities page must load `/tickets/priorities` and show the columns Name, Color, "SLA x" (right-aligned) and Default, under the subtitle "Priority levels and their SLA multipliers" with the header button "New Priority".
+- **SPEC-11.23.2**: The empty state must read "No ticket priorities yet" with the description "Priorities rank tickets and set the SLA multiplier applied to each one."
+- **SPEC-11.23.3**: A row must show its SLA multiplier with exactly two decimals followed by "x" (for example "1.50x") and a blue "Default" badge only for the default priority.
+- **SPEC-11.23.4**: A new priority must start with an empty name, color "#6b7280", empty icon, SLA multiplier "1.0", not default and sort order "0".
+- **SPEC-11.23.5**: The SLA multiplier must be accepted only when it parses as a number from 0 to 9.99 inclusive; otherwise the banner "SLA multiplier must be a number between 0 and 9.99." must be shown and no request sent. Validation order is name, SLA multiplier, sort order.
+- **SPEC-11.23.6**: A save must send `name`, `color` (trimmed), `icon` (null when blank), `sla_multiplier`, `is_default` and `sort_order` to `/tickets/priorities`.
+- **SPEC-11.23.7**: The editor must be titled "New Ticket Priority" or "Edit Ticket Priority", create with "Create Priority", and offer Name (placeholder "e.g. Urgent"), Color, "SLA multiplier" (step 0.01, min 0, max 9.99, help "Scales SLA target durations (e.g. 0.5 = half the time)."), Icon, Sort order and a "Default priority" checkbox ("Applied to new tickets when none is chosen.").
+
+### 11.24 Ticket types
+
+- **SPEC-11.24.1**: The ticket types page must load `/tickets/types` and show the columns Name, Description and Active, under the subtitle "Categories for the kind of work a ticket represents" with the header button "New Type".
+- **SPEC-11.24.2**: The empty state must read "No ticket types yet" with the description "Ticket types describe the kind of work a ticket represents."
+- **SPEC-11.24.3**: A new type must start with an empty name, description and icon, active, and sort order "0"; the stored description and icon are shown as empty text when absent.
+- **SPEC-11.24.4**: A save must send `name` (trimmed), `description` and `icon` (each null when blank after trimming), `is_active` and `sort_order` to `/tickets/types`.
+- **SPEC-11.24.5**: The editor must be titled "New Ticket Type" or "Edit Ticket Type", create with "Create Type", and offer Name (placeholder "e.g. Incident"), Description, Icon, Sort order and an "Active" checkbox.
+
+### 11.25 Ticket queues
+
+- **SPEC-11.25.1**: The ticket queues page must load `/tickets/queues` and show the columns Name, Color and Default, under the subtitle "Queues tickets are routed into" with the header button "New Queue".
+- **SPEC-11.25.2**: The empty state must read "No ticket queues yet" with the description "Queues are where incoming tickets are routed for a team to pick up."
+- **SPEC-11.25.3**: A row's Color cell must show "-" when the queue has no color and a swatch with its hex value otherwise.
+- **SPEC-11.25.4**: A new queue must start with an empty name, description and icon, color "#6b7280", not default and sort order "0"; an existing queue without a color must open with "#6b7280".
+- **SPEC-11.25.5**: A save must always send `color` as the trimmed color input, together with `name`, `description` and `icon` (null when blank), `is_default` and `sort_order`, to `/tickets/queues`.
+- **SPEC-11.25.6**: The editor must be titled "New Ticket Queue" or "Edit Ticket Queue", create with "Create Queue", and offer Name (placeholder "e.g. Tier 1 Support"), Description, Color, Icon, Sort order and a "Default queue" checkbox ("New tickets land here when no queue is chosen.").
+
+### 11.26 Ticket categories
+
+- **SPEC-11.26.1**: The ticket categories page must load `/tickets/categories` and show the columns Name, Parent and Active, under the subtitle "Hierarchical categories for classifying tickets" with the header button "New Category".
+- **SPEC-11.26.2**: The empty state must read "No ticket categories yet" with the description "Categories classify tickets into a hierarchy for routing and reporting."
+- **SPEC-11.26.3**: A row's Parent cell must show "Not set" when the category has no parent id, the server-resolved parent name when one is present and not blank, and otherwise "Unknown" with a tooltip "Unresolved category <parent id>"; the unresolved case must also log at info level once per parent id per page load.
+- **SPEC-11.26.4**: The page must also load the complete category set by requesting every page of `/tickets/categories` (not only the visible page), re-run on tenant or reachability change, to feed the parent picker.
+- **SPEC-11.26.5**: When loading the complete set fails, the page must log a warning "category parent lookup failed: <cause>" and use an empty set for the parent picker.
+- **SPEC-11.26.6**: The parent picker must list "None (top level)" with an empty value first, followed by every category of the complete set except the one being edited, in the order loaded and labelled with its name.
+- **SPEC-11.26.7**: A parent value that is blank must be sent as null (top level); a value that is a UUID must be sent as that id; any other value must show the inline error "Pick a parent category from the list." on the picker, log a warning, and send no request. The picker error clears when the selection changes.
+- **SPEC-11.26.8**: A save must validate in the order name, parent, sort order, and must send `name` (trimmed), `description` (null when blank), `parent_id`, `is_active` and `sort_order` to `/tickets/categories`.
+- **SPEC-11.26.9**: After a category save or delete, the page must re-request both the visible page and the complete set.
+- **SPEC-11.26.10**: A new category must start with an empty name and description, no parent, active and sort order "0"; an existing category must open with its current parent selected.
+- **SPEC-11.26.11**: The editor must be titled "New Ticket Category" or "Edit Ticket Category", create with "Create Category", and offer Name (placeholder "e.g. Hardware"), Description, "Parent category", Sort order and an "Active" checkbox.
+
+### 11.27 RMM provider, status and connection labels
+
+- **SPEC-11.27.1**: The RMM provider list must be, as (wire value, label) pairs in this order: (`tactical_rmm`, "Tactical RMM"), (`mesh_central`, "MeshCentral"), (`datto`, "Datto"), (`connectwise`, "ConnectWise"), (`ninja_rmm`, "NinjaRMM"); the first entry is the default for a new connection.
+- **SPEC-11.27.2**: A stored provider value must be shown by its label, and a value outside the list must be shown as the raw stored value.
+- **SPEC-11.27.3**: The sync-status badge must be green for "success", red for "failed" and "error", yellow for "syncing" and "pending", and gray for any other value, showing the raw status text, or "-" when the status is blank after trimming.
+- **SPEC-11.27.4**: The connection column of device mappings and alert rules must show "Not set" when the row has no connection id, the server-resolved connection name when present and not blank, and otherwise "Unknown" with the tooltip "Unresolved RMM connection <id>" and a once-per-id info log.
+
+### 11.28 RMM connections list
+
+- **SPEC-11.28.1**: The RMM connections page must load `/rmm/connections` and show the columns Name, Provider, API URL (wrapped), Sync status and Active, under the subtitle "Connect remote monitoring providers and test reachability" with the header button "New Connection".
+- **SPEC-11.28.2**: The empty state must read "No RMM connections yet" with the description "Connect a remote monitoring provider to pull its devices and alerts into the workspace."
+- **SPEC-11.28.3**: A connection row must never display an API key or API secret.
+
+### 11.29 RMM connection editor
+
+- **SPEC-11.29.1**: A new connection must start with an empty name and API URL, the first provider, active, and a sync interval of "60"; the API key and API secret inputs (password type) must always open blank, including when editing.
+- **SPEC-11.29.2**: The provider select must be disabled when editing, because the provider cannot change after creation.
+- **SPEC-11.29.3**: A save must validate in the order name ("Name is required."), API URL ("API URL is required."), API key when creating ("API key is required."), sync interval; each failure must show its message in the banner (the sync interval on its own field) and send no request.
+- **SPEC-11.29.4**: A blank sync interval must be sent as 60; a value that parses as a 32-bit integer must be sent as that integer; any other value must show the inline error "Enter a whole number of minutes, such as 60.", log a warning naming the value, and send no request. The error clears when the field is edited.
+- **SPEC-11.29.5**: Creating must send `POST /rmm/connections` with `name`, `provider`, `api_url`, `api_key`, `api_secret` (null when blank), `is_active` and `sync_interval_minutes`, all text trimmed.
+- **SPEC-11.29.6**: Editing must send `PUT /rmm/connections/<id>` with `name`, `api_url`, `is_active` and `sync_interval_minutes`, must include `api_key` or `api_secret` only when the user typed a non-blank value, and must not send `provider`, so that a blank credential keeps the stored one.
+- **SPEC-11.29.7**: The credential inputs must show the placeholders "Provider API key" and "Optional provider API secret" when creating, and "Leave blank to keep the current key" and "Leave blank to keep the current secret" when editing; the API key must be marked required only when creating.
+- **SPEC-11.29.8**: The editor must be titled "New RMM Connection" or "Edit RMM Connection", create with "Create Connection", and offer Name (placeholder "e.g. Production Tactical RMM"), Provider, API URL (url type, placeholder "https://rmm.example.com"), API key, API secret, "Sync interval (minutes)" (number, minimum 1, step 1) and an "Active" checkbox.
+
+### 11.30 RMM connection reachability test
+
+- **SPEC-11.30.1**: The "Test connection" button must appear only when editing a saved connection, and must send `POST /rmm/connections/<id>/test` with an empty JSON object, testing the stored credentials rather than the unsaved form values.
+- **SPEC-11.30.2**: The test button must show a loading state while the request is in flight, must ignore clicks during that time, and must clear the previous result when a test starts.
+- **SPEC-11.30.3**: The test button must be disabled with the tooltip "Can't test while the server is unreachable" when the server cannot accept changes.
+- **SPEC-11.30.4**: When the response reports `reachable` true, the editor must show the green text "Reachable (HTTP <status>)."; when it reports false (or omits the field), the red text "Not reachable: <error>" using the response's `error` text, or "not reachable" when that text is absent.
+- **SPEC-11.30.5**: When the test request itself fails, the editor must show the red text "Test failed: <cause>".
+
+### 11.31 RMM device mappings list
+
+- **SPEC-11.31.1**: The device mappings page must load `/rmm/device-mappings` with the same paging, tenant and reachability refetch, load-failure logging ("RMM device mapping settings load failed: <cause>"), LoadError banner ("RMM device mappings"), unavailable state and 25-row paging as the lookup lists, under the subtitle "Map monitored RMM devices to assets and companies".
+- **SPEC-11.31.2**: The page must also load every connection (all pages of `/rmm/connections`) to feed the create form, again on tenant or reachability change; on failure it must log at error level "device mapping connection load failed, the dropdown will be empty: <cause>", and when the load succeeds with no connections it must log at info level.
+- **SPEC-11.31.3**: The header and empty-state "New Mapping" buttons must be disabled when the tenant has no connections or the server cannot accept changes; the tooltip must be "Can't do this while the server is unreachable" in the second case, otherwise "Add an RMM connection first, then map its devices here."
+- **SPEC-11.31.4**: When no connections are available the page must show the notice "Add an RMM connection first, then map its devices here." above the table.
+- **SPEC-11.31.5**: The table must show the columns Device, Device ID (monospace), Connection, Sync status and an action column; Device must show the device name, or "-" when blank.
+- **SPEC-11.31.6**: The empty state must read "No device mappings yet" with the description "Mappings tie a monitored RMM device to the asset and company it belongs to." Rows are not clickable and cannot be edited.
+- **SPEC-11.31.7**: Each row's Delete button must be small and destructive, must be disabled with the tooltip "Can't delete while the server is unreachable" when the server cannot accept changes, and on click must clear any row error and open a confirmation dialog without deleting; clicks are ignored while a delete is in flight.
+- **SPEC-11.31.8**: The confirmation dialog must be titled "Delete device mapping", ask `Delete the device mapping for "<device label>"?`, have the buttons "Delete" (destructive) and "Cancel", and show a loading state while deleting.
+- **SPEC-11.31.9**: Confirming must send `DELETE /rmm/device-mappings/<id>` once (a second confirm is ignored while one is in flight), re-request the list on success, show the banner "Could not delete mapping: <cause>" above the table on failure, and in both cases close the dialog and clear the in-flight marker.
+- **SPEC-11.31.10**: Cancel must close the dialog only when no delete is in flight.
+- **SPEC-11.31.11**: After a mapping is created, the page must close the editor and re-request the list.
+
+### 11.32 RMM device mapping editor
+
+- **SPEC-11.32.1**: The device mapping editor must be a create-only modal titled "New Device Mapping" with the action "Create Mapping" and no Delete action, offering a required Connection select (every loaded connection, labelled with its name or its id when the name is blank, with the first connection preselected), a required "RMM device ID" input (placeholder "Provider's device identifier"), an optional "Device name" and optional company and asset pickers.
+- **SPEC-11.32.2**: Saving with no connection selected must show "Select a connection." and saving with a blank device ID must show "Device ID is required."; neither must send a request, and a save is ignored while one is in flight.
+- **SPEC-11.32.3**: A valid save must send `POST /rmm/device-mappings` with `rmm_connection_id`, `rmm_device_id`, `device_name`, `asset_id` and `company_id`, all trimmed, with `device_name`, `asset_id` and `company_id` as null when blank.
+- **SPEC-11.32.4**: On failure the editor must stay open and show "Could not save mapping: <cause>".
+- **SPEC-11.32.5**: Clearing the company or asset picker must reset its id and name to empty so that null is sent.
+
+### 11.33 RMM alert rules list
+
+- **SPEC-11.33.1**: The alert rules page must load `/rmm/alert-rules` with the same paging, tenant and reachability refetch, load-failure logging ("RMM alert rule settings load failed: <cause>"), LoadError banner ("RMM alert rules"), unavailable state and 25-row paging as the lookup lists, under the subtitle "Turn RMM alerts into tickets automatically".
+- **SPEC-11.33.2**: The page must load every connection like the device mappings page, logging at error level "alert rule connection load failed, the dropdown will be empty: <cause>" on failure and at info level when none exist.
+- **SPEC-11.33.3**: The header and empty-state "New Alert Rule" buttons must be disabled when the tenant has no connections or the server cannot accept changes; the tooltip must be "Can't do this while the server is unreachable" in the second case, otherwise "Add an RMM connection first, then define alert rules for it."; the same sentence must be shown as a notice when no connections exist.
+- **SPEC-11.33.4**: The table must show the columns Name, Connection, Alert type, Auto-create ticket and an action column; Alert type must show "Any" when the rule has no alert type or it is blank; Auto-create ticket must show a green "Yes" or gray "No" badge.
+- **SPEC-11.33.5**: The empty state must read "No alert rules yet" with the description "Alert rules turn incoming RMM alerts into tickets automatically." Rows are not clickable and cannot be edited.
+- **SPEC-11.33.6**: The Delete button, its disabled state and tooltip, the in-flight guard and the confirmation flow must match the device mappings list, except that the dialog is titled "Delete alert rule", asks `Delete the alert rule "<rule name>"?`, calls `DELETE /rmm/alert-rules/<id>` and reports a failure as "Could not delete rule: <cause>".
+- **SPEC-11.33.7**: After a rule is created, the page must close the editor and re-request the list.
+
+### 11.34 RMM alert rule editor
+
+- **SPEC-11.34.1**: The alert rule editor must be a create-only modal titled "New Alert Rule" with the action "Create Alert Rule" and no Delete action, offering a required Connection select (first connection preselected), a required Name (placeholder "e.g. Disk space critical"), an optional "Alert type" (placeholder "Optional - leave blank to match any alert type"), an "Auto-create ticket on matching alert" checkbox that starts checked and an "Active" checkbox that starts checked.
+- **SPEC-11.34.2**: Saving with no connection must show "Select a connection." and saving with a blank name must show "Name is required."; neither must send a request, and a save is ignored while one is in flight.
+- **SPEC-11.34.3**: A valid save must send `POST /rmm/alert-rules` with `rmm_connection_id`, `name`, `alert_type` (null when blank), `auto_create_ticket` and `is_active`, all text trimmed.
+- **SPEC-11.34.4**: On failure the editor must stay open and show "Could not save rule: <cause>".
+
+### 11.35 Shared lookup helpers
+
+- **SPEC-11.35.1**: The color swatch must render a round dot filled with the color and the color text beside it.
+- **SPEC-11.35.2**: The Active/Inactive badge must be green "Active" when true and gray "Inactive" when false.
+- **SPEC-11.35.3**: The optional-string helper must send null for a value that is empty after trimming and the trimmed string otherwise.
+- **SPEC-11.35.4**: The color fallback helper must return "#6b7280" for a color that is blank after trimming and the stored value unchanged otherwise.
+- **SPEC-11.35.5**: The lookup save helper must `POST <base>` when there is no id and `PUT <base>/<id>` when there is, returning the transport error text on failure; the lookup delete helper must `DELETE <base>/<id>` and return success only when the request succeeds.
+- **SPEC-11.35.6**: The request and row structs of the ticket status, priority, type, queue and category editors must stay field-for-field in step with the shared type definitions, enforced by compile-only functions that destructure the shared types exhaustively, so that adding, removing or retyping a field there fails the build.
+
+### 11.36 Portal branding page: access and load
+
+- **SPEC-11.36.1**: The route `/settings/branding` (page "Portal branding") must render only for a user whose role is admin; any other user must see the content-unavailable view titled "Portal branding" with a link to the dashboard, and no tenant data may be requested for display.
+- **SPEC-11.36.2**: All hooks of the branding page must be registered before the non-admin early return, so that a render that takes the exit does not change the hook count of the next render.
+- **SPEC-11.36.3**: For an admin the page must load `GET /tenants/current` and read only the `branding` object and the boolean `portal_module_enabled` from it; a missing `branding` must read as an empty branding and a missing `portal_module_enabled` must read as false.
+- **SPEC-11.36.4**: A failed load of `GET /tenants/current` must be logged at error level with the cause ("tenant branding load failed").
+- **SPEC-11.36.5**: While the load is pending the page must show the text "Loading branding..." in place of the portal-module card and the editor.
+- **SPEC-11.36.6**: The page must show the breadcrumb for the branding route, the heading "Portal branding", and the explanation that the values are the defaults every client portal inherits and that a Company may override any field from its own Branding card.
+- **SPEC-11.36.7**: The branding editor must be rendered in its staff-tenant plane with an empty set of tenant defaults, and must be disabled while a branding save is in flight.
+
+### 11.37 Portal branding page: saving
+
+- **SPEC-11.37.1**: Saving the editor must send `PUT /tenants/current` with the body `{"branding": <editor block>}`; keys the block omits are left alone by the server and an explicit null clears the field.
+- **SPEC-11.37.2**: A second save request must be ignored while a branding save is in flight.
+- **SPEC-11.37.3**: A successful branding save must show the success toast "Tenant branding saved." and must reload the tenant from the server.
+- **SPEC-11.37.4**: A failed branding save must show, below the editor, an alert paragraph reading "Save failed: <cause>"; the message must be cleared when the next save starts.
+- **SPEC-11.37.5**: When an asset upload in the editor succeeds the page must reload the tenant and show the success toast "Asset saved.".
+
+### 11.38 Portal module toggle
+
+- **SPEC-11.38.1**: The branding page must show a "Portal module" card with a checkbox "Portals enabled for this tenant" whose state is the loaded `portal_module_enabled`, with the help text that turning it off signs out every portal user across every Company on their next request.
+- **SPEC-11.38.2**: Changing the checkbox must send `PUT /tenants/current` with the body `{"portal_module_enabled": <bool>}` alone, so no other tenant field is sent.
+- **SPEC-11.38.3**: The checkbox must be disabled and further changes ignored while a toggle save is in flight.
+- **SPEC-11.38.4**: A successful toggle must show a success toast, "Portal module enabled for this tenant." when turned on and "Portal module disabled. Live portal sessions will end on their next request." when turned off, and must reload the tenant so the checkbox shows the server state.
+- **SPEC-11.38.5**: A failed toggle must show, below the checkbox, an alert paragraph reading "Save failed: <cause>", cleared when the next toggle starts.
+
+### 11.39 Modules page
+
+- **SPEC-11.39.1**: The route for Settings > Modules must render the page titled "Modules" only for an admin; a non-admin must see the admin-only notice titled "Modules".
+- **SPEC-11.39.2**: The page must load `GET /settings/modules` (all pages) tagged with the active tenant generation, so a tenant switch reloads it.
+- **SPEC-11.39.3**: A failed load must be logged at error level ("module config load failed") and the page must show the banner "Could not load the module settings." in place of the list; a pending load must show the detail skeleton.
+- **SPEC-11.39.4**: The page must list one row per gated module in the fixed order of the gated-module table, each row showing the module label, the line "Off: <what turning it off does>" and a checkbox.
+- **SPEC-11.39.5**: A module with no configuration row must display as off, matching the server rule; otherwise the checkbox must reflect the row's enabled flag.
+- **SPEC-11.39.6**: The checkbox label must read "On" when the module is enabled and "Off" otherwise.
+- **SPEC-11.39.7**: The checkbox must be disabled while a change to that module is in flight and whenever mutation is not allowed (server unreachable).
+- **SPEC-11.39.8**: Toggling a module must send `PUT /settings/modules/<name>` with the body `{"is_enabled": <bool>, "config": {}}`.
+- **SPEC-11.39.9**: After a successful toggle the page must reload the module list first and then refresh the shared module flags the navigation and clock-in strip follow, without a page reload.
+- **SPEC-11.39.10**: A failed toggle must show the banner "Could not change <module label>: <cause>" above the list; the banner must be cleared when the next toggle starts.
+- **SPEC-11.39.11**: The busy marker must be cleared after the toggle request finishes, whether it succeeded or failed.
+
+### 11.40 Note editing policy page
+
+- **SPEC-11.40.1**: The route for Settings > Tickets > Note Editing must render the page titled "Note Editing" only for an admin; a non-admin must see the admin-only notice titled "Note Editing".
+- **SPEC-11.40.2**: The page must load `GET /settings` (all pages), tagged with the active tenant generation, and find the row whose category is "tickets" and key is "note_editing".
+- **SPEC-11.40.3**: A failed load must be logged at error level ("tenant settings load failed") and the page must show the banner "Could not load the note editing policy."; a pending load must show the detail skeleton.
+- **SPEC-11.40.4**: The select must offer exactly three policies in this order, value then label: "off" / "Nobody", "author_or_admin" / "The author, or an administrator", "author_or_manager" / "The author, a manager, or an administrator"; the set is fixed in the client and not fetched.
+- **SPEC-11.40.5**: The policy in force must be "author_or_admin" when no row exists, when the stored value is not a string, and when the stored value is not one of the three known names.
+- **SPEC-11.40.6**: Under the select the page must show the meaning sentence of the policy in force and a note that a note written by the customer through the portal, and a public note already emailed, refuse editing whatever the policy says, and that a note logged against a time entry is edited through that entry.
+- **SPEC-11.40.7**: Changing the select must send `PUT /settings` with the body `{"category": "tickets", "key": "note_editing", "value": "<policy>"}`.
+- **SPEC-11.40.8**: The select must be disabled while a save is in flight and whenever mutation is not allowed.
+- **SPEC-11.40.9**: After a successful save the page must reload the settings and show the server value rather than the locally chosen one.
+- **SPEC-11.40.10**: A failed save must show the banner "Could not change the policy: <cause>", cleared when the next change starts, and the select must continue to show the server value.
+
+### 11.41 Segment editing policy page
+
+- **SPEC-11.41.1**: The route for Settings > Timesheets > Segment Editing must render the page titled "Segment Editing" only for an admin; a non-admin must see the admin-only notice titled "Segment Editing".
+- **SPEC-11.41.2**: The page must load `GET /settings` (all pages), tagged with the active tenant generation, and find the row whose category is "timesheets" and key is "segment_editing"; a row of another key or category (including the note editing row) must not be read as this policy.
+- **SPEC-11.41.3**: A failed load must be logged at error level ("tenant settings load failed") and the page must show the banner "Could not load the segment editing policy."; a pending load must show the detail skeleton.
+- **SPEC-11.41.4**: The select must offer exactly three policies in this order, value then label: "off" / "Nobody", "owner_or_admin" / "The person, or an administrator", "owner_or_manager" / "The person, a manager, or an administrator"; the names must not include "author_or_admin".
+- **SPEC-11.41.5**: The policy in force must be "owner_or_admin" when no row exists, when the stored value is not a string, and when it is not one of the three known names.
+- **SPEC-11.41.6**: The settings row type, the policy decoder and the default policy of this page must be crate-visible and used by the Work day page, so both surfaces agree on the policy in force.
+- **SPEC-11.41.7**: Under the select the page must show the meaning sentence of the policy in force and a note that this policy is the whole rule and that choosing Nobody means a mis-clock can only be fixed by an operator in the database.
+- **SPEC-11.41.8**: Changing the select must send `PUT /settings` with the body `{"category": "timesheets", "key": "segment_editing", "value": "<policy>"}`.
+- **SPEC-11.41.9**: The select must be disabled while a save is in flight and whenever mutation is not allowed.
+- **SPEC-11.41.10**: After a successful save the page must reload the settings and show the server value.
+- **SPEC-11.41.11**: A failed save must show the banner "Could not change the policy: <cause>", cleared when the next change starts.
+
+### 11.42 Email settings page: access, load and save
+
+- **SPEC-11.42.1**: The route for Settings > Email must render the page titled "Email" only for an admin; a non-admin must see the admin-only notice titled "Email".
+- **SPEC-11.42.2**: The page must load `GET /settings/email` through the operator-setting loader; a 403 must display the card "Email for this deployment is set up by whoever runs it..." in place of the forms, and any other failure must display the banner "Could not load the email settings.".
+- **SPEC-11.42.3**: On the first successful load only, the form fields host, port, username, from, tls and the password-set flag must be seeded from the response; a missing TLS value must seed as "starttls", and later reloads must not overwrite what the user has typed.
+- **SPEC-11.42.4**: The TLS select must offer, in order, "starttls" ("STARTTLS (port 587, default)"), "implicit" ("Implicit TLS (port 465)") and "none" ("None (local dev only)").
+- **SPEC-11.42.5**: The fields must be disabled while the load is pending and while a save is in flight, and the Save Changes button must be disabled while loading or whenever mutation is not allowed, with the title "Can't save while the server is unreachable" in the latter case.
+- **SPEC-11.42.6**: A save with a non-blank port that does not parse as a 16-bit unsigned integer must not be sent and must show, on the port field, "Enter a port between 1 and 65535, or leave it blank."; the field error must clear when the port is edited.
+- **SPEC-11.42.7**: A blank port must be sent as null.
+- **SPEC-11.42.8**: A save must send `PUT /settings/email` with host, username and from trimmed and always present (a blank value is sent as the empty string to clear that override), port, and tls.
+- **SPEC-11.42.9**: The password must be omitted from the body when the field is blank and the clear box is unchecked (keeping the stored one), sent as typed (untrimmed) when non-blank, and sent as the empty string when "Clear the stored password" is checked.
+- **SPEC-11.42.10**: The "Clear the stored password" checkbox must be shown only when a password is stored; checking it must empty and disable the password field.
+- **SPEC-11.42.11**: The password field must show the placeholder "Set. Leave blank to keep it." when a password is stored and "Not set" otherwise, and the password value must never be read back from the server.
+- **SPEC-11.42.12**: A second save must be ignored while one is in flight.
+- **SPEC-11.42.13**: A successful save must replace all fields with the server response, clear the password field and the clear box, and show the success toast "Email settings saved.".
+- **SPEC-11.42.14**: A failed save must push the API error notification and show the cause as a banner at the top of the form.
+
+### 11.43 Email test send and verify
+
+- **SPEC-11.43.1**: The "Send a test email" card must send `POST /settings/email/test-send` with `{"to": "<trimmed address>"}`; its button must be disabled whenever mutation is not allowed.
+- **SPEC-11.43.2**: A test send with a blank address must not be sent and must show the banner "Enter an address to send the test to.".
+- **SPEC-11.43.3**: A second test send must be ignored while one is in flight.
+- **SPEC-11.43.4**: A successful test send must show the success toast "Test email sent.".
+- **SPEC-11.43.5**: A failed test send must push the API error notification with a Retry action and show the cause in the card banner; Retry must re-send using the address currently in the field, not the address of the failed attempt.
+- **SPEC-11.43.6**: The Verify card must send `POST /settings/email/verify` with an empty JSON object and no password or form data; its button must be disabled whenever mutation is not allowed.
+- **SPEC-11.43.7**: A successful verify must show the success toast "Mailer verified."; a failure must push the API error notification and show the cause in the card banner.
+- **SPEC-11.43.8**: A second verify must be ignored while one is in flight.
+- **SPEC-11.43.9**: The test and verify cards must not be shown to a user for whom the load returned 403.
+
+### 11.44 Google sign-in client page: access, load and display
+
+- **SPEC-11.44.1**: The route for Settings > Google sign-in client must render the page titled "Google sign-in client" only for an admin; a non-admin must see the admin-only notice with that title.
+- **SPEC-11.44.2**: The page must load `GET /settings/google-contacts-client` through the operator-setting loader; a 403 must display the card "The Google sign-in client for this deployment is set by whoever runs it..." in place of the forms, and any other failure must display the banner "Could not load the Google sign-in client settings.".
+- **SPEC-11.44.3**: The view must carry only the flags client-id-set, client-secret-set, configured, restart-required, writable and the provider name; the page must never fill the client id or secret fields from a response.
+- **SPEC-11.44.4**: The status card must show a green "Configured" badge with "Organizations on this deployment can connect a Google account." when configured, and a gray "Not configured" badge with "Google Contacts is unavailable to every organization here until this is set." otherwise.
+- **SPEC-11.44.5**: When exactly one of client-id-set and client-secret-set is true the page must show the banner "Only one half of the pair is stored, which stops this deployment from starting. Enter both below.".
+- **SPEC-11.44.6**: When configured and a restart is required the page must show "A change here needs the deployment restarted before it is used.".
+- **SPEC-11.44.7**: When the provider name is non-empty the page must show "Stored in the <provider> secret provider."; when the provider is not writable it must add that the value cannot be written from here and must be set with `mokosh-server provider-set`.
+- **SPEC-11.44.8**: The card title and button must read "Replace the client" and "Replace Client" when configured, and "Set the client" and "Save Client" otherwise; when configured the page must warn that replacing the client ID disconnects every organization and that replacing only the secret disconnects nobody.
+
+### 11.45 Google sign-in client page: saving
+
+- **SPEC-11.45.1**: The client ID and client secret fields must start blank, the secret must be a password input, and both must be disabled while loading, while saving, and when the deployment's provider is not writable.
+- **SPEC-11.45.2**: The Save button must be disabled until both trimmed fields are non-empty, while loading, when the provider is not writable, and whenever mutation is not allowed, with the title "Enter both the client ID and the client secret" taking precedence over "Can't save while the server is unreachable".
+- **SPEC-11.45.3**: The save handler must itself refuse a request with either trimmed half empty and show "Enter both the client ID and the client secret. A deployment holding one half of the pair cannot start." without sending it.
+- **SPEC-11.45.4**: A save must send `PUT /settings/google-contacts-client` with both trimmed values as `client_id` and `client_secret`, and a second save must be ignored while one is in flight.
+- **SPEC-11.45.5**: A successful save must replace the displayed view with the response, clear both fields, and show a success toast that reads "Google sign-in client saved. Restart the deployment to start using it." when the response says a restart is required and "Google sign-in client saved. It is in use now, with no restart." otherwise.
+- **SPEC-11.45.6**: A failed save must push the API error notification and show the cause in a banner above the fields, which must clear on the next edit of either field.
+
+### 11.46 Google sign-in client console guidance
+
+- **SPEC-11.46.1**: The page must print the authorized redirect URI as the API base with any trailing slash removed followed by `/public/contact-sync/google/callback`, derived from the API base and not from the browser location.
+- **SPEC-11.46.2**: The page must list, in order, the six console steps: create or pick a project, enable the Google People API, configure the consent screen and audience, add exactly the three scopes contacts.readonly, openid and email, create a Web application client with the redirect URI and no JavaScript origins, and copy the client ID and secret into the fields.
+- **SPEC-11.46.3**: The page must display the warning that in Testing mode Google expires refresh tokens after seven days and that publishing without verification caps the app at 100 users with an unverified-app screen.
+
+### 11.47 Connected Services page: load and states
+
+- **SPEC-11.47.1**: The route for Settings > Connected Services must render the page titled "Connected Services" only for an admin; a non-admin must see the admin-only notice with that title.
+- **SPEC-11.47.2**: The page must make exactly one request, `GET /integrations` through the operator-setting loader, and must issue no connect, disconnect, update or poll request.
+- **SPEC-11.47.3**: A pending load must show the detail skeleton; a failed load must show the banner "Could not load the integrations."; a 403 must show "Integrations are set up by an administrator of this organization.".
+- **SPEC-11.47.4**: Providers must be rendered one card each in the exact order the server returned them, with the card title the display name, the description, and a status badge.
+- **SPEC-11.47.5**: Provider names, capability lists and status vocabulary must come from the response and not from the client.
+- **SPEC-11.47.6**: A response row lacking `available` or `configurable_here` must be read as true for each.
+- **SPEC-11.47.7**: A provider's last error, when present, must be shown in an error banner on its card.
+
+### 11.48 Connected Services cards
+
+- **SPEC-11.48.1**: The status badge and sentence must be, for not connected, a gray "Not connected" with "Nothing is delegated to this provider yet."; for connected, a green "Connected" with "Delegating the capabilities listed below." when any capability is delegated and "Connected, with nothing delegated to it." otherwise; for disconnected, a gray "Disconnected" with "Switched off. What was ticked is kept, so connecting again does not start from nothing."; for error, a red "Error" with "Connected, and the last attempt to use it failed.".
+- **SPEC-11.48.2**: A provider with `available` false must instead show a gray "Not available yet" badge with the sentence that it is listed so the work it would take on can be named and that there is nothing to connect.
+- **SPEC-11.48.3**: A provider is connectable here only when it is available, has no managed-elsewhere marker and is configurable here; no card may render a Connect, Disconnect, credential or capability control.
+- **SPEC-11.48.4**: A card that is not connectable and has supported capabilities must list capabilities as "label. description"; the list must be the delegated capabilities (in the server's order) headed "What it is doing" when any are delegated.
+- **SPEC-11.48.5**: When nothing is delegated the list must be all supported capabilities, headed "What it can do" for an available provider and "What it would do" for an unavailable one.
+- **SPEC-11.48.6**: A provider with a setup surface must show "Set up under <label>, not here." and, when the surface kind is known, a link "Go to <label>".
+- **SPEC-11.48.7**: Setup kinds must route as follows: payment_gateway to the payment gateway page, contact_sync_google and the older contact_sync to the Google Contacts page, contact_sync_icloud to the iCloud Contacts page, contact_sync_microsoft to the Microsoft Contacts page, invoice_issuer_xero to the Xero page, invoice_issuer_quickbooks to the QuickBooks page.
+- **SPEC-11.48.8**: An unknown setup kind must render the "Set up under" sentence with no link.
+
 ## 12. Knowledge base
 
 Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
@@ -2802,27 +7508,33 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 - **SPEC-12.1.1**: `KBHomePage` must render a search box, a "Browse by
   company" picker, a category grid (loading skeleton, empty state, or
   populated), a "Top ticket-driving articles" widget, and a "Recent
-  Articles" list capped at `RECENT_LIMIT = 5` articles
-  (`knowledge_base.rs:47,55,540-782`); submitting the search box must
+  Articles" list capped at `RECENT_LIMIT = 5` articles; submitting the search box must
   navigate to `KBArticleListPage` with `?q=` set to the trimmed text
-  and no tag/category filter (`knowledge_base.rs:631-639`).
+  and no tag/category filter.
 - **SPEC-12.1.2**: `KBArticleListPage` must render a server-paginated
   (`PER_PAGE = 25`), searchable, category-filterable article table
-  with a left `KbTreeNav` rail; its `initial_q`/`initial_tag`/
-  `initial_category` route props seed the search/tag/category state
-  and are kept in sync on prop change via `use_reactive!` effects, so
-  navigating from one tag or category link to another re-filters
-  without remounting (`knowledge_base.rs:981-1017`).
+  with a left `KbTreeNav` rail. Its `initial_q`/`initial_tag`/
+  `initial_category` route props must seed the search/tag/category
+  state at mount; `initial_tag` and `initial_category` must also be
+  re-applied (resetting the page to 1) whenever the prop changes, via
+  `use_reactive!` effects, so navigating from one tag or category link
+  to another re-filters without remounting. `initial_q` is not
+  re-applied after mount.
 - **SPEC-12.1.3**: With a tag filter active, the list page must fetch
-  the entire article corpus (`get_all_with_auth`, the server cannot
-  narrow on tags) and filter and paginate client-side; with no tag
-  filter, it must use the server's paginated `GET /kb/articles`
-  (`knowledge_base.rs:1083-1155`).
+  every page of `GET /kb/articles` (`get_all_with_auth`, still sending
+  any `q` and `category_id` filter, since the server cannot narrow on
+  tags), keep only the articles carrying the tag (ASCII
+  case-insensitive match), and paginate client-side at `PER_PAGE`,
+  clamping a requested page past the last to the last. With no tag
+  filter it must request the server-paginated
+  `GET /kb/articles?page=&per_page=` page. A failed fetch must be
+  logged at `error`, must render the `ErrorBanner` "Could not load
+  articles. Refresh the page to retry." and must leave the table with
+  no rows.
 - **SPEC-12.1.4**: `KBCompanyPage` (`/kb/companies/{id}`) must render
   the company's name, falling back to "Company" with an inline error
   banner when the name lookup fails or returns a blank name, and that
-  company's articles via `GET /kb/articles?company_id={id}`
-  (`knowledge_base.rs:1355-1505`).
+  company's articles via `GET /kb/articles?company_id={id}`.
 - **SPEC-12.1.5**: `KBArticleDetailPage` must render the article body
   (Markdown, with interactive task-list toggles gated on
   `can_mutate`), breadcrumbs, a parent-version back-link for a company
@@ -2830,22 +7542,20 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
   has at least 2 users), inline comments (staff sessions only), and a
   right rail with a template-variable picker, actions, measured
   duration, linked tickets, company versions, a table of contents, and
-  version history (`knowledge_base.rs:1591-2335`).
+  version history.
 - **SPEC-12.1.6**: `KBArticleNewPage`/`KBArticleEditPage` must render
   the shared `ArticleForm` in Create/Edit mode; `KBArticleNewPage`
   accepts `parent_article_id` and `visibility` query-string prefills
   from the "Create a company version" link, defaulting visibility to
-  `internal` when the query string leaves it blank
-  (`knowledge_base.rs:3022-3047`); `KBArticleEditPage` must resolve the
+  `internal` when the query string leaves it blank; `KBArticleEditPage` must resolve the
   article's scoped company names in the same fetch pass that loads the
-  article (`knowledge_base.rs:3060-3083`).
+  article.
 - **SPEC-12.1.7**: `ArticleActions` must render exactly three controls
   in a fixed order: Edit, "Open ticket about this article" (carrying
   `from_kb_article`/`from_kb_title`/`from_kb_url` query params), and
   Delete (behind a `ConfirmDialog`); `ArticleActionsMenu` must expose
   the same controls through a header overflow popover, shown whenever
-  the right rail is collapsed and always below the `sm` breakpoint
-  (`knowledge_base.rs:4940-5052`).
+  the right rail is collapsed and always below the `sm` breakpoint.
 - **SPEC-12.1.8**: `RatingBar` must POST to
   `/kb/articles/{id}/helpful` or `/kb/articles/{id}/not_helpful` and
   update its counts and `my_vote` from the response; both buttons must
@@ -2857,14 +7567,12 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
   with no headings, and otherwise a nested "On this page" list whose
   links intercept the click (no router hash navigation), scroll the
   target heading into view, and mark the active section via
-  `aria-current` plus a border/weight change, never color alone
-  (`knowledge_base.rs:2431-2493`).
+  `aria-current` plus a border/weight change, never color alone.
 - **SPEC-12.1.10**: `VersionHistoryCard` must list every prior version
   with per-row "Compare" (diff against the live article) and "Restore"
   (confirm dialog showing the diff, taking an optional `change_note`)
   actions, both disabled while `!can_mutate`; the live version's row
-  is marked "Current" and carries neither action
-  (`knowledge_base.rs:2749-2976`).
+  is marked "Current" and carries neither action.
 - **SPEC-12.1.11**: `ArticleActivity` must render a three-tab
   (`All activity`/`Comments`/`History`) `tablist` whose selected tab
   is persisted under the `kb_activity_tab` preference key and restored
@@ -2905,17 +7613,14 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 
 ### 12.2 Data model
 
-- **SPEC-12.2.1**: `CompanyNameRow` and `CompanyNameOnly`
-  (`knowledge_base.rs:399-404,1364-1368`) must default `name` on
+- **SPEC-12.2.1**: `CompanyNameRow` and `CompanyNameOnly` must default `name` on
   absence, so a server response missing the field still decodes.
 - **SPEC-12.2.2**: `TreeNode`/`build_kb_tree` must bucket any article
   whose `category_id` is absent or references an unknown category id
-  into a separate "uncategorized" list rather than dropping it
-  (`knowledge_base.rs:221-278`); `resolve_category_path` must walk
+  into a separate "uncategorized" list rather than dropping it; `resolve_category_path` must walk
   `parent_id` from a category to the root, returning `[]` for no
   category or a dangling id, and must guard against a cycle with a
-  visited-id set rather than looping forever
-  (`knowledge_base.rs:199-216`).
+  visited-id set rather than looping forever.
 - **SPEC-12.2.3**: `Entry` (`kb_activity.rs:81-98`) is a client-only
   union of an already-fetched `KbComment` or a `KbArticleVersion`
   paired with its predecessor; this scope persists no server schema
@@ -2945,37 +7650,42 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 
 - **SPEC-12.3.1**: The article list must page the server list at
   `PER_PAGE = 25` rows; the home page's recent-articles list is capped
-  at `RECENT_LIMIT = 5` (`knowledge_base.rs:47,55`). Client-side
+  at `RECENT_LIMIT = 5`. Client-side
   `maxlength` caps mirror server column limits: `TITLE_MAX = 255`,
   `SLUG_MAX = 255`, `SUMMARY_MAX = 255`, `BODY_MAX = 100_000`, and
-  `TAG_MAX = 50` characters per tag (`knowledge_base.rs:63-71`).
-- **SPEC-12.3.2**: `sanitize_tags` must split a tag string on `,`,
-  strip markup (`<`/`>`) and control characters via `clean_strict`,
-  trim, cap each tag at `TAG_MAX`, and drop empties
-  (`knowledge_base.rs:82-99`). `slugify` must lowercase, collapse every
-  run of non-alphanumerics to a single hyphen, trim leading/trailing
-  hyphens, run `clean_strict` first so an invisible character cannot
-  produce an unaccounted-for hyphen, and fall back to `"article"` for
-  empty input (`knowledge_base.rs:109-128`).
+  `TAG_MAX = 50` characters per tag.
+- **SPEC-12.3.2**: `sanitize_tags` must remove invisible characters
+  from the whole string via `clean_strict`, split it on `,`, strip `<`,
+  `>` and control characters from each part, trim, cap each part at
+  `TAG_MAX` characters, and drop empties. `slugify` must run
+  `clean_strict` first so an invisible character cannot produce an
+  unaccounted-for hyphen, lowercase, collapse every run of
+  non-ASCII-alphanumerics (an accented letter included) to a single
+  hyphen, trim leading/trailing hyphens, and fall back to `"article"`
+  for empty input.
 - **SPEC-12.3.3**: `next_slug` must derive the slug from the title via
   `slugify` until the slug field is manually touched, after which it
   must leave the slug alone; the category form's slug follows the
-  same rule against the category name
-  (`knowledge_base.rs:133-139,4551-4569,4757-4760`).
+  same rule against the category name. Both forms must start the slug
+  as touched in edit mode, so a new title or name never rewrites a
+  stored slug.
 - **SPEC-12.3.4**: The article-list search input must debounce 300ms
-  before refetching (`knowledge_base.rs:1061`); the template-variable
-  render picker debounces its edits the same 300ms
-  (`knowledge_base.rs:1827`).
+  before refetching; the template-variable
+  render picker debounces its edits the same 300ms.
 - **SPEC-12.3.5**: `meta_must_be_open` must report the article
-  metadata panel as forced open whenever Title or Slug is empty; once
-  both are non-empty, the panel's open/closed state becomes a
-  user-toggled signal that is never auto-closed again
-  (`knowledge_base.rs:181-190,3386-3395`).
+  metadata panel as forced open whenever Title or Slug is empty; an
+  effect must then set the panel open and must never close it. Once
+  both are non-empty, the panel's open/closed state is a
+  user-toggled signal, and the "Hide details"/"Edit details" toggle
+  must render only while both are non-empty.
 - **SPEC-12.3.6**: The active activity tab and the resolved-thread
-  visibility are the only pieces of this scope's state persisted
-  across sessions, under the `kb_activity_tab` and
+  visibility are persisted across sessions under the `kb_activity_tab` and
   `kb_activity_show_resolved` preference keys respectively
-  (`kb_activity.rs:130-131`); every other control (edit drafts,
+  (`kb_activity.rs:130-131`). `knowledge_base.rs` additionally
+  persists the two rail-collapse flags under `kb_left_rail` and
+  `kb_right_rail`, reads the reading-density flag `kb_density` (written
+  by the appearance settings page) and passes `kb_view_mode` as the
+  body editor's view-preference key; every other control (edit drafts,
   reply-open state, settings-menu open state) is render-local state
   that resets on remount.
 
@@ -2985,26 +7695,30 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
   create/edit/delete, article create/edit/delete, vote, task-list
   toggle, version restore, comment resolve/edit/delete/post, comment
   on selection) must read `crate::hooks::use_can_mutate()` and disable
-  itself while `!can_mutate`, with a `title` attribute naming the
-  server as unreachable (`knowledge_base.rs:621,652,833-848,907-910`;
-  `kb_activity.rs:428,506,525,532,672,720,733,770,835`;
+  itself while `!can_mutate`; the comment submit button and "Comment
+  on selection" must also carry the `title` "Can't comment while the
+  server is unreachable" (`kb_activity.rs:428,506,525,532,672,720,733,770,835`;
   `kb_inline.rs:172,176-177`).
 - **SPEC-12.4.2**: `company_scope_error` must block submitting a
-  `client_specific` article with an empty company scope client-side,
-  mirroring the server's 422 (`knowledge_base.rs:370-376,3621-3634`);
-  the save handler must reject any scoped-company id that fails
-  `uuid::Uuid` parsing rather than silently dropping it, since a
+  `client_specific` article with an empty company scope client-side
+  with the message "Select at least one company for a client-specific
+  article.", mirroring the server's 422. The save handler must reject
+  any scoped-company id that fails `uuid::Uuid` parsing, logging a
+  warning naming the id and showing "Could not save article: {n} of
+  the selected companies could not be identified. Remove and re-add
+  them, then save again.", rather than silently dropping it, since a
   dropped id would revoke that client's portal access without telling
-  the author (`knowledge_base.rs:3636-3657`).
-- **SPEC-12.4.3**: `KBArticleDetailPage`'s inline comments and
-  `LinkedTicketsCard` must not render, and their resources must not
-  fetch, for a contact (customer) session, consistent with the server
-  refusing a contact bearer on those routes
-  (`knowledge_base.rs:1627-1645,2218-2227,2249-2257,2294-2328`).
+  the author.
+- **SPEC-12.4.3**: For a contact (customer) session,
+  `KBArticleDetailPage`'s inline comments and `LinkedTicketsCard` must
+  not render and their resources must not fetch, consistent with the
+  server refusing a contact bearer on those routes; the same session
+  must also not render `ArticleActivity`, the company-versions card or
+  the version-history card, and its attribution line must read only
+  "Updated {time}" with no names.
 - **SPEC-12.4.4**: `ArticleToc`'s click handler must call
   `e.prevent_default()` before scrolling, so a heading jump never
-  becomes a router navigation that could be hijacked
-  (`knowledge_base.rs:2476-2481`).
+  becomes a router navigation that could be hijacked.
 - **SPEC-12.4.5**: Edit and Delete on a comment must render only when
   the signed-in user is the comment's author or an admin; the
   resolve/unresolve action carries no such author restriction, since
@@ -3017,17 +7731,19 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 
 ### 12.5 Error handling and observability
 
-- **SPEC-12.5.1**: `KBHomePage`'s category grid is the primary
-  resource; a failed load while the server is unreachable must render
-  `ContentUnavailable`, while the recent-articles and
-  top-ticket-driving widgets are secondary and degrade to their own
-  inline "Could not load…" text (`knowledge_base.rs:612-626,755-757`).
-  `KBArticleListPage`, `KBCompanyPage`, `KBArticleDetailPage`, and
-  `KBArticleEditPage` must render `ContentUnavailable` only when their
-  primary fetch failed AND the server is unreachable; a 4xx while
-  reachable keeps an inline `ErrorBanner` plus the ordinary empty or
-  "Could not load" state
-  (`knowledge_base.rs:1129-1134,1403-1411,1904-1913,1983-1994,3092-3098,3138-3149`).
+- **SPEC-12.5.1**: `KBHomePage` must render `ContentUnavailable` in
+  place of its content whenever the server is flagged unreachable.
+  Its recent-articles and top-ticket-driving widgets are secondary: a
+  failed recent-articles load must render "Could not load recent
+  articles.", and a failed top-ticket-driving load must render a
+  visible failure message distinct from the "No ticket-driving
+  articles yet." empty state. `KBArticleListPage`, `KBCompanyPage`,
+  `KBArticleDetailPage`, and `KBArticleEditPage` must render
+  `ContentUnavailable` only when their primary fetch failed AND the
+  server is unreachable; a 4xx while reachable keeps an inline
+  `ErrorBanner` ("Could not load article." with a "Back to knowledge
+  base" link on the detail and edit pages) plus the ordinary empty
+  state.
 - **SPEC-12.5.2**: The task-list toggle PUT must, on failure, toast
   "Could not save that change: {message}" and re-fetch the article to
   put the checkbox back, because the DOM has already flipped the box
@@ -3119,21 +7835,20 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
   `use_reactive!` must bind the route `id` prop into
   `KBArticleDetailPage`'s article, versions, and comments resources,
   so an in-app article-to-article navigation restarts the fetch rather
-  than keeping the previous article's data
-  (`knowledge_base.rs:1600,1611,1634`).
+  than keeping the previous article's data.
 - **SPEC-12.6.2**: The template-render resource must bail out with no
   request when `tpl_variables` is empty, so a non-templated article
-  issues no render call (`knowledge_base.rs:1833-1836`).
+  issues no render call.
   `VersionHistoryCard.on_restored` must restart both the article and
   the versions resources on a successful restore, so the live article
   and the history list both reflect the restore without a manual
-  reload (`knowledge_base.rs:2320-2328`).
-- **SPEC-12.6.3**: The category-delete, article-delete, vote, resolve,
+  reload.
+- **SPEC-12.6.3**: The category-delete, article-delete, vote, version-restore, resolve,
   unresolve, comment edit, and comment delete handlers must each
   ignore a second concurrent invocation of the same control via a
-  `busy`/`delete_busy` guard before spawning a request
-  (`knowledge_base.rs:827-830,1950-1951,5091,5122`;
-  `kb_activity.rs:428-430,619-621,672`).
+  `busy`/`delete_busy`/`restore_busy` guard before spawning a request
+  (`kb_activity.rs:428-430,619-621,672,770`); the comment and reply
+  composer submit must likewise return when `busy`.
 - **SPEC-12.6.4**: `build_stream` must pair each version with the
   version immediately after it in the newest-first input slice as its
   "previous" diff baseline, so the oldest version in the list is
@@ -3183,23 +7898,21 @@ Scope: `src/pages/knowledge_base.rs`, `src/pages/kb_activity.rs`,
 None of the files in this section's scope add a build or packaging
 step of their own; they compile under the same `app`/`web` feature
 gating `src/main.rs` and `Cargo.toml` define (SPEC-1.3.1), with every
-network call individually gated behind `#[cfg(feature = "app")]`
-(`knowledge_base.rs:833,1831,1868,1955,2185,2211,3475,3583,3757,4673,
-4716`; `kb_activity.rs:433,624,677,778`; `kb_inline.rs:109-129`).
+network write (and the template-render and vote-seed calls) individually
+gated behind `#[cfg(feature = "app")]`
+(`kb_activity.rs:433,624,677,778`; `kb_inline.rs:109-129`).
 
 ### 12.9 Retention and cleanup
 
 - **SPEC-12.9.1**: Deleting a category must not delete the articles
   filed under it; they become uncategorized (consistent with
-  SPEC-12.2.2's uncategorized bucket, `knowledge_base.rs:807-810`).
-  Deleting an article is permanent ("This cannot be undone.",
-  `knowledge_base.rs:1930-1937`).
+  SPEC-12.2.2's uncategorized bucket).
+  Deleting an article is permanent ("This cannot be undone.").
 - **SPEC-12.9.2**: Restoring a version must create a new version
-  (`current_version + 1`), never truncate or delete history
-  (`knowledge_base.rs:2910-2911`).
+  (`current_version + 1`), never truncate or delete history.
 - **SPEC-12.9.3**: Canceling a create flow after an image upload
   auto-created the article must `DELETE` that article, cascading its
-  attachments (`knowledge_base.rs:4394-4431`).
+  attachments.
 - **SPEC-12.9.4**: Deleting a comment must not remove its position in
   the thread: the body is replaced with "Comment deleted" and the row
   stays in place so sibling replies keep their on-screen order
@@ -3209,6 +7922,344 @@ network call individually gated behind `#[cfg(feature = "app")]`
 - **SPEC-12.9.5**: "Comment on selection" cancel leaves no server-side
   trace of an uncommitted comment; only the local pending-composer
   signal is cleared (`kb_inline.rs:266`).
+
+### 12.10 Article list, category grid and navigation tree
+
+- **SPEC-12.10.1**: `build_kb_tree` must order root categories and each
+  category's child categories by `sort_order` then `name`, and the
+  articles filed directly under a category by `title`. `KbTreeNav`
+  must omit every category with no article anywhere in its subtree
+  (`prune_empty_categories`) while the home category grid still lists
+  every category, and must list uncategorized articles under an
+  "Uncategorized" heading.
+- **SPEC-12.10.2**: A category card on `KBHomePage` must navigate to
+  `KBArticleList` with `category` set to the category id when its body
+  is clicked; its Edit and Delete icon buttons must stop click
+  propagation so they do not trigger that navigation, and must be
+  disabled while `!can_mutate`.
+- **SPEC-12.10.3**: Changing the category dropdown on
+  `KBArticleListPage` must set the category filter, reset the page to
+  1 and push a `KBArticleList` route carrying the current trimmed
+  search, the current tag and the chosen category; changing the
+  search text must reset the page to 1. The page heading must be the
+  selected category's name, or "All Articles" when none is selected or
+  the id matches no loaded category.
+- **SPEC-12.10.4**: With no rows to show, the list must render the
+  empty state "No articles match your filters" (description "Try
+  clearing or adjusting the filters above.") when a search, category
+  or tag filter is active, and otherwise "No articles yet" with a
+  "New Article" action. With a tag filter active it must show a
+  "Filtered by tag:" label, a `#{tag}` badge and a "Clear filter" link
+  that keeps the search and category and clears the tag.
+- **SPEC-12.10.5**: `BrowseByCompanyCard` must offer a `CompanyPicker`
+  with inline company creation disabled, and selecting a company must
+  navigate to `KBCompany` for that company id. `KBCompanyPage` must
+  page its articles at `PER_PAGE`, show "No articles scoped to this
+  company yet" when it has none, render breadcrumbs "Knowledge Base"
+  (linking to `KBHome`) then "Companies", and show an `ErrorBanner`
+  "The company has no name set." for a blank name, "Could not load the
+  company name." for a failed name lookup, and "Could not load
+  articles. Refresh the page to retry." for a failed article fetch.
+- **SPEC-12.10.6**: Visibility badges must read "Public", "Internal"
+  and "Client-specific" for `public`, `internal` and `client_specific`,
+  with a blank value shown as "Internal" and an unknown value shown
+  verbatim; a `client_specific` badge in a list row must append the
+  scoped-company count ("Client-specific (N)"), including "(0)". A
+  blank article status must display as `draft`.
+
+### 12.11 Article form
+
+- **SPEC-12.11.1**: On submit, `ArticleForm` must send the slug
+  normalized through `slugify` (derived from the title when the slug
+  field is blank), a blank summary as absent, the tags through
+  `sanitize_tags`, `company_ids` only when the visibility is
+  `client_specific`, and `template_variables` as the full cleaned
+  set. A successful save must navigate to the article's detail page; a
+  failure must set the banner "Could not save article: {message}" and
+  leave the form populated.
+- **SPEC-12.11.2**: The save must be an update
+  (`PUT /kb/articles/{id}`) whenever the form holds an article id,
+  whether the form was opened to edit or an image upload created the
+  article, and a create (`POST /kb/articles`) only when it holds none,
+  so an upload followed by Publish never creates a second article. An
+  update must not send `parent_article_id`; a create must send the
+  prefilled `parent_article_id` when it parses as a UUID.
+- **SPEC-12.11.3**: An image chosen, dropped or pasted into the body
+  must be checked client-side for type and size and rejected with the
+  check's message in the upload error slot, and a second upload must
+  be ignored while one is in flight. With no article id yet, the first
+  upload must create the article as a `draft` (whatever status the
+  form shows) and record its id, or instead report "Give the article
+  a title and a slug first: an uploaded image is stored against the
+  article, so there has to be one." when Title or Slug is empty. A
+  failed draft creation must report "Could not start the article to
+  attach the image to: {error}", a failed upload "Could not upload
+  that image: {message}", and a successful upload must insert the
+  image Markdown into the body.
+- **SPEC-12.11.4**: Cancel must navigate straight to the cancel route
+  (the article detail page when editing, `KBHome` when creating) when
+  the form is not dirty and no article was auto-created; otherwise it
+  must open a "Discard your changes?" dialog with "Discard changes"
+  and "Keep editing" actions, whose message states that discarding
+  deletes the article when one was auto-created. A form being
+  submitted is not dirty, and a dirty form must register the browser
+  unsaved-changes guard.
+- **SPEC-12.11.5**: When saving an edit, if comment anchors that
+  resolved in the saved text no longer resolve in the edited text
+  (`orphaned_by_edit`), the first submit must stop and open a dialog
+  titled "This edit orphans 1 inline comment" or "This edit orphans
+  {n} inline comments" quoting each affected passage; "Save anyway"
+  must re-run the submit acknowledged and "Go back" must dismiss the
+  dialog, so orphaning is never blocked, only made visible.
+- **SPEC-12.11.6**: On an edit, while the loaded comments include a
+  non-deleted anchored one, the form must re-place inline-comment
+  highlights on the editor's preview pane at most every 700ms, and
+  only when the body text or the number of loaded comments changed or
+  the pane shows no marks; a create must place none.
+- **SPEC-12.11.7**: The template-variables editor must send each row
+  with name, label and default trimmed (a blank default as absent) and
+  allowed values split on `,`, trimmed with empties dropped, and must
+  drop a row whose name, label, allowed values and default are all
+  empty. "Add variable" must append an empty row and clear the banner;
+  removing a row must remove its allowed-values text and error slot;
+  each submit must clear all per-row errors and the banner before
+  sending.
+- **SPEC-12.11.8**: The company-scope block must render only while the
+  visibility is `client_specific`, and the selection must survive a
+  visibility change within one edit. Selecting a company already in
+  the scope must not add it and must show "{name} is already scoped to
+  this article."; removing a company must remove its row; the add
+  control must read "Add a company" with none selected and "Add
+  another company" otherwise.
+- **SPEC-12.11.9**: The "What changed? (optional)" field (maxlength
+  500) must render only in edit mode; its trimmed text must be sent as
+  `change_note` only when non-empty, and typing in it alone must not
+  make the form dirty.
+- **SPEC-12.11.10**: The edit page must prefill the form from the
+  article: a blank visibility as `internal`, a blank status as
+  `draft`, tags joined with ", ", a missing summary as empty, and the
+  resolved company rows; it must leave `parent_article_id` empty.
+- **SPEC-12.11.11**: When visibility is not `client_specific` and
+  companies are selected, the form must show "Saving as {Label}
+  removes the company scope ({names})." naming a company by its id when
+  its name is blank. When any scoped company's name did not resolve,
+  the form must show an `ErrorBanner` "Could not load {n} company name
+  (or names) for this article's scope. Those companies are listed by id
+  below and stay scoped when you save." and each such row must read
+  "Name unavailable. This company stays scoped to the article."
+
+### 12.12 Category form and deletion
+
+- **SPEC-12.12.1**: `CategoryFormModal` must require Name through the
+  shared form guard and must parse Sort order with `parse_sort_order`:
+  blank is 0, any other value must be a 32-bit integer, otherwise the
+  field must show "Enter a whole number between 0 and 2147483647." and
+  a warning must be logged; both checks run in one pass and a failing
+  form must not submit.
+- **SPEC-12.12.2**: Saving a category must POST to the shared
+  categories endpoint (create) or PUT `/kb/categories/{id}` (edit)
+  with the slug normalized through `slugify` (derived from the name
+  when blank), a blank description sent as absent and the parent from
+  `picked_uuid`. On success it must call `on_saved`, which closes the
+  modal and restarts the shared categories resource; a failure must
+  set the banner "Could not save category: {error}". The parent
+  dropdown must list "None (top-level)" then every category except the
+  one being edited, and a new category defaults to visibility
+  `internal` and sort order 0.
+- **SPEC-12.12.3**: Confirming a category delete must send
+  `DELETE /kb/categories/{id}`; success must close the dialog and
+  restart the shared categories resource, and failure must append
+  "Could not delete category: {error}" to the dialog message.
+
+### 12.13 Article detail page
+
+- **SPEC-12.13.1**: `KbBreadcrumb` must start with a "KB" link to
+  `KBHome`, then one crumb per ancestor category (root first), each
+  linking to the article list filtered to that category, and an italic
+  "Uncategorised" crumb when the path is empty, then the article
+  title. The page must also render a "Knowledge Base" `Breadcrumbs`
+  trail above the title linking to the unfiltered list.
+- **SPEC-12.13.2**: The article delete dialog must read "Delete
+  "{title}"? This cannot be undone." and, on confirm, send
+  `DELETE /kb/articles/{id}`; success must toast "Article deleted."
+  and navigate to `KBHome`, and failure must append "Could not delete
+  article: {error}" to the dialog message. Cancel must be ignored
+  while the request is in flight.
+- **SPEC-12.13.3**: When the article declares template variables, each
+  debounced change of the picks must POST `/kb/articles/{id}/render`
+  and replace the displayed body with the response content. A 404 must
+  toast the warning "This article was deleted." and navigate to
+  `KBHome`; any other failure must show the error's user message in
+  the picker's error slot and keep the previous body. Each load of the
+  article must reseed the picks from the declared variables and reset
+  the displayed body to the raw content.
+- **SPEC-12.13.4**: For a `client_specific` article the detail header
+  must show one link badge per scoped company (to `CompanyDetail`),
+  labelled with the company name or its id when the name is blank, and
+  the red badge "No companies scoped" when `company_ids` is empty.
+  Names must come from the article's `company_names` when that list
+  has one entry per id, otherwise from `resolve_company_names`.
+- **SPEC-12.13.5**: `resolve_company_names` must resolve ids to
+  `(id, name)` pairs in input order with one `GET /contacts/companies`
+  call (none for an empty id list), and must keep an id with an empty
+  name, logging a warning naming the id or the failed call, when the
+  list call fails or lacks the id, never dropping it.
+- **SPEC-12.13.6**: Staff sessions must see the attribution "Created
+  by {author} {time}" and, only when `updated_at` is later than
+  `created_at` (or `created_at` is absent), a separator and "Updated
+  by {editor} {time}". A missing or blank name must show "Unknown"
+  and, when an id accompanies it, write an info-level
+  unresolved-reference log; an absent time must show "-". Contact
+  sessions must see only "Updated {time}". Each time must render in a
+  `time` element with an RFC 3339 `datetime`.
+- **SPEC-12.13.7**: A company version (non-null `parent_article_id`)
+  must show above the title "Company version of {parent title}"
+  linking to the parent when the parent is in the loaded article
+  list, otherwise "Company version (parent unavailable)" as plain
+  text. A generic article, for staff only, must show the
+  company-versions card listing its children from the already-loaded
+  list with no extra request (each row's scope reads "No companies
+  scoped", "{n} scoped company ids" or the names joined), "No company
+  versions yet." when empty, and a "Create a company version" link to
+  `KBArticleNew` with `parent_article_id` and `visibility` set to
+  `client_specific`.
+- **SPEC-12.13.8**: `LinkedTicketsCard` must load every page of
+  `/kb/articles/{id}/tickets` and show "Loading..." while loading, an
+  `ErrorBanner` "Could not load linked tickets." on failure and "No
+  ticket references this article yet." when empty. Each row must link
+  to `TicketDetail` with the ticket number, status badge, title and a
+  relation label ("Opened from this article" for `source`, "Works this
+  procedure" for `procedure`, any other value verbatim), and a ticket
+  with `status_is_closed` must show its number struck through and
+  de-emphasised.
+- **SPEC-12.13.9**: `VersionHistoryCard` must show "Loading..." while
+  loading, an `ErrorBanner` "Could not load version history." on
+  failure and "No prior versions." when empty. Each row must show
+  "v{n}", a "Current" badge on the live version, "{Created|Edited|
+  Restored|Restored from v{k}} by {name}" (an unknown change kind
+  reads "Edited", a missing name "Unknown" with an info-level log), the
+  time, "+{added} / -{removed} lines" against the next-older row when
+  one exists, "Title: {title}" when the title differs from the
+  next-older row, and the trimmed change note in quotation marks.
+- **SPEC-12.13.10**: "Compare" must open a modal "v{n} compared with
+  the current article" showing the line diff of that version against
+  the live body (and the title change when they differ). "Restore"
+  must open a dialog "Restore v{n}?" saying the article goes back to
+  what version {n} says, recorded as v{next} with nothing deleted,
+  showing the diff of the live body against that version and an
+  optional "Why? (optional)" note (maxlength 500) sent as
+  `change_note` when non-empty. Success must close the dialog and call
+  `on_restored`; failure must log at `error` and render "Could not
+  restore: {message}" inside the dialog.
+- **SPEC-12.13.11**: The helpful/not-helpful counts must be seeded
+  from the article payload and then replaced by
+  `GET /kb/articles/{id}/vote` (counts and `my_vote`). The rating UI
+  must render only when `GET /auth/users?page=1&per_page=1` reports
+  `meta.total` of at least 2; a failed user-count lookup must hide it
+  and log a warning.
+- **SPEC-12.13.12**: A task-list checkbox toggle must compute the new
+  body with `toggle_task` (ignoring a toggle that yields none), send
+  `PUT /kb/articles/{id}` with `{"content": ...}` and restart the
+  article resource on success; the checkboxes must be non-interactive
+  while `!can_mutate`.
+- **SPEC-12.13.13**: With a measured average, `MeasuredDurationCard`
+  must show the average (rounded to whole minutes) as a duration with
+  "typical, per request", the total as "{total} across {n} request" or
+  "requests" (singular only for 1; a missing count or total counts as
+  0) and "Measured {from} to {to}".
+- **SPEC-12.13.14**: `ArticleToc` must indent each heading by 0.75rem
+  plus 0.75rem per level below the shallowest heading in the article
+  (`toc_indent_rem`, never negative), and must rebuild its
+  active-heading observer on the article body element whenever the
+  article content changes.
+
+### 12.14 Failure logging
+
+- **SPEC-12.14.1**: A failed load of the recent articles, article
+  list, tag view, tree article lists, article, version history,
+  comments or linked tickets must be logged at `error`, and a failed
+  load of the top-ticket-driving articles, measured duration, user
+  count, company name, edit-page article or the editor's comment list
+  must be logged at `warn`; each line must name the resource and, where
+  there is one, the id.
+
+### 12.20 Activity stream behaviors
+
+- **SPEC-12.20.1**: Clicking a tab must select it and persist its key
+  under `kb_activity_tab`; the "Show resolved threads" checkbox in the
+  "Activity settings" panel must set and persist
+  `kb_activity_show_resolved`, which defaults to off when unset
+  (`kb_activity.rs:147-148,221-224,247-251`).
+- **SPEC-12.20.2**: With an empty stream, `ArticleActivity` must render
+  "Loading…" while the comments fetch is unresolved, otherwise "No
+  comments yet. Start the discussion below." on the Comments tab, "No
+  history to show." on History, and "Nothing has happened here yet." on
+  All activity (`kb_activity.rs:267-276`).
+- **SPEC-12.20.3**: The root comment composer must render on every tab
+  except History (`kb_activity.rs:309`).
+- **SPEC-12.20.4**: A version line must read "{editor} {change kind
+  lowercased} the article (v{n}) {relative time}" with the absolute
+  time as tooltip, show the change note in quotes only when it is
+  non-blank after trimming, show "-" for a version with no timestamp,
+  and offer a "Show changes"/"Hide changes" toggle to the line diff
+  against the previous version only when a previous version exists
+  (`kb_activity.rs:337-387`).
+- **SPEC-12.20.5**: A resolved root with no non-blank resolver name must
+  show "resolved by someone" with a tooltip from the shared unresolved
+  helper, which logs the placeholder, rather than an empty name
+  (`kb_activity.rs:411-426,494-498`).
+- **SPEC-12.20.6**: An anchored root must show its quoted passage; if
+  the thread is orphaned it must show "Refers to text that is no longer
+  in the article" and no jump link, otherwise (and only while
+  unresolved) a "Show in article" link that focuses its mark; a thread
+  named by `focus_thread` must render with an accent ring
+  (`kb_activity.rs:455-486`).
+- **SPEC-12.20.7**: A comment must show "(edited)" only when `edited_at`
+  is set and it is not deleted; its Edit and Delete controls must
+  render only when it is not deleted and the viewer is its author or an
+  admin; a comment body must render through the shared `Markdown`
+  component with the page's mention directory
+  (`kb_activity.rs:604,650-652,709-711,713-716`).
+- **SPEC-12.20.8**: The delete confirm dialog must be titled "Delete
+  this comment?", issue `DELETE /kb/comments/{id}` only from its
+  confirm, close and refresh on success, and on failure keep the dialog
+  open showing "Could not delete the comment: {error}"
+  (`kb_activity.rs:610-638,734-737`).
+- **SPEC-12.20.9**: Saving a comment edit must `PUT` the trimmed draft
+  as `{ body }`, close the editor and refresh on success, and on
+  failure keep the editor open and set the page banner to "Could not
+  save the comment: {error}" (`kb_activity.rs:668-694`).
+- **SPEC-12.20.10**: The composer must not submit an empty-after-trim
+  body; Ctrl or Cmd plus Enter must submit the same as the button; the
+  request must be `POST /kb/articles/{id}/comments` with `body`,
+  `parent_id` and `anchor`; success must clear the draft and call
+  `on_posted`, failure must show "Could not post: {message}" above the
+  editor and keep the draft; the author avatar renders only when an
+  author name is given and Cancel only when `on_cancel` is given
+  (`kb_activity.rs:768-852`).
+- **SPEC-12.20.11**: The page banner must be cleared when a root
+  comment posts successfully, and a thread action failure must set it
+  (`kb_activity.rs:260-262,293,321-323`).
+- **SPEC-12.20.12**: `ArticleActivity` must show "Could not load the
+  history." when the versions fetch fails, rather than an empty
+  History tab.
+
+### 12.21 Inline comment behaviors
+
+- **SPEC-12.21.1**: Each gutter marker must be positioned at its mark's
+  measured top and carry the count label as tooltip and accessible name
+  (`kb_inline.rs:143-160`).
+- **SPEC-12.21.2**: The passage dialog must be titled "Comment on this
+  passage" for one thread and "Comments on this passage" otherwise,
+  must offer Close, and "Open thread" must set `focus_thread`, close the
+  dialog and scroll to `kb-comment-{id}` (`kb_inline.rs:206-241`).
+- **SPEC-12.21.3**: The placement effect must publish the orphan ids to
+  the stream via the `orphans` signal on each run (`kb_inline.rs:123`).
+- **SPEC-12.21.4**: A captured selection must clear the hint and the
+  browser selection and open a composer quoting the passage with the
+  placeholder "Comment on this passage, @mention people"; its Cancel
+  or a successful post must clear the pending passage, and a post must
+  also refresh the comments (`kb_inline.rs:187-195,246-270`).
 
 ## 13. Assets, contracts, quotes and projects
 
@@ -3298,18 +8349,24 @@ citation.
   content editing entirely once the quote's status leaves the set
   `crate::modules::quotes::status::allows_content_edit` accepts.
 - **SPEC-13.1.15**: `ProjectListPage` (`src/pages/projects.rs`) must
-  list projects from `GET /projects` with company, status and free-text
-  filters and must render status-count and total-budget stat cards from
-  `GET /projects/summary`.
+  list projects as cards from `GET /projects` one page at a time, with a
+  status select and a free-text search sent to the server (`status`,
+  `q`) and an optional company scope taken from the `company_id` URL
+  query parameter, and must render Active, On Hold, Completed and Total
+  Budget stat cards from `GET /projects/summary`.
 - **SPEC-13.1.16**: `ProjectDetailPage` (`src/pages/projects.rs`) must
-  render an Overview card (description, budget, hours, progress), a
-  checklist-item toggle inside a rendered Markdown description that
-  calls back to the server, Edit and Delete actions, and a Change
-  History panel.
+  render an Overview card (description or "No description provided."),
+  Details, Budget and Time cards, a Tasks card, a checklist-item toggle
+  inside a rendered Markdown description that calls back to the server,
+  View Tasks, Add Task, Edit and Delete actions, and a Change History
+  panel of the 20 most recent entries ("No edits yet." when empty).
 - **SPEC-13.1.17**: `ProjectTasksPage` (`src/pages/projects.rs`) must
-  render a task table with create, edit and delete affordances, each
-  task's own change-history modal, and must disable "Add Task" whenever
-  the owning project's status is `"cancelled"`.
+  render the shared task table of the project (Task, Status, Assigned
+  To, Due Date, Hours columns) with a breadcrumb trail and a "Back to
+  Project" action, and must open the task-edit modal (edit, delete and
+  per-task change history) when a row is activated. It offers no task
+  creation; "Add Task" lives on `ProjectDetailPage`, which must disable
+  it whenever the project's status is `"cancelled"`.
 
 ### 13.2 Data model
 
@@ -3385,7 +8442,8 @@ status/type vocabularies below.
   days from the click, independent of the active tenant.
 - **SPEC-13.3.6**: Every network-call site in this scope that depends
   on the `app` feature (every create/edit/delete/send/convert/accept/decline
-  mutation, and `projects.rs`'s task creation) must compile to a no-op,
+  mutation, and `projects.rs`'s project create, project delete and task
+  create) must compile to a no-op,
   not a compile error, on a build that does not enable that feature,
   consistent with the gating pattern cited at SPEC-1.3.1.
 
@@ -3437,10 +8495,11 @@ status/type vocabularies below.
   lifecycle action buttons must additionally show the tooltip
   "Can't {verb} while the server is unreachable" while disabled for
   that reason.
-- **SPEC-13.4.10**: `projects.rs`'s project and task list/detail fetches
-  must select a contact bearer ahead of a staff bearer when both are
-  present, so a signed-in contact's request is scoped server-side to
-  their own company's projects.
+- **SPEC-13.4.10**: `ProjectListPage`'s `GET /projects` fetch must select
+  a contact bearer ahead of a staff bearer when both are present, so a
+  signed-in contact's request is scoped server-side to their own
+  company's projects. The detail, tasks, summary and audit-log fetches
+  never use the contact bearer.
 
 ### 13.5 Error handling and observability
 
@@ -3565,8 +8624,10 @@ status/type vocabularies below.
   and its checklist-item toggle must show
   "Could not update checklist: {e}" on failure while still restarting
   the project resource to reconcile with the server's actual state.
-- **SPEC-13.5.20**: The Add Task and task-edit forms (`ProjectTasksPage`)
-  must each require a title, must validate an optional due date against
+- **SPEC-13.5.20**: The Add Task modal (`ProjectDetailPage`) and the
+  task-edit modal (`TaskEditModal`) must each require a title (Add Task
+  also requires a status, both errors shown at once in their own inline
+  slots), must validate an optional due date against
   the range 2000-01-01 to 2100-12-31 with
   "{label} must be a valid date." / "{label} must be between 2000 and 2100.",
   and must validate an optional estimated-hours value as a number or an
@@ -3709,9 +8770,9 @@ status/type vocabularies below.
   define (see SPEC-1.3.1).
 - **SPEC-13.8.2**: `assets.rs`'s, `quotes.rs`'s and `projects.rs`'s
   create-mutation bodies are wrapped in `#[cfg(feature = "app")]`;
-  `projects.rs`'s task-creation body is too, but its project-edit,
-  project-delete, checklist-toggle, task-edit and task-delete bodies are
-  not. Both facts are as the code stands: this section states the
+  `projects.rs`'s project-delete and task-creation bodies are too, but
+  its project-edit, checklist-toggle, task-edit and task-delete bodies
+  are not. Both facts are as the code stands: this section states the
   asymmetry as observed behavior, not as a defect to fix.
 
 ### 13.9 Retention and cleanup
@@ -3743,6 +8804,157 @@ status/type vocabularies below.
   a drawer close, a bulk edit, a bulk delete, or a catalog bulk-create,
   so the list reflects the just-completed change without a manual
   refresh.
+
+### 13.10 Project list behavior
+
+- **SPEC-13.10.1**: `ProjectListPage` must show each card's company line
+  from the `company_name` the `GET /projects` row carries, "Unknown
+  company" with a tooltip naming the id (and a log line) when the row
+  has a `company_id` but no name, and "No company" when it has neither.
+- **SPEC-13.10.2**: A project card must show "Budget used" as
+  `actual_amount / budget_amount` as a whole percent clamped to 0-100
+  only when both amounts are present and the budget is greater than
+  zero, and "n/a" otherwise; the bar must be red at 90% or more, yellow
+  at 75% or more, green below that, and neutral gray when "n/a".
+- **SPEC-13.10.3**: The project status badge must map `active` to green
+  "Active", `on_hold` to yellow "On Hold", `completed` to blue
+  "Completed", `cancelled` to gray "Cancelled", `planning` to gray
+  "Planning", and any other value to gray "Unknown".
+- **SPEC-13.10.4**: The stat cards must read the Active, On Hold and
+  Completed counts from `counts_by_status` of `GET /projects/summary`,
+  treating a status absent from the map as zero (absent means no
+  project holds it), and must format Total Budget from `total_budget`
+  with the shared money formatter, showing zero rather than negative
+  zero.
+- **SPEC-13.10.5**: The list must reset to page 1 when the search text
+  or status select changes, send `page`, `per_page`, `status`, `q` (URI
+  encoded, trimmed) and `company_id` to the server, and render the
+  standalone pager from the server's total match count.
+- **SPEC-13.10.6**: When the fetched page has no rows and neither a
+  search text nor a status is set, the list must show "No projects yet"
+  with a New Project action; when it has no rows and either is set, it
+  must show "No projects match the current filters" with a "Clear
+  filters" button that empties the search text and the status select.
+
+### 13.11 Project create and edit
+
+- **SPEC-13.11.1**: `ProjectNewPage` must pre-fill the company from the
+  `company_id` URL query parameter, default Status to `planning`, and
+  send `name` (trimmed), `description` and `status` always, and
+  `company_id`, `budget_amount`, `budget_hours`, `project_manager_id`,
+  `start_date` and `target_end_date` only when non-empty.
+- **SPEC-13.11.2**: On a successful `POST /projects`, `ProjectNewPage`
+  must navigate to the project list. On failure with server field
+  errors it must place those for `name`, `budget_amount` and
+  `budget_hours` on their inline fields and join any other messages
+  with "; " in the form banner; with no field errors it must show
+  "Could not create project: {message}" in the banner.
+- **SPEC-13.11.3**: The Create Project button on `ProjectNewPage` must
+  show a loading state while the request is in flight and be disabled
+  with the tooltip "Can't create a project while the server is
+  unreachable" while the server is unreachable.
+- **SPEC-13.11.4**: The project edit modal must prefill from the loaded
+  project, send `name`, `description`, `status`, `budget_amount`,
+  `budget_hours`, `start_date`, `target_end_date` and
+  `project_manager_id` in `PUT /projects/{id}` with a blank optional
+  value sent as `null`, close and restart the project and history
+  resources on success, and on failure route server field errors as in
+  SPEC-13.11.2 with unmatched or non-field errors in the modal banner.
+- **SPEC-13.11.5**: The budget amount and budget hours validators must
+  strip invisible characters from the input before parsing, so a pasted
+  value is judged on what is visible.
+- **SPEC-13.11.6**: The project description textarea (create and edit)
+  must cap its length at 2000 characters through the browser
+  `maxlength` attribute; no submit-time validator re-checks it.
+
+### 13.12 Project detail
+
+- **SPEC-13.12.1**: `ProjectDetailPage` must show a skeleton while the
+  project loads, "Could not load this project." when the load failed
+  and the server is reachable, and the full-page unavailable state
+  when it failed and the server is unreachable; a failed load must log
+  `project detail load failed for {id}: {e}`.
+- **SPEC-13.12.2**: The page title must be the project name, or
+  "Project {id}" when the name is blank, "Loading..." while loading, and
+  "Project" after a failed load.
+- **SPEC-13.12.3**: Progress must be the whole-number percentage
+  (rounded down) of the project's tasks whose status row has
+  `is_completed` set, shown with the "completed/total tasks" counts,
+  and 0% when the project has no tasks.
+- **SPEC-13.12.4**: The Budget card must show Total Budget, Spent and
+  Remaining (budget minus spent, with an absent amount counted as
+  zero) and a bar sized to spent over budget clamped to 0-100, empty
+  when the budget is not above zero. The Time card must show Estimated
+  and Logged to one decimal place ("-" when absent) and Remaining as
+  budget hours (zero when absent) minus logged hours.
+- **SPEC-13.12.5**: The Overview card must show "Edited {time} by {who}"
+  from the first `update` entry of the project's audit log, resolving
+  the actor as SPEC-13.12.6, and the cancelled-project notice "This
+  project is cancelled. Adding tasks is disabled." when the status is
+  `cancelled`.
+- **SPEC-13.12.6**: A change-history actor (project and task) must be
+  the server-sent `user_name` when non-blank, else the roster name for
+  `user_id`, else "Someone" with a tooltip naming the unresolved id and
+  a log line, and "System" when the entry has no `user_id`.
+- **SPEC-13.12.7**: Deleting a project must first open a confirmation
+  dialog; on confirm it must `DELETE /projects/{id}`, and on success
+  show the toast "Project deleted." and navigate to the project list;
+  on failure it must keep the dialog open showing the server's
+  message. Cancel must be ignored while the delete is in flight.
+- **SPEC-13.12.8**: The Add Task button must restart the task-status
+  cache on open, be disabled with the tooltip "This project is
+  cancelled and does not accept new tasks." for a cancelled project
+  and "Can't add a task while the server is unreachable" while the
+  server is unreachable.
+- **SPEC-13.12.9**: Toggling a checklist item must send only the
+  changed `description` in `PUT /projects/{id}`, do nothing when the
+  toggled index does not exist in the description, and render the
+  checkboxes non-interactive while the server is unreachable.
+- **SPEC-13.12.10**: The project's secondary lookups (tasks, change
+  history) must, on failure, log the cause and fall back to an empty
+  list; the task-status cache and user roster come from shared hooks.
+
+### 13.13 Project tasks
+
+- **SPEC-13.13.1**: The Add Task modal must send `title`, `status_id`
+  and `priority` always (priority defaulting to `medium`) and
+  `estimated_hours`, `due_date` and `assigned_to_id` only when set; on
+  success it must clear title, estimate, due date and assignee, close,
+  and restart the tasks resource; on failure it must keep the modal
+  open showing "Could not create task: {e}".
+- **SPEC-13.13.2**: The task table must show, per row, the title, a
+  status badge, the assignee, the due date and an hours cell reading
+  "Logged {n} h" with "Approved {n} h", "Est {n} h" beneath it, each
+  to one decimal place and "-" when absent, and must show "Loading..."
+  while loading, "Could not load tasks." on a failed load, and "No
+  tasks yet." for an empty project.
+- **SPEC-13.13.3**: A task status badge must show the server-sent
+  `status_name` when non-blank, else the cached status name; green when
+  the cached row is completed, blue for any other resolved status or
+  for a server-sent name no cached row matches, and gray "Unknown"
+  when the task has no name and no status id, or (with a log line) a
+  status id that no cached row matches.
+- **SPEC-13.13.4**: A task assignee must show "Unassigned" when the task
+  has no `assigned_to_id`, else the server-sent `assigned_to_name`, else
+  the roster name, else "Unknown" with a tooltip naming the id.
+- **SPEC-13.13.5**: `ProjectTasksPage` must log
+  `task board load failed for project {id}: {e}` on a failed task load
+  and show the full-page unavailable state when the server is
+  unreachable.
+- **SPEC-13.13.6**: The task-edit modal must prefill from the selected
+  task, send `title` (trimmed), `description`, `priority`, `status_id`,
+  `assigned_to_id`, `estimated_hours` and `due_date` in
+  `PUT /tasks/{id}` with blank optional values sent as `null`, call its
+  saved callback on success, and on failure show the error text in the
+  modal and stay open.
+- **SPEC-13.13.7**: Deleting a task must open a confirmation dialog, send
+  `DELETE /tasks/{id}` on confirm, call the deleted callback on
+  success, and on failure close the dialog and show the error text in
+  the edit modal.
+- **SPEC-13.13.8**: The task-edit modal's Save and Delete buttons must
+  be disabled with the tooltips "Can't save while the server is
+  unreachable" and "Can't delete while the server is unreachable"
+  while the server is unreachable.
 
 ## 14. Time, calendar, forms, dashboards, reports and audit
 

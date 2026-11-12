@@ -28,6 +28,7 @@ use crate::components::{
     use_page_title, Button, ButtonVariant, Card, ConfirmDialog, ErrorBanner, PageHeader,
 };
 
+// SPEC-10.48.8
 /// One row of `GET /contact/payment-methods`. Serde defaults everywhere
 /// so a server that predates this ticket decodes to a blank row and the
 /// list simply renders nothing, matching the pattern the pay-invoice
@@ -79,7 +80,9 @@ struct StartAddPaymentMethodResponse {
 /// only mounts for a contact who can use it.
 #[component]
 pub fn ContactPaymentMethodsPage() -> Element {
+    // SPEC-10.48.2
     use_page_title("Payment Methods");
+    // SPEC-10.48.1: gate before the body so no list request is made.
     let can_manage = crate::hooks::capabilities::use_capability("payment_methods:manage_own");
     if !can_manage {
         return rsx! {
@@ -96,6 +99,7 @@ pub fn ContactPaymentMethodsPage() -> Element {
 fn ContactPaymentMethodsBody() -> Element {
     // MAPPS-602: every hook fires BEFORE any early return.
     let mut reload_tick = use_signal(|| 0u64);
+    // SPEC-10.48.3: the tick re-runs this fetch after each successful action.
     let methods_resource = use_resource(move || {
         let _ = reload_tick.read();
         async {
@@ -128,6 +132,7 @@ fn ContactPaymentMethodsBody() -> Element {
     let default_saving = use_signal(|| None::<String>);
 
     let snap = methods_resource.read_unchecked();
+    // SPEC-10.48.5
     let load_error = match &*snap {
         Some(Err(e)) => Some(e.user_message()),
         _ => None,
@@ -162,6 +167,7 @@ fn ContactPaymentMethodsBody() -> Element {
                             loading: *add_saving.read(),
                             r#type: "button".to_string(),
                             onclick: move |_| {
+                                // SPEC-10.49.1
                                 if *add_saving.read() {
                                     return;
                                 }
@@ -176,6 +182,7 @@ fn ContactPaymentMethodsBody() -> Element {
                                         // the new card appears once the webhook has
                                         // landed.
                                         let base = Route::ContactPaymentMethods {}.to_string();
+                                        // SPEC-10.49.1
                                         // MAPPS-1231: without an origin the URLs were
                                         // relative, which Stripe refuses.
                                         let (success_url, cancel_url) = match return_urls(
@@ -200,6 +207,7 @@ fn ContactPaymentMethodsBody() -> Element {
                                         >("/contact/payment-methods", &body)
                                         .await
                                         {
+                                            // SPEC-10.49.2
                                             Ok(resp) if !resp.checkout_url.is_empty() => {
                                                 #[cfg(target_arch = "wasm32")]
                                                 {
@@ -227,11 +235,13 @@ fn ContactPaymentMethodsBody() -> Element {
                                                     "Adding a card is only available in the web portal. Open your portal in a browser to add a card.".to_string(),
                                                 );
                                             }
+                                            // SPEC-10.49.3
                                             Ok(_) => {
                                                 action_error.set(
                                                     "The payment provider returned an empty response. Try again.".to_string(),
                                                 );
                                             }
+                                            // SPEC-10.49.4
                                             Err(err) => {
                                                 action_error.set(format!(
                                                     "Could not start adding a card: {}",
@@ -248,6 +258,7 @@ fn ContactPaymentMethodsBody() -> Element {
                 },
 
                 match &*snap {
+                    // SPEC-10.48.4
                     None => rsx! {
                         div { class: "space-y-4 py-2",
                             div { class: "h-4 w-full bg-surface-2 rounded animate-pulse" }
@@ -276,7 +287,9 @@ fn ContactPaymentMethodsBody() -> Element {
             let pending = pending_remove.read().clone();
             let open = pending.is_some();
             let label = pending.as_ref().map(|(_, l)| l.clone()).unwrap_or_default();
+            // SPEC-10.49.6
             let message = format!("Remove {label}?");
+            // SPEC-10.49.7
             let on_confirm = move |_: ()| {
                 let Some((id, _)) = pending_remove.read().clone() else {
                     return;
@@ -285,6 +298,7 @@ fn ContactPaymentMethodsBody() -> Element {
                     return;
                 }
                 removing.set(true);
+                // SPEC-10.49.9
                 action_error.set(String::new());
                 spawn(async move {
                     #[cfg(feature = "app")]
@@ -298,6 +312,7 @@ fn ContactPaymentMethodsBody() -> Element {
                                 reload_tick.with_mut(|t| *t += 1);
                             }
                             Err(err) => {
+                                // SPEC-10.49.7
                                 action_error.set(format!(
                                     "Could not remove card: {}",
                                     err.user_message()
@@ -324,6 +339,7 @@ fn ContactPaymentMethodsBody() -> Element {
                     loading: removing(),
                     onconfirm: on_confirm,
                     oncancel: move |_| {
+                        // SPEC-10.49.8
                         if !removing() {
                             pending_remove.set(None);
                         }
@@ -355,6 +371,7 @@ fn render_method_row(
     let id_for_remove = method.id.clone();
     let brand = humanise_brand(&method.brand);
     let last4 = method.last4.clone();
+    // SPEC-10.48.6
     let exp = format!("expires {:02}/{}", method.exp_month, method.exp_year);
     let is_default = method.is_default;
     let remove_label = format!("{brand} \u{2022}\u{2022}\u{2022}\u{2022} {last4}");
@@ -369,6 +386,7 @@ fn render_method_row(
                 }
             }
             div { class: "flex items-center gap-2",
+                // SPEC-10.49.5
                 if !is_default {
                     Button {
                         variant: ButtonVariant::Secondary,
@@ -394,6 +412,7 @@ fn render_method_row(
                                             reload_tick.with_mut(|t| *t += 1);
                                         }
                                         Err(err) => {
+                                            // SPEC-10.49.5
                                             action_error.set(format!(
                                                 "Could not set default card: {}",
                                                 err.user_message()
@@ -420,6 +439,7 @@ fn render_method_row(
     }
 }
 
+// SPEC-10.48.7
 fn humanise_brand(raw: &str) -> String {
     match raw {
         "visa" => "Visa".to_string(),

@@ -29,6 +29,7 @@
 /// tag, region not in the map). Web-only; the desktop shell has no
 /// browser locale and returns `None`.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.33.5
 pub fn browser_locale_currency() -> Option<String> {
     use wasm_bindgen::JsValue;
 
@@ -46,6 +47,7 @@ pub fn browser_locale_currency() -> Option<String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.33.5
 pub fn browser_locale_currency() -> Option<String> {
     None
 }
@@ -53,6 +55,7 @@ pub fn browser_locale_currency() -> Option<String> {
 /// Extract the region subtag from a BCP-47 language tag (`en-US` →
 /// `US`, `zh-Hant-HK` → `HK`) and look it up in [`REGION_CURRENCIES`].
 /// Pure over its input so tests can pin the mapping without a browser.
+// SPEC-3.33.2, SPEC-3.33.4: an unmapped region yields None (no warning), never a guess.
 pub fn currency_for_locale(language_tag: &str) -> Option<&'static str> {
     let region = extract_region(language_tag)?;
     REGION_CURRENCIES
@@ -67,6 +70,7 @@ pub fn currency_for_locale(language_tag: &str) -> Option<&'static str> {
 /// is exactly two ASCII letters, uppercased. Returns `None` for
 /// language-only tags (`en`) and for tags with only script/variant
 /// subtags after the language.
+// SPEC-3.33.1
 fn extract_region(tag: &str) -> Option<String> {
     for part in tag.split('-').skip(1) {
         if part.len() == 2 && part.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -76,6 +80,7 @@ fn extract_region(tag: &str) -> Option<String> {
     None
 }
 
+// SPEC-3.33.3
 /// ISO 3166-1 region → ISO 4217 currency. Hand-maintained to cover 60
 /// paying markets (a test pins the count, so this line cannot drift
 /// again). A region the map does not know falls through to "no warning",

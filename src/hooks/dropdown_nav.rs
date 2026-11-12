@@ -53,6 +53,7 @@ pub enum NavAction {
 /// the first. An out-of-range `active` (the row set shrank under it) clamps in
 /// before it moves.
 pub fn step_index(active: Option<usize>, len: usize, forward: bool) -> Option<usize> {
+    // SPEC-4.16.1: clamped, never wrapping; empty list has no highlight.
     if len == 0 {
         return None;
     }
@@ -73,6 +74,7 @@ pub fn step_index(active: Option<usize>, len: usize, forward: bool) -> Option<us
 /// The row Tab takes: the highlighted one, or the first row when nothing is
 /// highlighted. `None` when the list has nothing to take.
 pub fn commit_index(active: Option<usize>, len: usize) -> Option<usize> {
+    // SPEC-4.16.2: stale highlight falls back to row 0.
     if len == 0 {
         return None;
     }
@@ -93,6 +95,7 @@ pub struct NavRows {
 }
 
 impl NavRows {
+    // SPEC-4.16.3: the create action is the trailing row.
     pub fn new(results: usize, has_create: bool) -> Self {
         Self {
             len: results + usize::from(has_create),
@@ -132,6 +135,7 @@ pub fn decide(
     mode: NavMode,
 ) -> NavAction {
     match key {
+        // SPEC-4.16.4: arrows open and move in both modes.
         Key::Named(NamedKey::ArrowDown) => NavAction::Open(step_index(active, len, true)),
         Key::Named(NamedKey::ArrowUp) => NavAction::Open(step_index(active, len, false)),
         // MAPPS-653: in a record picker Enter takes the first row when nothing
@@ -141,6 +145,7 @@ pub fn decide(
         //
         // MAPPS-508: in a menu Enter stays the browser's key so a focused
         // menu button fires its own onclick; the hook owns highlight only.
+        // SPEC-4.16.5: Enter commits only in an open combobox; menu Enter is the browser's.
         Key::Named(NamedKey::Enter) if open && mode == NavMode::Combobox => {
             let index = if enter_takes_first {
                 commit_index(active, len)
@@ -159,6 +164,7 @@ pub fn decide(
         // would be a surprise. MAPPS-508: a menu has no field to move on
         // to, so Tab is always Ignore in menu mode - the browser walks the
         // rows on its own.
+        // SPEC-4.16.6: Tab commits without prevent_default; SPEC-4.16.7: otherwise ignored.
         Key::Named(NamedKey::Tab) if open && !shift && mode == NavMode::Combobox => {
             match commit_index(active, len) {
                 Some(index) => NavAction::Commit {
@@ -170,6 +176,7 @@ pub fn decide(
         }
         // Closed already is fine: Escape stays available for the call site's
         // own teardown (GlobalSearch collapses its entry, MAPPS-347).
+        // SPEC-4.16.8: Escape always closes; every other key is ignored below.
         Key::Named(NamedKey::Escape) => NavAction::Close,
         _ => NavAction::Ignore,
     }
@@ -197,6 +204,7 @@ pub struct DropdownNav {
 pub fn use_dropdown_nav(id_base: &'static str) -> DropdownNav {
     let open = use_signal(|| false);
     let active = use_signal(|| None);
+    // SPEC-4.17.1: closed, combobox mode, unique per-instance sequence.
     let seq = use_hook(|| NEXT_SEQ.fetch_add(1, Ordering::Relaxed));
     DropdownNav {
         open,
@@ -216,6 +224,7 @@ impl DropdownNav {
     ///
     /// Left off for a free-text field with optional suggestions, where Enter
     /// taking an unhighlighted suggestion would replace what the user typed.
+    // SPEC-4.17.2: builder flag only; no signal state changes.
     pub fn enter_takes_first_match(mut self) -> Self {
         self.enter_takes_first = true;
         self
@@ -226,6 +235,7 @@ impl DropdownNav {
     /// fires the focused button's own onclick). Chain it onto
     /// [`use_dropdown_nav`] for a floating panel of actions rather than a
     /// field of values to commit.
+    // SPEC-4.17.2: builder switch to menu mode.
     pub fn menu(mut self) -> Self {
         self.mode = NavMode::Menu;
         self
@@ -243,6 +253,7 @@ impl DropdownNav {
 
     /// The read to use inside `use_effect` / `use_memo`: a tracked read there
     /// subscribes the effect to this dropdown's own state (MAPPS-964).
+    // SPEC-4.17.7: untracked read for effects.
     pub fn is_open_untracked(&self) -> bool {
         *self.open.peek()
     }
@@ -258,6 +269,7 @@ impl DropdownNav {
     }
 
     /// `id` of the panel, and the field wrapper's `aria-controls` target.
+    // SPEC-4.17.3: id formats are part of the ARIA wiring.
     pub fn panel_id(&self) -> String {
         format!("{}-{}-listbox", self.base, self.seq)
     }
@@ -270,16 +282,19 @@ impl DropdownNav {
     /// The row-id prefix, for a panel whose rows are rendered by a child
     /// component that only knows its own slice of the list (`GlobalSearch`
     /// groups its hits into sections).
+    // SPEC-4.17.3: prefix shared with row_id.
     pub fn row_id_prefix(&self) -> String {
         format!("{}-{}-opt-", self.base, self.seq)
     }
 
     /// `aria-activedescendant` for the field wrapper; `None` renders nothing.
+    // SPEC-4.17.4: aria-activedescendant target, none when nothing is highlighted.
     pub fn active_descendant(&self) -> Option<String> {
         self.active_index().map(|i| self.row_id(i))
     }
 
     /// `aria-expanded` for the field wrapper.
+    // SPEC-4.17.4: aria-expanded string.
     pub fn expanded(&self) -> &'static str {
         if self.is_open() {
             "true"
@@ -290,6 +305,7 @@ impl DropdownNav {
 
     /// A row's class list: the call site's own recipe plus the highlight on
     /// the active row, which is the same `bg-surface-2` the hover state uses.
+    // SPEC-4.17.5: highlight class on the active row only.
     pub fn row_class(&self, index: usize, base: &str) -> String {
         if self.is_active(index) {
             format!("{base} bg-surface-2")
@@ -299,6 +315,7 @@ impl DropdownNav {
     }
 
     /// `aria-selected` for a row.
+    // SPEC-4.17.4: aria-selected string.
     pub fn row_selected(&self, index: usize) -> &'static str {
         if self.is_active(index) {
             "true"
@@ -309,18 +326,21 @@ impl DropdownNav {
 
     /// Show the panel, keeping any highlight. Wired to `onfocusin` and
     /// `onclick` on the field wrapper, so tabbing in and clicking both open.
+    // SPEC-4.17.6: open keeps the highlight.
     pub fn open(&mut self) {
         self.open.set(true);
     }
 
     /// Show the panel and drop the highlight. Wired to `oninput`, where the
     /// row set is about to change under the old index.
+    // SPEC-4.17.6: open_fresh drops the highlight.
     pub fn open_fresh(&mut self) {
         self.open.set(true);
         self.active.set(None);
     }
 
     /// Hide the panel and reset the highlight, committing nothing.
+    // SPEC-4.17.6: close hides and resets the highlight.
     pub fn close(&mut self) {
         self.open.set(false);
         self.active.set(None);
@@ -351,6 +371,7 @@ impl DropdownNav {
         );
         match action {
             NavAction::Ignore => {}
+            // SPEC-4.17.8: open, highlight and scroll the row into view.
             NavAction::Open(index) => {
                 // Without this the caret jumps to either end of the field
                 // while the user is moving through the list.
@@ -365,12 +386,14 @@ impl DropdownNav {
                 index,
                 prevent_default,
             } => {
+                // SPEC-4.17.9: close first, then hand the index to the caller.
                 if prevent_default {
                     e.prevent_default();
                 }
                 self.close();
                 commit(index);
             }
+            // SPEC-4.17.10: the action is returned so callers can add teardown.
             NavAction::Close => self.close(),
         }
         action
@@ -382,6 +405,7 @@ impl DropdownNav {
     /// are the browser's keys, so the menu row's own onclick fires on
     /// Enter when the row is focused.
     pub fn keydown_menu(&mut self, e: &KeyboardEvent, len: usize) -> NavAction {
+        // SPEC-4.17.11: keydown with a no-op commit.
         self.keydown(e, len, |_| {})
     }
 
@@ -397,6 +421,7 @@ impl DropdownNav {
         }
         #[cfg(not(feature = "app"))]
         {
+            // SPEC-4.17.12: no scrolling without the app runtime.
             let _ = (index, align_top);
         }
     }
@@ -992,6 +1017,7 @@ mod tests {
     /// own open state, so the user menu's close-on-navigation effect re-ran
     /// on every open and shut the menu in the same frame.
     #[test]
+    // SPEC-4.19.1: workspace-wide scan enforcing the untracked-read rule.
     fn no_effect_reads_a_dropdowns_open_state_tracked() {
         let mut offenders = Vec::new();
         let mut effects = 0usize;
@@ -1100,6 +1126,7 @@ mod tests {
     /// and wrote it, so a tenant with no display name refetched `/tenants/current`
     /// about 15 times a second for as long as a staff tab stayed open.
     #[test]
+    // SPEC-4.19.2: workspace-wide scan enforcing the peek-when-writing rule.
     fn no_effect_reads_the_effective_branding_tracked() {
         let mut offenders = Vec::new();
         let mut stack = vec![std::path::PathBuf::from("src")];

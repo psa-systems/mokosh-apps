@@ -26,6 +26,7 @@ use uuid::Uuid;
 /// differ only in `start_time` / `end_time`. `recurrence_rule` is set
 /// only on the master row; `recurrence_parent_id` is set only on the
 /// expanded virtual occurrences.
+// SPEC-3.12.1: required vs defaulted fields; SPEC-3.12.11: unknown keys ignored.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct AppointmentResponse {
     pub id: Uuid,
@@ -86,6 +87,7 @@ impl AppointmentResponse {
     /// recurring master rather than a standalone persisted row. Mutating
     /// endpoints key off the master id, so the UI disables edit/delete on
     /// these instances.
+    // SPEC-3.12.2: an expanded occurrence is recognised by its parent id alone.
     pub fn is_recurring_instance(&self) -> bool {
         self.recurrence_parent_id.is_some()
     }
@@ -96,6 +98,7 @@ impl AppointmentResponse {
 /// foreign keys / strings are omitted from the JSON when empty so the
 /// server applies its own defaults (`appointment_type` -> `"other"`,
 /// `timezone` -> `"UTC"`).
+// SPEC-3.12.3: optional keys are omitted when None.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CreateAppointmentRequest {
     pub title: String,
@@ -160,6 +163,7 @@ pub struct UpdateAppointmentRequest {
     /// other fields this is always serialized (sent as `null` when empty)
     /// so emptying the input clears an existing recurrence rather than
     /// leaving the prior rule in place (MAPPS-236).
+    // SPEC-3.12.4: no skip attribute on purpose, so None is sent as null.
     pub recurrence_rule: Option<String>,
 }
 
@@ -176,6 +180,7 @@ pub struct UpdateAppointmentRequest {
 /// `SchedulingTemplateResponse`; `tenant_id` is omitted from the wire shape
 /// (the row is already tenant-scoped server-side). The buffer / duration
 /// fields are `i32` to match the server.
+// SPEC-3.12.5: id, name and duration_minutes are required; the rest default.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct SchedulingTemplateResponse {
     pub id: Uuid,
@@ -210,6 +215,7 @@ pub struct SchedulingTemplateResponse {
 /// follow the server's `CreateSchedulingTemplateRequest`: `appointment_type`
 /// and the travel buffers default server-side when omitted, and the optional
 /// defaults are dropped from the JSON when empty.
+// SPEC-3.12.6: optional defaults are dropped from the JSON when None.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CreateSchedulingTemplateRequest {
     pub name: String,
@@ -264,6 +270,7 @@ pub struct UpdateSchedulingTemplateRequest {
 /// `GET /api/v1/users/{user_id}/availability`. `day_of_week` is 0=Sunday
 /// .. 6=Saturday (matches the server's `AvailabilityWindow` range
 /// validator).
+// SPEC-3.12.7: day_of_week 0 is Sunday through 6 Saturday.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct UserAvailabilityResponse {
     pub id: Uuid,
@@ -288,6 +295,7 @@ pub struct TimeOffResponse {
     pub user_id: Uuid,
     pub start_date: NaiveDate,
     pub end_date: NaiveDate,
+    // SPEC-3.12.8: wire key `type` is read into `kind`.
     #[serde(rename = "type")]
     pub kind: String,
     #[serde(default)]
@@ -311,6 +319,7 @@ pub struct TimeOffResponse {
 pub struct OnCallNowResponse {
     pub schedule_id: Uuid,
     pub schedule_name: String,
+    // SPEC-3.12.9: absent means the schedule has no one on call.
     #[serde(default)]
     pub on_call_user_id: Option<Uuid>,
 }
@@ -324,6 +333,7 @@ pub struct OnCallNowResponse {
 /// scheduling surfaces a dispatcher needs on one board. Returned as a
 /// bare object (NOT wrapped in the paginated envelope).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.12.10: a bare object whose four lists each default to empty.
 pub struct DispatchResponse {
     /// Appointments overlapping the range, recurring series expanded.
     #[serde(default)]

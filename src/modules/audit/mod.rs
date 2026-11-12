@@ -9,6 +9,7 @@
 //! and each turned it into the same words; the functions that do that live
 //! there, once, rather than three times across `pages/`.
 
+// SPEC-3.17.3: model types are re-exported from the module path.
 mod enrichment;
 mod format;
 mod models;

@@ -36,6 +36,7 @@ use super::validation::{validate, Rule};
 /// failure at once and focus the first invalid field. Construct one per submit.
 #[derive(Debug, Default)]
 pub struct FormGuard {
+    // SPEC-4.56.1: starts valid; accumulates across every field of one submit.
     any_invalid: bool,
     first_invalid: Option<String>,
 }
@@ -54,6 +55,7 @@ impl FormGuard {
     /// e.g. `title_error.set(guard.field("title", &v, "Title", &[Rule::Required]))`.
     #[must_use = "set the field's error signal with the returned message"]
     pub fn field(&mut self, id: &str, value: &str, label: &str, rules: &[Rule]) -> String {
+        // SPEC-4.56.2: first failing message, or "" so a stale message is cleared.
         match validate(value, label, rules) {
             Some(message) => {
                 self.record_invalid(id);
@@ -68,6 +70,7 @@ impl FormGuard {
     /// is surfaced in the form-level banner). Blocks the submit; `focus_id` ties
     /// focus to a related field when one makes sense.
     pub fn note_invalid(&mut self, focus_id: Option<&str>) {
+        // SPEC-4.56.4: blocks the submit; focus is kept only if none was recorded.
         self.any_invalid = true;
         if self.first_invalid.is_none() {
             if let Some(id) = focus_id {
@@ -77,6 +80,7 @@ impl FormGuard {
     }
 
     fn record_invalid(&mut self, id: &str) {
+        // SPEC-4.56.5: the first failing field keeps focus priority.
         self.any_invalid = true;
         if self.first_invalid.is_none() {
             self.first_invalid = Some(id.to_string());
@@ -86,6 +90,7 @@ impl FormGuard {
     /// Whether any field failed. Pure; does not touch the DOM. Prefer
     /// [`FormGuard::blocked`] in a handler so the first invalid field is focused.
     pub fn is_valid(&self) -> bool {
+        // SPEC-4.56.6: pure check, no focus change.
         !self.any_invalid
     }
 
@@ -98,6 +103,7 @@ impl FormGuard {
     /// Returns `true` when the form must NOT submit, after focusing the first
     /// invalid field. Call as the bail condition: `if guard.blocked() { return; }`.
     pub fn blocked(&self) -> bool {
+        // SPEC-4.56.6: a blocked submit focuses the first invalid field.
         if self.any_invalid {
             if let Some(id) = &self.first_invalid {
                 focus_field(id);
@@ -107,6 +113,7 @@ impl FormGuard {
     }
 }
 
+// SPEC-4.56.3: the id must equal the field's DOM id for focus to land.
 /// Move keyboard focus to the field with the given DOM id.
 ///
 /// MAPPS-504: [`crate::platform::dom`] owns the target split. It reaches

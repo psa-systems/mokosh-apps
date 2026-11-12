@@ -19,6 +19,7 @@
 //! in `src/pages/`, not from this module, so those are the hand copies that can
 //! still drift against a live payload. See `docs/client-server-integration.md`.
 
+// SPEC-3.21.2, SPEC-3.21.3, SPEC-3.21.4
 pub use mokosh_types::tickets::*;
 
 use chrono::{DateTime, Utc};
@@ -34,6 +35,7 @@ use uuid::Uuid;
 // call sites yet either; it is a sketch of a feature, not a wire contract, and
 // re-exporting it from the shared crate would claim the server produces it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// SPEC-3.21.7
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TicketActivity {
     Created {
@@ -120,6 +122,7 @@ mod tests {
         }
     }
 
+    // SPEC-3.21.5
     #[test]
     fn test_ticket_source_from_str() {
         assert_eq!(TicketSource::from_str("portal"), Some(TicketSource::Portal));
@@ -213,6 +216,7 @@ mod tests {
     /// clock, and the warning band is 20% of the target window clamped to
     /// [5m, 24h] instead of a flat two hours - the SLA sweep worker's numbers,
     /// which the badge had been contradicting on every resolved ticket.
+    // SPEC-3.21.6
     #[test]
     fn sla_status_is_the_shared_computation() {
         // Create a test ticket

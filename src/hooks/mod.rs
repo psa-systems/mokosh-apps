@@ -22,6 +22,7 @@ pub mod modules;
 pub mod dropdown_nav;
 pub mod edit_queue;
 pub mod features;
+// SPEC-4.20.9
 pub mod fetch;
 pub mod mentions;
 pub mod payment_terms;
@@ -53,6 +54,7 @@ pub use dashboard_report::{
 pub use debounce::use_debounced_signal;
 pub use dropdown_nav::{use_dropdown_nav, DropdownNav, NavAction, NavRows};
 pub use edit_queue::{use_replay_pending_edits, PendingEdit};
+// SPEC-4.20.10: the re-exports below are the public hooks surface.
 pub use fetch::*;
 pub use kb_categories::{use_kb_categories, use_kb_categories_provider};
 pub use mentions::{mention_people, use_mention_directory, use_mention_directory_provider};

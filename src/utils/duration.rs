@@ -19,15 +19,18 @@ use crate::utils::prefs;
 
 /// localStorage key for the duration display preference. Stable across
 /// releases; renaming would silently reset every user back to default.
+// SPEC-4.51.1: stable preference key.
 pub const PREF_DURATION_FORMAT: &str = "mokosh_duration_format";
 
 /// Preference value when the user has chosen nothing. Decimal preserves
 /// the long-standing behaviour (PMS-265 adds H:MM as the opt-in).
+// SPEC-4.51.1: decimal is the default when nothing is stored.
 pub const DEFAULT_DURATION_FORMAT: &str = "decimal";
 
 /// `H:MM` from whole minutes (e.g. 30 -> "0:30", 90 -> "1:30"). Negative
 /// inputs are clamped to zero; minutes are zero-padded to two digits.
 pub fn fmt_hm(minutes: i64) -> String {
+    // SPEC-4.51.2: negative clamps to 0:00; minutes are two digits.
     let m = minutes.max(0);
     format!("{}:{:02}", m / 60, m % 60)
 }
@@ -38,12 +41,14 @@ pub fn fmt_hm(minutes: i64) -> String {
 /// display shapes agree (MAPPS-1240: -30 rendered "-0.5h" here and "0:00"
 /// in clock style).
 pub fn fmt_decimal(minutes: i64) -> String {
+    // SPEC-4.51.3: one decimal place and an "h" suffix.
     format!("{:.1}h", minutes.max(0) as f64 / 60.0)
 }
 
 /// Format a logged duration using the user's stored preference, falling
 /// back to decimal when unset or off-web.
 pub fn fmt_duration(minutes: i64) -> String {
+    // SPEC-4.51.1 / SPEC-4.51.4: the preference is read on every call.
     match prefs::get_str(PREF_DURATION_FORMAT, DEFAULT_DURATION_FORMAT).as_str() {
         "hm" => fmt_hm(minutes),
         _ => fmt_decimal(minutes),
@@ -64,12 +69,15 @@ pub fn fmt_duration(minutes: i64) -> String {
 /// `1:2:3`, `abc`). Callers enforce the upper bound (24h) and reject zero;
 /// keeping those policies at the call site preserves the existing form
 /// error message.
+// SPEC-4.51.8: bounds and zero are the caller's policy, not enforced here.
 pub fn parse_input_to_minutes(input: &str) -> Option<i64> {
+    // SPEC-4.51.5: trimmed; empty input is rejected.
     let s = input.trim();
     if s.is_empty() {
         return None;
     }
 
+    // SPEC-4.51.6: H:MM, minutes 0..=59, exactly one colon.
     if let Some((h_str, m_str)) = s.split_once(':') {
         // H:MM. Reject a second colon, empty sides, and minutes >= 60.
         if m_str.contains(':') {
@@ -83,6 +91,7 @@ pub fn parse_input_to_minutes(input: &str) -> Option<i64> {
         return Some(hours * 60 + mins);
     }
 
+    // SPEC-4.51.7: finite, non-negative decimal hours, rounded to a whole minute.
     // Decimal hours.
     let hours: f64 = s.parse().ok()?;
     if !hours.is_finite() || hours < 0.0 {
@@ -97,6 +106,7 @@ pub fn parse_input_to_minutes(input: &str) -> Option<i64> {
 /// [`parse_input_to_minutes`] to the same minute (2-dp decimal is exact to
 /// within 0.3 min, which `round()` recovers).
 pub fn fmt_input(minutes: i64) -> String {
+    // SPEC-4.51.9: the pre-fill must round-trip through the parser.
     match prefs::get_str(PREF_DURATION_FORMAT, DEFAULT_DURATION_FORMAT).as_str() {
         "hm" => fmt_hm(minutes),
         _ => fmt_input_decimal(minutes),
@@ -107,6 +117,7 @@ pub fn fmt_input(minutes: i64) -> String {
 /// 90 -> "1.5", 480 -> "8", 15 -> "0.25". Two decimals keep it parseable
 /// back to the exact minute. The pure (pref-free) half of [`fmt_input`].
 fn fmt_input_decimal(minutes: i64) -> String {
+    // SPEC-4.51.9: two decimals, trailing zeros and point trimmed, negative clamped.
     let s = format!("{:.2}", minutes.max(0) as f64 / 60.0);
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
@@ -116,6 +127,7 @@ fn fmt_input_decimal(minutes: i64) -> String {
 /// estimated_hours). `"1:30"` -> `1.5`, `"2.5"` -> `2.5`, `"0"` -> `0.0`.
 /// `None` on the same malformed/negative input the minute parser rejects.
 pub fn parse_input_to_hours(input: &str) -> Option<f64> {
+    // SPEC-4.51.10: same rules as the minute parser.
     parse_input_to_minutes(input).map(|m| m as f64 / 60.0)
 }
 
@@ -123,6 +135,7 @@ pub fn parse_input_to_hours(input: &str) -> Option<f64> {
 /// [`fmt_input`]. The stored hours are quantized to the nearest minute first
 /// so the `H:MM` shape is exact.
 pub fn fmt_input_hours(hours: f64) -> String {
+    // SPEC-4.51.10: quantize to a whole minute first.
     fmt_input((hours * 60.0).round() as i64)
 }
 

@@ -85,6 +85,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     // MAPPS-503: open / highlight state and the shared keyboard contract.
     // MAPPS-653: the field has to end up holding a company, so Enter takes the
     // first match when the user has not arrowed onto one.
+    // SPEC-5.15.5
     let mut nav = use_dropdown_nav("company-picker").enter_takes_first_match();
     // PMS-352: inline create-company modal state. `new_name` carries
     // whatever was typed into the picker input when the modal opened so
@@ -105,6 +106,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     let query_text = query.read().trim().to_string();
     // MAPPS-855: debounce the resource's dependency so a burst of keystrokes
     // fires one request per pause in typing rather than one per keystroke.
+    // SPEC-5.15.2
     let query_debounced = crate::hooks::use_debounced_signal(query, 300);
     let results = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -116,6 +118,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
         // archived it to leave. Editing a record that already names an archived
         // company is unaffected, because the stored name is rendered from the
         // record rather than re-resolved through this search.
+        // SPEC-5.15.1
         let path = if q.is_empty() {
             "/contacts/companies?status=active&per_page=20".to_string()
         } else {
@@ -132,9 +135,11 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
         crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
             .await
             .map(|p| p.data)
+            // SPEC-5.15.3
             .inspect_err(|e| tracing::warn!("company search failed: {e}"))
     });
 
+    // SPEC-5.15.7: no local editing mode; Change defers to the parent via onclear.
     if let Some(_id) = &props.selected_id {
         let name = props.value.clone();
         let onclear = props.onclear;
@@ -182,6 +187,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     let loaded = matches!(&*snap, Some(Ok(_)));
     // MAPPS-653: with nothing matching the typed text, the create action is
     // row 0, which is what makes Enter on a no-match query start a new company.
+    // SPEC-5.15.8
     let list = NavRows::new(rows.len(), allow_inline_create && loaded);
     let rows_for_keys = rows.clone();
     let query_for_keys = query_text.clone();
@@ -206,12 +212,14 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                         let seed = query_for_keys.clone();
                         nav.keydown(&e, list.len, move |index| {
                             match rows.get(index) {
+                                // SPEC-5.15.4
                                 Some(row) => {
                                     let name = row.name.clone();
                                     onselect.call((row.id.to_string(), name.clone()));
                                     query.set(name);
                                 }
                                 // Past the last result row: the inline create action.
+                                // SPEC-5.15.9
                                 None => {
                                     new_name.set(seed);
                                     create_error.set(String::new());
@@ -221,6 +229,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                         });
                     },
                     Input {
+                        // SPEC-5.15.6
                         name: "company_search",
                         label: props.label,
                         placeholder: "Search companies…",
@@ -267,6 +276,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                         // MAPPS-444: it takes the shared banner (paired hues,
                         // role="alert"); `m-1` keeps its border off the
                         // dropdown's own edge.
+                        // SPEC-5.15.3
                         Some(Err(_)) => rsx! {
                             ErrorBanner { class: "m-1", "Could not search. Try again." }
                         },
@@ -331,6 +341,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                             // into Create.
                             // MAPPS-503: it is the last navigable row, reachable
                             // by Down and committed by Enter / Tab.
+                            // SPEC-5.15.8
                             if let Some(index) = list.create_index {
                                 {
                                     let query_for_seed = query_text.clone();
@@ -343,6 +354,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                                 role: "option",
                                                 aria_selected: nav.row_selected(index),
                                                 class: nav.row_class(index, "flex w-full items-center gap-1.5 text-left px-3 py-2 text-sm bg-surface-2/50 text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30"),
+                                                // SPEC-5.15.9
                                                 onclick: move |_| {
                                                     new_name.set(query_for_seed.clone());
                                                     create_error.set(String::new());
@@ -383,6 +395,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                     // action. Every capture is Copy, so both handlers get one.
                     let mut on_create = move |_: ()| {
                         let name_v = new_name.read().trim().to_string();
+                        // SPEC-5.15.11
                         if name_v.is_empty() {
                             create_error.set("Enter a company name.".to_string());
                             return;
@@ -395,6 +408,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                         spawn(async move {
                             #[cfg(feature = "app")]
                             {
+                                // SPEC-5.15.12
                                 let body = serde_json::json!({ "name": name_v });
                                 match crate::hooks::fetch::api::post_authed::<CreatedCompany, _>(
                                     "/contacts/companies",
@@ -414,6 +428,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                         new_name.set(String::new());
                                         show_create_modal.set(false);
                                     }
+                                    // SPEC-5.15.13
                                     Err(err) => {
                                         // MAPPS-1243: logged as well as shown,
                                         // like the search failures.
@@ -432,6 +447,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                             open: show_create_modal(),
                             title: "Create new company".to_string(),
                             size: ModalSize::Medium,
+                            // SPEC-5.15.10: close is blocked while a create is in flight.
                             onclose: move |_| {
                                 if !creating() {
                                     show_create_modal.set(false);
@@ -459,6 +475,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                 // MAPPS-694: Enter from any field in the modal
                                 // creates, so the name typed into the picker is
                                 // committed without tabbing to the button.
+                                // SPEC-5.15.14
                                 onkeydown: submit_on_enter(move || on_create(())),
                                 if !create_error.read().is_empty() {
                                     p { class: "text-sm text-red-600 dark:text-red-400",

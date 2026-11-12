@@ -15,6 +15,7 @@
 //! server-side: an SVG is a document that can carry script, and these bytes are
 //! served from an unauthenticated URL that any browser will render.
 
+// SPEC-4.59.1, SPEC-4.59.2
 /// What the server accepts. Kept in the same order as the server's
 /// `ALLOWED_INLINE_IMAGE_MIME`.
 pub const ALLOWED_MIME: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
@@ -23,18 +24,21 @@ pub const ALLOWED_MIME: &[&str] = &["image/png", "image/jpeg", "image/webp", "im
 /// `kb_attachment_max_bytes` via runtime config (MAPPS-880). A file over
 /// the effective limit ([`max_bytes`]) is refused locally only because
 /// refusing it here is faster and clearer than a 400 after uploading.
+// SPEC-4.59.4
 pub const DEFAULT_MAX_BYTES: usize = 5 * 1024 * 1024;
 
 /// The limit to enforce: the operator's `KB_ATTACHMENT_MAX_BYTES`, read
 /// through runtime config so a deployment that raises or lowers it gets
 /// a client that agrees with the server, falling back to
 /// [`DEFAULT_MAX_BYTES`] when the deployment has not set it (MAPPS-880).
+// SPEC-4.59.5
 pub fn max_bytes() -> usize {
     crate::modules::runtime_config::kb_attachment_max_bytes().unwrap_or(DEFAULT_MAX_BYTES)
 }
 
 /// The `accept` attribute for a file input, so the picker offers the same set
 /// this module enforces rather than a list that has to be kept in step by hand.
+// SPEC-4.59.3
 pub fn accept_attribute() -> String {
     ALLOWED_MIME.join(",")
 }
@@ -45,6 +49,7 @@ pub fn check(mime: &str, len: usize) -> Result<(), String> {
     // A browser reports no type for a file it does not recognise, and some
     // report `application/octet-stream` for a drag from an unusual source.
     // Either way the server would refuse it, so say so here.
+    // SPEC-4.59.6, SPEC-4.59.7, SPEC-4.59.11: type is checked first.
     if !ALLOWED_MIME.contains(&mime) {
         return Err(format!(
             "That file is a {}. Images have to be PNG, JPEG, WebP or GIF.",
@@ -56,6 +61,7 @@ pub fn check(mime: &str, len: usize) -> Result<(), String> {
         ));
     }
     let max_bytes = max_bytes();
+    // SPEC-4.59.8, SPEC-4.59.9
     if len > max_bytes {
         return Err(format!(
             "That image is {}. The limit is {}.",
@@ -63,6 +69,7 @@ pub fn check(mime: &str, len: usize) -> Result<(), String> {
             human_size(max_bytes)
         ));
     }
+    // SPEC-4.59.10
     if len == 0 {
         return Err("That file is empty.".to_string());
     }
@@ -75,6 +82,7 @@ pub fn check(mime: &str, len: usize) -> Result<(), String> {
 /// Not a caption and not a guess at content. It exists so the inserted Markdown
 /// is never `![](url)`, which reads as nothing at all to a screen reader, and
 /// so the author has something to edit rather than something to write.
+// SPEC-4.59.12
 pub fn alt_from_file_name(file_name: &str) -> String {
     let stem = file_name
         .rsplit_once('.')
@@ -85,6 +93,7 @@ pub fn alt_from_file_name(file_name: &str) -> String {
         .map(|c| if c == '_' || c == '-' { ' ' } else { c })
         .collect();
     let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    // SPEC-4.59.13
     if collapsed.is_empty() {
         "Image".to_string()
     } else {
@@ -92,6 +101,7 @@ pub fn alt_from_file_name(file_name: &str) -> String {
     }
 }
 
+// SPEC-4.59.14
 pub fn human_size(bytes: usize) -> String {
     const MIB: usize = 1024 * 1024;
     const KIB: usize = 1024;

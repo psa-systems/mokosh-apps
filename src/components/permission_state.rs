@@ -29,15 +29,18 @@ pub struct PermissionRequiredProps {
 #[component]
 pub fn PermissionRequired(props: PermissionRequiredProps) -> Element {
     let auth = crate::hooks::use_auth();
+    // SPEC-5.53.4: an unknown user yields an empty role, which hides the role line.
     let role = auth
         .read()
         .user
         .as_ref()
         .map(|u| u.role.as_str().to_string())
         .unwrap_or_default();
+    // SPEC-5.53.3: heading text.
     let heading = format!("{} access required", props.title);
     // MAPPS-366: rendered as a page body inside the persistent AppShell, so it
     // sets its own tab title rather than passing it to an AppLayout wrapper.
+    // SPEC-5.53.2: sets the tab title; SPEC-5.53.1: header then card follow.
     use_page_title(props.title.clone());
     rsx! {
         PageHeader { title: "{props.title}" }

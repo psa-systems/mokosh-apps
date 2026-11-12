@@ -54,6 +54,7 @@ pub use config::OidcConfig;
 /// with a client id it has never registered. Convenience wrapper over
 /// [`OidcConfig::has_issuer`] and [`OidcConfig::has_client_id`] for the login
 /// trigger sites.
+// SPEC-3.6.10: standalone when the issuer or the client id is missing.
 pub fn is_standalone() -> bool {
     let cfg = OidcConfig::for_current_origin();
     !cfg.has_issuer() || !cfg.has_client_id()
@@ -62,6 +63,7 @@ pub fn is_standalone() -> bool {
 /// MAPPS-432: one line for an auth-flow failure the user is not shown.
 /// The WASM build wires no `tracing` subscriber, so the browser console is the
 /// only place an operator can read it there.
+// SPEC-3.6.11: writes to the platform error log (browser console).
 pub fn log_auth_error(msg: &str) {
     crate::platform::log::error(msg);
 }

@@ -78,6 +78,7 @@ fn named(name: Option<&str>) -> Option<&str> {
 /// because the same first-and-last name can exist on both planes and the
 /// reader needs to know which one is being asked. Shared with the ticket
 /// detail's approvals section so the two never drift.
+// SPEC-9.35.7, SPEC-9.35.10
 pub(crate) fn approver_label(
     user: Option<&str>,
     role: Option<&str>,
@@ -93,6 +94,7 @@ pub(crate) fn approver_label(
         // MAPPS-1063: the server resolved neither a user, role, nor
         // contact name. The approval row doesn't carry an id to key on,
         // but the substitution still deserves to be findable.
+        // SPEC-9.35.8
         let shown = "(unassigned approver)".to_string();
         let _ = crate::utils::unresolved("approvals.approver", "user", None, &shown);
         shown
@@ -101,6 +103,7 @@ pub(crate) fn approver_label(
 
 /// MAPPS-736: who filed an approval, a staff user or a portal contact
 /// (PMS-937), with the same plane suffix as `approver_label`.
+// SPEC-9.35.6, SPEC-9.35.10
 pub(crate) fn requester_label(user: Option<&str>, contact: Option<&str>) -> String {
     if let Some(n) = named(user) {
         n.to_string()
@@ -110,6 +113,7 @@ pub(crate) fn requester_label(user: Option<&str>, contact: Option<&str>) -> Stri
         // MAPPS-1063: an approval row without a requester name on either
         // plane is a server-side gap, not a legitimate absence; log it so
         // the "(unknown requester)" substitution is findable.
+        // SPEC-9.35.8
         let shown = "(unknown requester)".to_string();
         let _ = crate::utils::unresolved("approvals.requester", "user", None, &shown);
         shown
@@ -118,6 +122,7 @@ pub(crate) fn requester_label(user: Option<&str>, contact: Option<&str>) -> Stri
 
 /// MAPPS-736: who decided an approval, when the server named anyone; a
 /// row decided before PMS-1084 or by a deleted account carries neither.
+// SPEC-9.35.9, SPEC-9.35.10
 pub(crate) fn decided_by_label(user: Option<&str>, contact: Option<&str>) -> Option<String> {
     if let Some(n) = named(user) {
         Some(n.to_string())
@@ -126,6 +131,7 @@ pub(crate) fn decided_by_label(user: Option<&str>, contact: Option<&str>) -> Opt
     }
 }
 
+// SPEC-9.33.10
 // SPEC-9.2.8: target kind defaults to "ticket" when absent.
 fn default_target() -> String {
     "ticket".to_string()
@@ -134,12 +140,14 @@ fn default_target() -> String {
 impl PendingApproval {
     /// Resolved entity id, preferring the new polymorphic
     /// `entity_id` column with fallback to the legacy `ticket_id`.
+    // SPEC-9.33.10
     fn entity(&self) -> Option<Uuid> {
         self.entity_id.or(self.ticket_id)
     }
 
     /// PMS-940: the parent's handle, empty when the server sent none.
     /// Trimmed because a blank chip is worse than no chip.
+    // SPEC-9.35.2
     fn reference(&self) -> String {
         self.entity_reference
             .clone()
@@ -164,6 +172,7 @@ impl PendingApproval {
     /// leave the whole value to the tooltip. An approval with no
     /// entity id at all cannot happen against a current server, but it
     /// is what the payload's `Option` says, so it renders as a dash.
+    // SPEC-9.35.3
     // SPEC-9.2.9: prefer reference/label, else an 8-char id prefix, else a dash.
     fn fallback(&self) -> String {
         if !self.reference().is_empty() || !self.label().is_empty() {
@@ -182,6 +191,7 @@ pub fn ApprovalsPage() -> Element {
     // "requested at" cell.
     let tz = crate::utils::datetime::user_timezone();
     let pref = crate::utils::datetime::user_format_pref();
+    // SPEC-9.33.1
     use_page_title("My Approvals");
     let mut version = use_signal(|| 0u32);
     let mut decision_error = use_signal(String::new);
@@ -194,6 +204,8 @@ pub fn ApprovalsPage() -> Element {
     // MAPPS-737: the server's contact arm (PMS-1084) requires
     // `approvals:decide`; staff bypass the cap check as everywhere. Read
     // before any early return, because it is a hook.
+    // SPEC-9.33.2: capability gate, read before any early return
+    // SPEC-9.33.4: tenant, reachability and version reads re-run the load
     // SPEC-9.4.19: read unconditionally before any early return.
     let can_decide = crate::hooks::capabilities::use_capability("approvals:decide");
 
@@ -213,9 +225,11 @@ pub fn ApprovalsPage() -> Element {
         // MAPPS-737: `get_authed_any` prefers the contact bearer, so a
         // contact holding the cap reads the approvals addressed to it on
         // the contact plane; staff keep the staff bearer as before.
+        // SPEC-9.33.3
         // SPEC-9.7.7: dual-plane bearer path, never the staff-only path.
         crate::hooks::fetch::api::get_authed_any::<Vec<PendingApproval>>("/approvals/pending")
             .await
+            // SPEC-9.33.5
             .inspect_err(|e| tracing::error!("approval queue load failed: {e}"))
             .ok()
     });
@@ -235,6 +249,7 @@ pub fn ApprovalsPage() -> Element {
     let total_before_filter = all_rows.len();
     let rows: Vec<PendingApproval> = all_rows
         .into_iter()
+        // SPEC-9.34.4, SPEC-9.34.5, SPEC-9.34.8
         .filter(|r| {
             if !target_q.is_empty() && r.target != target_q {
                 return false;
@@ -265,6 +280,7 @@ pub fn ApprovalsPage() -> Element {
     // blocked while down; `can_mutate` disables the decision buttons.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // SPEC-9.33.6
     // SPEC-9.5.6: unreachable-content state when the server itself is down.
     if fetch_failed && !reachable {
         return rsx! {
@@ -274,6 +290,7 @@ pub fn ApprovalsPage() -> Element {
     // MAPPS-737: a contact without the grant gets a plain sentence, not a
     // 403 banner; the badge and the sidebar entry are gated the same way,
     // so this is only reachable by typing the URL.
+    // SPEC-9.33.2
     // SPEC-9.4.19: plain permission sentence, not a 403-styled banner.
     if !can_decide {
         return rsx! {
@@ -286,6 +303,7 @@ pub fn ApprovalsPage() -> Element {
         };
     }
 
+    // SPEC-9.36.2
     let decide = move |id: Uuid, decision: &'static str| {
         spawn(async move {
             // MAPPS-1250: a new attempt clears the last failure, so it cannot
@@ -305,6 +323,7 @@ pub fn ApprovalsPage() -> Element {
                 )
                 .await
                 {
+                    // SPEC-9.36.3
                     Ok(_) => {
                         let label = if decision == "approve" {
                             "Approved"
@@ -317,6 +336,8 @@ pub fn ApprovalsPage() -> Element {
                         version += 1;
                         pending_resource.restart();
                     }
+                    // SPEC-9.36.4
+                    // SPEC-9.36.5: not enforced here, see the tracked defect (decision_error is never cleared on the next attempt or on success).
                     // SPEC-9.5.7: single page-level error, row stays in the list.
                     // MAPPS-1250: cleared when the next decision starts.
                     Err(e) => {
@@ -330,6 +351,7 @@ pub fn ApprovalsPage() -> Element {
     };
 
     rsx! {
+        // SPEC-9.33.1
         PageHeader {
             title: "My Approvals",
             subtitle: "Pending decisions assigned to you (or to a role you hold)",
@@ -343,6 +365,7 @@ pub fn ApprovalsPage() -> Element {
 
         // MAPPS-1113: filter chips above the queue. Rendered even on the empty
         // state so an operator can see the filters are what hid their rows.
+        // SPEC-9.34.1, SPEC-9.34.2, SPEC-9.34.3
         if !loading && !fetch_failed && total_before_filter > 0 {
             Card { class: "mb-6",
                 div { class: "flex flex-col sm:flex-row gap-4",
@@ -369,6 +392,7 @@ pub fn ApprovalsPage() -> Element {
                             target_filter.set(e.value());
                         },
                     }
+                    // SPEC-9.34.6
                     if has_filters {
                         Button {
                             variant: ButtonVariant::Secondary,
@@ -383,6 +407,7 @@ pub fn ApprovalsPage() -> Element {
             }
         }
 
+        // SPEC-9.33.8, SPEC-9.33.7
         // SPEC-9.1.15: exactly one of loading, fetch-failed, filtered-to-nothing,
         // empty-queue, or the row list renders at a time.
         if loading {
@@ -393,12 +418,14 @@ pub fn ApprovalsPage() -> Element {
                 div { class: "py-6 text-center", ErrorBanner { "Could not load pending approvals." } }
             }
         } else if filtered_out_all {
+            // SPEC-9.34.7
             Card {
                 div { class: "py-10 text-center",
                     p { class: "text-sm text-muted", "No matches." }
                 }
             }
         } else if rows.is_empty() {
+            // SPEC-9.33.9
             Card {
                 div { class: "py-10 text-center",
                     p { class: "text-sm text-muted",
@@ -423,6 +450,7 @@ pub fn ApprovalsPage() -> Element {
                             row.approver_role.as_deref(),
                             row.approver_contact_name.as_deref(),
                         );
+                        // SPEC-9.35.11
                         let when = row
                             .requested_at
                             .map(|d| {
@@ -439,6 +467,7 @@ pub fn ApprovalsPage() -> Element {
                         // Pretty target labels for the badge. Unknown
                         // targets fall through to the raw string so a
                         // future server-side surface still renders.
+                        // SPEC-9.35.1
                         let target_label = match target.as_str() {
                             "ticket" => "Ticket",
                             "time_entry" => "Time entry",
@@ -476,6 +505,7 @@ pub fn ApprovalsPage() -> Element {
                         // client routes for them.
                         // MAPPS-632: routed `Link`, not a raw `<a href>` - the
                         // desktop webview refuses an internal navigation.
+                        // SPEC-9.35.4
                         // SPEC-9.1.16: linked only for a ticket target with an id, else plain text.
                         let entity_chip = match (target.as_str(), entity) {
                             ("ticket", Some(t)) => rsx! {
@@ -503,6 +533,7 @@ pub fn ApprovalsPage() -> Element {
                                             Badge { variant: BadgeVariant::Gray, "{target_label}" }
                                             {entity_chip}
                                         }
+                                        // SPEC-9.35.5
                                         p { class: "text-sm text-content",
                                             strong { "From: " }
                                             "{requester}"
@@ -514,6 +545,7 @@ pub fn ApprovalsPage() -> Element {
                                                 time { datetime: "{when_iso}", "{when}" }
                                             }
                                         }
+                                        // SPEC-9.35.12
                                         if !notes.is_empty() {
                                             p { class: "mt-2 text-sm text-muted whitespace-pre-wrap",
                                                 "{notes}"
@@ -526,6 +558,7 @@ pub fn ApprovalsPage() -> Element {
                                         // click cannot silently fail (edits are discarded,
                                         // not queued - hold-and-replay is scaffolded in
                                         // crate::hooks::edit_queue for the local-first epic).
+                                        // SPEC-9.36.1, SPEC-9.36.6
                                         if !can_mutate {
                                             span { class: "text-xs text-muted self-center mr-1",
                                                 "Server unreachable" }

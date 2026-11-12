@@ -11,6 +11,7 @@
 //! presentation the server has no use for. `FieldType` is a foreign type now,
 //! so those cannot be inherent impls.
 
+// SPEC-3.14.1: shared types plus aliases, never separate copies.
 pub use mokosh_types::forms::*;
 
 // The names the pages already use. Aliases, not copies: `pub use ... as ...`
@@ -38,6 +39,7 @@ pub trait FieldTypeExt {
     /// server's type deserialises into, not a type an operator can pick. The
     /// server refuses it on write (PMS-898), so offering it would build a
     /// definition that cannot be saved.
+    // SPEC-3.14.2: picker order, with Unknown excluded.
     const ALL: [FieldType; 6] = [
         FieldType::Text,
         FieldType::Textarea,
@@ -62,6 +64,7 @@ pub trait FieldTypeExt {
 
 impl FieldTypeExt for FieldType {
     fn label(&self) -> &'static str {
+        // SPEC-3.14.3: operator-facing names, with Unknown read-only.
         match self {
             FieldType::Text => "Short text",
             FieldType::Textarea => "Long text",
@@ -75,10 +78,12 @@ impl FieldTypeExt for FieldType {
         }
     }
 
+    // SPEC-3.14.4: only a choice list needs options.
     fn needs_options(&self) -> bool {
         matches!(self, FieldType::Select)
     }
 
+    // SPEC-3.14.4: length bounds apply to the three text-like types only.
     fn honours_length(&self) -> bool {
         matches!(
             self,
@@ -106,6 +111,7 @@ pub trait RequestLinkExt {
 
 impl RequestLinkExt for RequestLink {
     fn status(&self, now: DateTime<Utc>) -> RequestLinkStatus {
+        // SPEC-3.14.5: submitted, then expired, then partly submitted, else awaiting.
         if self.used_at.is_some() {
             RequestLinkStatus::Submitted
         } else if self.expires_at <= now {
@@ -121,6 +127,7 @@ impl RequestLinkExt for RequestLink {
     }
 
     fn progress(&self) -> Option<String> {
+        // SPEC-3.14.7: nothing to count for a one-person link.
         (self.people > 1).then(|| {
             format!(
                 "{} of {} submitted",
@@ -141,6 +148,7 @@ pub enum RequestLinkStatus {
 }
 
 impl RequestLinkStatus {
+    // SPEC-3.14.6: display text for each link status.
     pub fn label(&self) -> &'static str {
         match self {
             RequestLinkStatus::Awaiting => "Awaiting reply",

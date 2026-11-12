@@ -50,7 +50,7 @@ wasm_check_args := "--all-targets -- -D warnings"
 # Mirrors check.yml's `cargo test --lib`: the tests live on the library target.
 test_args := "--lib"
 
-# package.json carries the same semver as the crate, so the release bumps both.
+# SPEC-1.11.1: package.json carries the same semver as the crate, so the release bumps both.
 release_version_files := "package.json"
 
 # compose.yml names the dev server's cargo target volume, which is outside the
@@ -135,6 +135,7 @@ check-page-width:
     bash scripts/check-page-width.sh
 
 # MAPPS-1211: `SurfaceVisibility::StaffAdmin` only hides a tile from the hub. The route stays reachable, so a StaffAdmin page that never refuses shows a non-admin an editor they cannot save from. --self-test first, so a guard that stopped guarding fails loudly.
+# SPEC-2.8.1: self-test first, then the real scan.
 [doc("Fail if a StaffAdmin settings surface renders its page to a non-admin (MAPPS-1211).")]
 [group: 'check']
 check-admin-gate:
@@ -142,6 +143,7 @@ check-admin-gate:
     bash scripts/check-admin-gate.sh
 
 # MAPPS-1212: a click toggles a checkbox's DOM node whatever the vdom carries, and dioxus does not mark `checked` volatile, so a cancelled confirmation leaves the box showing a value nothing wrote. --self-test first, so a guard that stopped guarding fails loudly.
+# SPEC-2.8.1: self-test first, then the real scan.
 [doc("Fail if a checkbox that asks for confirmation renders only the server's answer (MAPPS-1212).")]
 [group: 'check']
 check-confirmed-toggle:
@@ -417,12 +419,14 @@ pre-commit-guards:
     ^just check-types-pin-docker
 
 # Install JS dependencies
+# SPEC-1.11.2: installs the package.json development dependencies.
 [private]
 [group: 'hooks']
 ensure-npm:
     @test -d node_modules || bun install
 
 # Build Tailwind CSS once
+# SPEC-1.3.4: same input and output files as the package.json scripts, unminified.
 [group: 'css']
 css-build: ensure-npm
     bun x @tailwindcss/cli --input input.css --output assets/styles.css

@@ -70,6 +70,7 @@ pub struct ReorderButtonsProps {
 /// Returns `(up_disabled, down_disabled)`. An empty list (`total == 0`)
 /// disables both because there is nothing to move.
 pub(crate) fn edge_disabled(index: usize, total: usize, disabled: bool) -> (bool, bool) {
+    // SPEC-5.55.3: `+ 1 >= total` avoids underflow for an empty list.
     let up = disabled || index == 0;
     let down = disabled || index + 1 >= total;
     (up, down)
@@ -83,7 +84,9 @@ pub fn ReorderButtons(props: ReorderButtonsProps) -> Element {
         .button_class
         .clone()
         .unwrap_or_else(|| "p-1 text-subtle hover:text-content".to_string());
+    // SPEC-5.55.5: both buttons share one class and one icon size.
     let noun = props.label_noun.clone();
+    // SPEC-5.55.2: accessible label wording.
     let up_label = format!("Move {noun} up");
     let down_label = format!("Move {noun} down");
     let icon_size = props.icon_size;
@@ -92,6 +95,7 @@ pub fn ReorderButtons(props: ReorderButtonsProps) -> Element {
     let on_up = props.on_up;
     let on_down = props.on_down;
 
+    // SPEC-5.55.1: up button first, then down; SPEC-5.55.4: a disabled button never calls back.
     rsx! {
         IconButton {
             label: up_label,

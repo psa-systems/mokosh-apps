@@ -29,12 +29,14 @@
 use dioxus::prelude::*;
 
 #[cfg(feature = "app")]
+// SPEC-5.2.6
 const COUNTDOWN_SECS: u32 = 5;
 
 /// Read the sticky "account was deleted" flag. Reactive: the wrapping
 /// AppLayout re-renders when the flag transitions from false to true.
 #[cfg(feature = "app")]
 pub fn use_account_deleted() -> bool {
+    // SPEC-5.2.1
     *crate::hooks::fetch::ACCOUNT_DELETED.read()
 }
 
@@ -42,6 +44,7 @@ pub fn use_account_deleted() -> bool {
 /// `cargo check` without the `app` feature.
 #[cfg(not(feature = "app"))]
 pub fn use_account_deleted() -> bool {
+    // SPEC-5.2.1: always false without the `app` feature.
     false
 }
 
@@ -52,9 +55,11 @@ pub fn use_account_deleted() -> bool {
 pub fn AccountDeletedOverlay() -> Element {
     #[cfg(feature = "app")]
     {
+        // SPEC-5.2.1
         if !use_account_deleted() {
             return rsx! {};
         }
+        // SPEC-5.2.2
         // MAPPS-377: mount the terminal body as a child so its countdown and
         // token-clearing hooks run unconditionally within it. Hoisting them
         // above the `!is_deleted` return would instead fire the logout redirect
@@ -82,6 +87,7 @@ fn AccountDeletedTerminal() -> Element {
     // subsequent request cannot re-arm the tombstoned bearer. Runs
     // exactly once (per mount) because it reads no signal.
     use_effect(move || {
+        // SPEC-5.2.5
         crate::modules::oidc::storage::clear_auth();
     });
 
@@ -90,6 +96,7 @@ fn AccountDeletedTerminal() -> Element {
     // run the shared sign-out sequence.
     use_effect(move || {
         let secs = *remaining.read();
+        // SPEC-5.2.7
         if secs == 0 {
             spawn(async move {
                 crate::modules::auth::sign_out::sign_out().await;
@@ -98,6 +105,7 @@ fn AccountDeletedTerminal() -> Element {
         }
         spawn(async move {
             crate::platform::timer::sleep_ms(1000).await;
+            // SPEC-5.2.6: one step per second, floored at 0.
             let now = *remaining.peek();
             if now > 0 {
                 remaining.set(now - 1);
@@ -105,6 +113,7 @@ fn AccountDeletedTerminal() -> Element {
         });
     });
 
+    // SPEC-5.2.8
     let sign_out_now = move |_| {
         spawn(async move {
             crate::modules::auth::sign_out::sign_out().await;
@@ -112,6 +121,7 @@ fn AccountDeletedTerminal() -> Element {
     };
 
     let secs = *remaining.read();
+    // SPEC-5.2.3, SPEC-5.2.4
     rsx! {
         div {
             class: "fixed inset-0 z-50 flex items-center justify-center bg-app/95 backdrop-blur",

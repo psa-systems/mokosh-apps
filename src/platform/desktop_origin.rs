@@ -15,19 +15,23 @@
 /// Android: `BASE_URI = "https://dioxus.index.html/"` (an https scheme is
 /// needed there for secure-context web APIs; see
 /// `WebViewBuilderExtAndroid::with_https_scheme` in the same crate).
+// SPEC-3.34.1: no trailing slash; operators copy this verbatim into the server origin allowlist.
 pub const ANDROID_ORIGIN: &str = "https://dioxus.index.html";
 
 /// Windows: `BASE_URI = "http://dioxus.index.html/"`.
+// SPEC-3.34.1
 pub const WINDOWS_ORIGIN: &str = "http://dioxus.index.html";
 
 /// macOS, Linux, iOS: `BASE_URI = "dioxus://index.html/"`, the custom
 /// scheme wry registers a request handler for.
+// SPEC-3.34.1
 pub const OTHER_ORIGIN: &str = "dioxus://index.html";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // SPEC-3.34.2
     #[test]
     fn docs_desktop_md_names_every_platform_origin() {
         let docs = include_str!("../../docs/desktop.md");

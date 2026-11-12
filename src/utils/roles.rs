@@ -25,16 +25,22 @@
 /// the UI stays legible on a server that adds a role the SPA has not
 /// learned yet.
 pub fn display_role_label(role: &str) -> String {
+    // SPEC-4.80.6: exact, case-sensitive match.
     match role {
+        // SPEC-4.80.2
         "super_admin" => "Super admin".to_string(),
+        // SPEC-4.80.1
         "admin" => "Owner".to_string(),
         "manager" => "Manager".to_string(),
         "technician" => "Technician".to_string(),
         "dispatcher" => "Dispatcher".to_string(),
         "sales" => "Sales".to_string(),
         "finance" => "Finance".to_string(),
+        // SPEC-4.80.3
         "read_only" | "readonly" => "Read-only".to_string(),
+        // SPEC-4.80.4
         "" => "Unknown".to_string(),
+        // SPEC-4.80.5
         other => {
             // Sentence-case the server string so a new role still renders
             // readably until the match arm catches up. "service_delivery"
@@ -55,6 +61,7 @@ pub fn display_role_label(role: &str) -> String {
                     out.push_str(&word.to_lowercase());
                 }
             }
+            // SPEC-4.80.7
             // MAPPS-1242: `trim`, because an identifier of only underscores
             // ("_") leaves just the separators behind, which is not empty and
             // used to render as a blank label.

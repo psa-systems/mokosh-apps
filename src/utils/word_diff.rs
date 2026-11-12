@@ -53,6 +53,7 @@ impl Piece {
 /// survives to this cap is two values with almost nothing in common, where a
 /// word diff would be noise anyway: a description replaced outright, or one
 /// language swapped for another.
+// SPEC-4.92.5
 const MAX_TOKENS: usize = 400;
 
 /// Fraction of the longer value that has to survive as unchanged text before a
@@ -62,6 +63,7 @@ const MAX_TOKENS: usize = 400;
 /// it into fragments would be worse than saying one replaced the other, which is
 /// how every short field has always rendered. A description edit is far above
 /// this.
+// SPEC-4.92.6
 const MIN_SHARED: f32 = 0.3;
 
 /// Split into word tokens, each carrying the whitespace that followed it.
@@ -69,6 +71,7 @@ const MIN_SHARED: f32 = 0.3;
 /// Whitespace rides along rather than becoming a token of its own so that
 /// concatenating every token reproduces the input, and so a diff never reports
 /// a changed space.
+// SPEC-4.92.2, SPEC-4.92.3, SPEC-4.93.7
 fn tokenize(s: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut start = 0;
@@ -109,6 +112,7 @@ thread_local! {
 pub fn diff_words(old: &str, new: &str) -> Option<Vec<Piece>> {
     #[cfg(test)]
     CALL_COUNT.with(|c| c.set(c.get() + 1));
+    // SPEC-4.92.1
     if old == new {
         return Some(vec![Piece::Same(old.to_string())]);
     }
@@ -122,6 +126,7 @@ pub fn diff_words(old: &str, new: &str) -> Option<Vec<Piece>> {
     // Shared prefix and suffix first. A one-sentence edit inside a long
     // description reduces to a handful of tokens here, which is what keeps the
     // table below small for the case this feature exists for.
+    // SPEC-4.92.4
     let mut head = 0;
     while head < a.len() && head < b.len() && a[head] == b[head] {
         head += 1;
@@ -137,6 +142,7 @@ pub fn diff_words(old: &str, new: &str) -> Option<Vec<Piece>> {
     let mid_a = &a[head..a.len() - tail];
     let mid_b = &b[head..b.len() - tail];
 
+    // SPEC-4.92.5
     if mid_a.len() > MAX_TOKENS || mid_b.len() > MAX_TOKENS {
         return None;
     }
@@ -146,6 +152,7 @@ pub fn diff_words(old: &str, new: &str) -> Option<Vec<Piece>> {
     lcs_into(mid_a, mid_b, &mut pieces);
     push_run(&mut pieces, Piece::Same(a[a.len() - tail..].concat()));
 
+    // SPEC-4.92.6
     let shared: usize = pieces
         .iter()
         .filter(|p| matches!(p, Piece::Same(_)))
@@ -162,6 +169,7 @@ pub fn diff_words(old: &str, new: &str) -> Option<Vec<Piece>> {
 /// Append, merging into the previous run when it is the same kind. Keeps the
 /// output free of adjacent runs that would render as two spans.
 fn push_run(out: &mut Vec<Piece>, piece: Piece) {
+    // SPEC-4.92.7
     if piece.text().is_empty() {
         return;
     }
@@ -179,6 +187,7 @@ fn push_run(out: &mut Vec<Piece>, piece: Piece) {
 /// tokens that happen to end in `\n` rather than a space, so the one
 /// implementation serves both granularities.
 pub(crate) fn lcs_into(a: &[&str], b: &[&str], out: &mut Vec<Piece>) {
+    // SPEC-4.92.9, SPEC-4.92.10
     if a.is_empty() && b.is_empty() {
         return;
     }
@@ -212,6 +221,7 @@ pub(crate) fn lcs_into(a: &[&str], b: &[&str], out: &mut Vec<Piece>) {
             i += 1;
             j += 1;
         } else if table[at(i + 1, j)] >= table[at(i, j + 1)] {
+            // SPEC-4.92.8: a tie removes before it adds.
             push_run(out, Piece::Removed(a[i].to_string()));
             i += 1;
         } else {
@@ -233,6 +243,7 @@ pub(crate) fn lcs_into(a: &[&str], b: &[&str], out: &mut Vec<Piece>) {
 /// An elided run keeps a `…` in place of what it dropped, so the reader can see
 /// that there is more rather than being shown a fragment that looks whole.
 pub fn elide(pieces: Vec<Piece>, context: usize) -> Vec<Piece> {
+    // SPEC-4.93.1
     let last = pieces.len().saturating_sub(1);
     let mut out = Vec::with_capacity(pieces.len());
     for (idx, piece) in pieces.into_iter().enumerate() {
@@ -243,12 +254,14 @@ pub fn elide(pieces: Vec<Piece>, context: usize) -> Vec<Piece> {
         let words = tokenize(text);
         // A leading run only needs its end, a trailing run only its start, and
         // one in the middle needs both.
+        // SPEC-4.93.2, SPEC-4.93.4, SPEC-4.93.5, SPEC-4.93.6
         let (keep_head, keep_tail) = match (idx == 0, idx == last) {
             (true, true) => (words.len(), 0),
             (true, false) => (0, context),
             (false, true) => (context, 0),
             (false, false) => (context, context),
         };
+        // SPEC-4.93.3
         if words.len() <= keep_head + keep_tail {
             out.push(piece);
             continue;

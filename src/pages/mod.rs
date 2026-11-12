@@ -45,6 +45,7 @@ pub mod kb_activity;
 pub mod kb_inline;
 pub mod knowledge_base;
 pub mod login;
+// SPEC-6.10.1: members pages exist only in multi-tenant builds.
 #[cfg(feature = "multi-tenant")]
 pub mod members;
 #[cfg(feature = "multi-tenant")]

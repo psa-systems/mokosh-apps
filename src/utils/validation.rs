@@ -73,6 +73,7 @@ impl PartialEq for Rule {
                     max_decimals: bd,
                 },
             ) => amin == bmin && amax == bmax && ad == bd,
+            // SPEC-4.88.6
             // Compare custom predicates by function address (the lint-blessed
             // way); two props carrying the same predicate stay PartialEq-equal
             // so Dioxus memoization still works.
@@ -86,6 +87,7 @@ impl PartialEq for Rule {
 /// has no visible label.
 fn field_label(label: &str) -> &str {
     let trimmed = label.trim();
+    // SPEC-4.88.3
     if trimmed.is_empty() {
         "This field"
     } else {
@@ -109,6 +111,7 @@ pub fn validate(value: &str, label: &str, rules: &[Rule]) -> Option<String> {
     // the structured rules (Email, Uuid, Number) reject a value the user has no
     // way of seeing anything wrong with, and Required is satisfied by a field
     // that looks empty. `clean_strict` trims AND removes those characters.
+    // SPEC-4.88.1, SPEC-4.88.2: rules run in order against the cleaned value.
     let strict = crate::utils::text::clean_strict(value);
     let name = field_label(label);
     for rule in rules {
@@ -122,6 +125,7 @@ pub fn validate(value: &str, label: &str, rules: &[Rule]) -> Option<String> {
 
 /// Whether `value` passes every rule.
 pub fn is_valid(value: &str, rules: &[Rule]) -> bool {
+    // SPEC-4.88.4
     validate(value, "", rules).is_none()
 }
 
@@ -131,6 +135,7 @@ pub fn is_valid(value: &str, rules: &[Rule]) -> bool {
 /// which counts what was actually typed.
 fn check(rule: &Rule, raw: &str, strict: &str, name: &str) -> Option<String> {
     match rule {
+        // SPEC-4.89.1
         Rule::Required => {
             if strict.is_empty() {
                 Some(format!("{name} is required."))
@@ -138,6 +143,7 @@ fn check(rule: &Rule, raw: &str, strict: &str, name: &str) -> Option<String> {
                 None
             }
         }
+        // SPEC-4.89.2
         Rule::MaxLen(n) => {
             // Count the raw value so trailing spaces still count against a cap.
             if raw.chars().count() > *n {
@@ -146,6 +152,7 @@ fn check(rule: &Rule, raw: &str, strict: &str, name: &str) -> Option<String> {
                 None
             }
         }
+        // SPEC-4.89.3, SPEC-4.88.7: blank passes.
         Rule::MinLen(n) => {
             if strict.is_empty() {
                 None
@@ -155,6 +162,7 @@ fn check(rule: &Rule, raw: &str, strict: &str, name: &str) -> Option<String> {
                 None
             }
         }
+        // SPEC-4.89.4
         Rule::Email => {
             if strict.is_empty() {
                 return None;
@@ -165,6 +173,7 @@ fn check(rule: &Rule, raw: &str, strict: &str, name: &str) -> Option<String> {
                 Some(format!("{name} must be a valid email address."))
             }
         }
+        // SPEC-4.89.5
         Rule::Uuid => {
             if strict.is_empty() {
                 return None;
@@ -183,6 +192,7 @@ fn check(rule: &Rule, raw: &str, strict: &str, name: &str) -> Option<String> {
             if strict.is_empty() {
                 return None;
             }
+            // SPEC-4.90.1, SPEC-4.90.5: checks run parse, finite, min, max, decimals.
             let Ok(parsed) = strict.parse::<f64>() else {
                 return Some(format!("{name} must be a number."));
             };
@@ -190,6 +200,7 @@ fn check(rule: &Rule, raw: &str, strict: &str, name: &str) -> Option<String> {
                 return Some(format!("{name} must be a number."));
             }
             if let Some(min) = min {
+                // SPEC-4.90.2
                 if parsed < *min {
                     return Some(if *min == 0.0 {
                         format!("{name} must not be negative.")
@@ -199,11 +210,13 @@ fn check(rule: &Rule, raw: &str, strict: &str, name: &str) -> Option<String> {
                 }
             }
             if let Some(max) = max {
+                // SPEC-4.90.3
                 if parsed > *max {
                     return Some(format!("{name} is out of range."));
                 }
             }
             if let Some(dp) = max_decimals {
+                // SPEC-4.90.4
                 if decimal_places(strict) > *dp {
                     let unit = if *dp == 1 { "place" } else { "places" };
                     return Some(format!("{name} must have at most {dp} decimal {unit}."));
@@ -211,6 +224,7 @@ fn check(rule: &Rule, raw: &str, strict: &str, name: &str) -> Option<String> {
             }
             None
         }
+        // SPEC-4.88.5
         Rule::Custom(f) => f(strict),
     }
 }

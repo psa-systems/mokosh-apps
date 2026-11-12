@@ -12,12 +12,14 @@ use dioxus::prelude::*;
 
 use mokosh_types::tickets::TicketSavedView;
 
+// SPEC-4.39.4: one path constant shared by the list and the write calls.
 /// `GET /tickets/saved-views` and its create/update/delete calls all target
 /// this path (the latter two append `/{id}`).
 pub const ENDPOINT: &str = "/tickets/saved-views";
 
 /// Provide the shared ticket-saved-views list at the App root.
 pub fn use_ticket_saved_views_provider() {
+    // SPEC-4.39.5: provider mounted at the App root.
     crate::hooks::shared_list::use_shared_list_provider::<TicketSavedView>(
         "ticket saved views",
         ENDPOINT,
@@ -30,5 +32,6 @@ pub fn use_ticket_saved_views_provider() {
 /// exposes `.restart()`, which a save/rename/delete calls so every consumer
 /// re-fetches the moment the set changes.
 pub fn use_ticket_saved_views(enabled: bool) -> Resource<Vec<TicketSavedView>> {
+    // SPEC-4.38.12: a write must call restart on this resource; there is no polling.
     crate::hooks::shared_list::use_shared_list::<TicketSavedView>(enabled)
 }

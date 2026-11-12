@@ -11,6 +11,7 @@
 
 // MAPPS-879: the character classes are mokosh-server's, re-exported so the
 // client cannot drift from them. `is_removed` keeps its local name here.
+// SPEC-4.82.1, SPEC-4.82.7: the character sets are defined in the shared crate.
 pub use mokosh_types::text::{is_exotic_space, is_removed as is_invisible, sanitize_invisible};
 
 /// Whether [`strip_invisible`] would change `raw`.
@@ -19,6 +20,7 @@ pub use mokosh_types::text::{is_exotic_space, is_removed as is_invisible, saniti
 /// overwhelmingly common case (ordinary text) answers `false` and skips the
 /// allocation entirely.
 pub fn has_invisible(raw: &str) -> bool {
+    // SPEC-4.82.2
     raw.chars().any(|c| is_invisible(c) || is_exotic_space(c))
 }
 
@@ -31,6 +33,7 @@ pub fn has_invisible(raw: &str) -> bool {
 /// `\n` and `\t`) passes through untouched, so a textarea keeps its line
 /// breaks.
 pub fn strip_invisible(raw: &str) -> String {
+    // SPEC-4.82.3, SPEC-4.82.4, SPEC-4.82.5: no trim, ASCII whitespace and ZWJ/ZWNJ kept.
     raw.chars()
         .filter(|c| !is_invisible(*c))
         .map(|c| if is_exotic_space(c) { ' ' } else { c })
@@ -42,6 +45,7 @@ pub fn strip_invisible(raw: &str) -> String {
 /// timezone, slug, date, money and other numerics. [`strip_invisible`], plus
 /// ZWJ / ZWNJ, plus a trim.
 pub fn clean_strict(raw: &str) -> String {
+    // SPEC-4.82.6
     let cleaned: String = raw
         .chars()
         .filter(|c| !is_invisible(*c) && !matches!(c, '\u{200C}' | '\u{200D}'))

@@ -7,6 +7,7 @@
 //! mokosh-server. The previous copy had drifted (no `Contact::company_name`,
 //! no `CompanyType::Internal`).
 
+// SPEC-3.17.2: shared-crate re-export; the tests below pin identity and the Internal variant.
 pub use mokosh_types::contacts::*;
 
 #[cfg(test)]

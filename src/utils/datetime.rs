@@ -55,6 +55,7 @@ use chrono_tz::Tz;
 /// User-pickable presets. The first element is the human label shown
 /// in the dropdown; the second is the format string we persist. Order
 /// matters: this is the order the dropdown renders.
+// SPEC-4.49.7: the preset list and its order are the picker contract.
 pub const PRESET_FORMATS: &[(&str, &str)] = &[
     ("MMM-DD-YYYY HH:mm", "MMM-DD-YYYY HH:mm"),
     ("MMM DD, YYYY h:mm A", "MMM DD, YYYY h:mm A"),
@@ -68,6 +69,7 @@ pub const PRESET_FORMATS: &[(&str, &str)] = &[
 
 /// Tokens are tried in this order so longer ones win (`MMMM` before
 /// `MMM` before `MM` before `M`). Stop on the first prefix match.
+// SPEC-4.49.3: this order is the grammar; longer tokens must precede their prefixes.
 const TOKENS: &[&str] = &[
     "YYYY", "YY", "MMMM", "MMM", "MM", "M", "DD", "Do", "D", "dddd", "ddd", "HH", "H", "hh", "h",
     "mm", "m", "ss", "s", "a.m.", "A", "a",
@@ -89,6 +91,7 @@ pub fn format_user_datetime(dt: DateTime<Utc>, format: Option<&str>) -> String {
 /// [`user_timezone`] once and reuse it instead of re-deriving it per
 /// timestamp (MAPPS-859).
 pub(crate) fn format_user_datetime_in(dt: DateTime<Utc>, format: Option<&str>, tz: Tz) -> String {
+    // SPEC-4.49.1: convert to the profile zone first; SPEC-4.49.2: blank format falls back.
     let local = dt.with_timezone(&tz);
     match format {
         Some(fmt) if !fmt.trim().is_empty() => render_format(local, fmt),
@@ -103,6 +106,7 @@ pub(crate) fn format_user_datetime_in(dt: DateTime<Utc>, format: Option<&str>, t
 /// next to the grammar means a user recognizes the format they want
 /// without decoding the tokens in their head.
 pub fn preset_label(now: DateTime<Utc>, fmt: &str) -> String {
+    // SPEC-4.49.8: rendered example, a space, then the raw tokens in parentheses.
     format!("{} ({})", format_user_datetime(now, Some(fmt)), fmt)
 }
 
@@ -123,6 +127,7 @@ fn render_format<T: TimeZone>(local: DateTime<T>, format: &str) -> String {
                 out.push_str(&render_token(tok, &local));
                 i += tok.len();
             }
+            // SPEC-4.49.6: a non-token char is copied whole, advancing by its UTF-8 length.
             None => {
                 let ch = format[i..]
                     .chars()
@@ -147,6 +152,7 @@ fn render_token<T: TimeZone>(tok: &str, local: &DateTime<T>) -> String {
     let day = local.day();
     let weekday = local.weekday();
     let hour24 = local.hour();
+    // SPEC-4.49.4: hour 0 and hour 12 both show as 12 on the 12-hour clock.
     let hour12 = match hour24 % 12 {
         0 => 12,
         h => h,
@@ -186,6 +192,7 @@ fn render_token<T: TimeZone>(tok: &str, local: &DateTime<T>) -> String {
 /// input. The single shared copy for headers that render a month label
 /// (the calendar and timesheet pages previously each kept their own).
 pub fn month_name(month: u32) -> &'static str {
+    // SPEC-4.49.12: empty string outside 1..=12.
     match month {
         1..=12 => month_full(month),
         _ => "",
@@ -240,6 +247,7 @@ fn weekday_abbr(w: chrono::Weekday) -> &'static str {
 }
 
 fn ordinal_suffix(n: u32) -> &'static str {
+    // SPEC-4.49.5: 11-13 are "th" before the last-digit rule applies.
     match (n % 100, n % 10) {
         (11..=13, _) => "th",
         (_, 1) => "st",
@@ -255,6 +263,7 @@ fn ordinal_suffix(n: u32) -> &'static str {
 /// effect (MAPPS-208). Outside the WASM target (unit tests + desktop
 /// build) we render a plain string in `tz` with its zone abbreviation.
 fn locale_fallback(dt: DateTime<Utc>, tz: Tz) -> String {
+    // SPEC-4.49.2: en-US locale string in the profile zone, else strftime in that zone.
     #[cfg(target_arch = "wasm32")]
     {
         let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(
@@ -300,6 +309,7 @@ fn locale_fallback(dt: DateTime<Utc>, tz: Tz) -> String {
 /// flagged: the grammar deliberately lets the user mix in arbitrary
 /// punctuation, so flagging it would generate constant false positives.
 pub fn token_warnings(format: &str) -> Vec<String> {
+    // SPEC-4.49.9: only ASCII-letter runs the tokenizer cannot fully consume are reported.
     let bytes = format.as_bytes();
     let mut warnings: Vec<String> = Vec::new();
     let mut i = 0;
@@ -370,6 +380,7 @@ pub(crate) fn fmt_user_dt_in(
     tz: Tz,
     no_pref_style: Option<&str>,
 ) -> String {
+    // SPEC-4.49.10: preference, then caller style, then locale; blank counts as unset.
     match pref.filter(|s| !s.trim().is_empty()) {
         Some(fmt) => format_user_datetime_in(dt, Some(fmt), tz),
         None => match no_pref_style {
@@ -385,6 +396,7 @@ pub(crate) fn fmt_user_dt_in(
 /// so the KB prints its dates the way the rest of the app does instead of
 /// a bare `YYYY-MM-DD`.
 pub fn fmt_datetime_pref(dt: DateTime<Utc>) -> String {
+    // SPEC-4.49.11: the default style when the user has no format.
     fmt_user_dt(dt, Some("%b %d, %Y %H:%M"))
 }
 
@@ -392,6 +404,7 @@ pub fn fmt_datetime_pref(dt: DateTime<Utc>) -> String {
 /// (MAPPS-742), for a stream where the absolute time rides in `title`. Pure
 /// in `now` so a test pins it; [`fmt_relative`] is the page's wrapper.
 pub fn relative_label(dt: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    // SPEC-4.50.1 / SPEC-4.50.2: "just now" under 45 s, then the band table below.
     let delta = now.signed_duration_since(dt);
     let past = delta.num_seconds() >= 0;
     let secs = delta.num_seconds().unsigned_abs();
@@ -410,6 +423,7 @@ pub fn relative_label(dt: DateTime<Utc>, now: DateTime<Utc>) -> String {
     } else {
         (secs / (365 * 86_400), "year")
     };
+    // SPEC-4.50.3: "ago" for zero or positive past distance, "in" for the future.
     let n = n.max(1);
     let plural = if n == 1 { "" } else { "s" };
     if past {
@@ -421,6 +435,7 @@ pub fn relative_label(dt: DateTime<Utc>, now: DateTime<Utc>) -> String {
 
 /// [`relative_label`] against the clock now.
 pub fn fmt_relative(dt: DateTime<Utc>) -> String {
+    // SPEC-4.50.4: measured against the current clock.
     relative_label(dt, Utc::now())
 }
 
@@ -437,6 +452,7 @@ pub fn fmt_relative(dt: DateTime<Utc>) -> String {
 pub fn user_format_pref() -> Option<String> {
     use dioxus::core::Runtime;
     use dioxus::prelude::{try_consume_context, ReadableExt, Signal};
+    // SPEC-4.50.7: None without a runtime, context or user; SPEC-4.50.8: not a hook.
     // Same guard as `user_timezone`: no runtime, no context to read.
     Runtime::try_current()?;
     let auth = try_consume_context::<Signal<crate::hooks::auth::AuthContext>>()?;
@@ -462,6 +478,7 @@ pub fn user_format_pref() -> Option<String> {
 pub fn user_timezone() -> Tz {
     use dioxus::core::Runtime;
     use dioxus::prelude::{try_consume_context, ReadableExt, Signal};
+    // SPEC-4.50.6: UTC without a runtime, else the saved zone via effective_timezone.
     // Context access requires a live Dioxus runtime/scope. Guard so the
     // pure host-side render paths (unit tests, preset label previews
     // invoked outside a component) fall back to UTC instead of panicking.
@@ -487,6 +504,7 @@ pub fn user_timezone() -> Tz {
 /// missing OS data) the final fallback is UTC, so this function is
 /// infallible.
 pub fn effective_timezone(saved: &str) -> Tz {
+    // SPEC-4.50.5: placeholders and unparseable values fall back to the detected zone.
     let looks_placeholder = saved.is_empty() || saved == "UTC" || saved == "Etc/UTC";
     if !looks_placeholder {
         if let Ok(tz) = saved.parse::<Tz>() {
@@ -502,6 +520,7 @@ pub fn effective_timezone(saved: &str) -> Tz {
 /// so "today" highlighting and day bucketing agree across every screen
 /// instead of mixing browser-local and UTC.
 pub fn user_today() -> chrono::NaiveDate {
+    // SPEC-4.50.9: today in the profile zone, not browser-local or UTC.
     Utc::now().with_timezone(&user_timezone()).date_naive()
 }
 
@@ -514,6 +533,7 @@ pub fn user_today() -> chrono::NaiveDate {
 /// it, so `mokosh-server` SQL aggregates and this render bucket a UTC
 /// instant onto the same day.
 pub fn user_local_date(dt: DateTime<Utc>) -> chrono::NaiveDate {
+    // SPEC-4.50.9: the shared bucketing rule keeps this equal to server aggregates.
     mokosh_types::datetime::user_local_date(dt, user_timezone().name())
 }
 

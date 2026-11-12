@@ -40,6 +40,7 @@ pub struct Anchor {
     pub hint: Option<Range<usize>>,
 }
 
+// SPEC-4.52.5: the context limit is 64 characters, matching the server's cap.
 /// How many characters of context are kept either side of a quote when one
 /// is captured; the server refuses more (PMS-1130).
 pub const CONTEXT_CHARS: usize = 64;
@@ -48,6 +49,7 @@ impl Anchor {
     /// Decode the server's JSON. `None` for a value that is not a text
     /// quote selector, which the server would not have stored.
     pub fn from_json(value: &serde_json::Value) -> Option<Anchor> {
+        // SPEC-4.52.1: exact must be a non-blank string; prefix/suffix are optional.
         let exact = value.get("exact")?.as_str()?.trim().to_string();
         if exact.is_empty() {
             return None;
@@ -59,6 +61,7 @@ impl Anchor {
                 .map(|s| s.trim().to_string())
                 .unwrap_or_default()
         };
+        // SPEC-4.52.2: a hint needs both offsets with end >= start.
         let hint = value.get("refinedBy").and_then(|r| {
             let start = r.get("start")?.as_u64()? as usize;
             let end = r.get("end")?.as_u64()? as usize;
@@ -74,6 +77,7 @@ impl Anchor {
 
     /// The JSON the server accepts, for a quote just captured.
     pub fn to_json(&self) -> serde_json::Value {
+        // SPEC-4.52.3: the W3C selector shape the server accepts.
         let mut v = serde_json::json!({
             "type": "TextQuoteSelector",
             "exact": self.exact,
@@ -94,6 +98,7 @@ impl Anchor {
     /// up to [`CONTEXT_CHARS`] either side, and the range as the hint.
     /// `None` for an empty or out-of-range selection.
     pub fn capture(text: &str, range: Range<usize>) -> Option<Anchor> {
+        // SPEC-4.52.4: character indices; empty, reversed or overlong ranges capture nothing.
         let chars: Vec<char> = text.chars().collect();
         if range.start >= range.end || range.end > chars.len() {
             return None;
@@ -103,6 +108,7 @@ impl Anchor {
         if exact.is_empty() {
             return None;
         }
+        // SPEC-4.52.5: up to 64 characters of context each side, trimmed.
         let prefix: String = chars[range.start.saturating_sub(CONTEXT_CHARS)..range.start]
             .iter()
             .collect();
@@ -122,18 +128,22 @@ impl Anchor {
 /// at least two so a one-word quote can lose a letter, at most twenty so a
 /// long quote cannot drift onto a different sentence.
 pub fn fuzzy_budget(quote_chars: usize) -> usize {
+    // SPEC-4.52.10: one fifth of the quote, clamped to 2..=20 edits.
     (quote_chars / 5).clamp(2, 20)
 }
 
+// SPEC-4.52.6: resolved against the rendered text on every render; offsets are hints.
 /// Where `anchor` is in `text`, as a `char` range, or `None` for an orphan.
 pub fn resolve(text: &str, anchor: &Anchor) -> Option<Range<usize>> {
     let chars: Vec<char> = text.chars().collect();
     let quote: Vec<char> = anchor.exact.chars().collect();
+    // SPEC-4.52.7: an empty or overlong quote is an orphan.
     if quote.is_empty() || chars.len() < quote.len() {
         return None;
     }
     let exact_hits = find_all(&chars, &quote);
     match exact_hits.len() {
+        // SPEC-4.52.8: a single occurrence is the answer.
         1 => return Some(exact_hits[0]..exact_hits[0] + quote.len()),
         n if n > 1 => {
             let best = exact_hits
@@ -141,6 +151,7 @@ pub fn resolve(text: &str, anchor: &Anchor) -> Option<Range<usize>> {
                 .copied()
                 .max_by_key(|&at| {
                     let score = context_score(&chars, at, quote.len(), anchor);
+                    // SPEC-4.52.9: ties keep the last occurrence when no hint exists.
                     // Higher score first; on a tie, the one nearest the hint,
                     // expressed as a smaller distance being a larger key.
                     (score, usize::MAX - distance_to_hint(at, anchor))
@@ -150,6 +161,7 @@ pub fn resolve(text: &str, anchor: &Anchor) -> Option<Range<usize>> {
         }
         _ => {}
     }
+    // SPEC-4.52.10 / SPEC-4.52.12: None past the budget makes the anchor an orphan.
     let budget = fuzzy_budget(quote.len());
     approximate_find(
         &chars,
@@ -181,6 +193,7 @@ fn context_score(chars: &[char], at: usize, len: usize, anchor: &Anchor) -> usiz
     );
     let prefix: Vec<char> = fold_ws(anchor.prefix.chars());
     let suffix: Vec<char> = fold_ws(anchor.suffix.chars());
+    // SPEC-4.52.9: matching characters walking outwards from the quote, both sides.
     let back = before
         .iter()
         .rev()
@@ -237,6 +250,7 @@ pub fn approximate_find(
     max_dist: usize,
     near: Option<usize>,
 ) -> Option<Range<usize>> {
+    // SPEC-4.52.11: nothing to match against an empty pattern or text.
     if pattern.is_empty() || text.is_empty() {
         return None;
     }
@@ -275,6 +289,7 @@ pub fn approximate_find(
         })
         .collect();
     starts_ends.dedup();
+    // SPEC-4.52.11: nearest the hint start, else the first.
     let pick = match near {
         Some(n) => starts_ends
             .iter()
@@ -333,6 +348,7 @@ pub struct Fragment<T> {
 /// Split `ranges` at every boundary into non-overlapping fragments, each
 /// carrying the ids of every range that covers it, in document order.
 pub fn split_overlaps<T: Clone + PartialEq>(ranges: &[(T, Range<usize>)]) -> Vec<Fragment<T>> {
+    // SPEC-4.52.13: split at every boundary; uncovered gaps yield no fragment.
     let mut bounds: Vec<usize> = ranges.iter().flat_map(|(_, r)| [r.start, r.end]).collect();
     bounds.sort_unstable();
     bounds.dedup();

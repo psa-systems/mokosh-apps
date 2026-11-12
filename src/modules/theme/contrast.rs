@@ -6,6 +6,7 @@
 //! accents (and to validate phase-2 named palettes).
 
 /// WCAG AA threshold for normal-size text/icons.
+// SPEC-3.23.1
 pub const WCAG_AA_NORMAL: f64 = 4.5;
 /// WCAG AA threshold for large text and UI component boundaries.
 pub const WCAG_AA_LARGE: f64 = 3.0;
@@ -13,6 +14,7 @@ pub const WCAG_AA_LARGE: f64 = 3.0;
 /// Parse a `#rrggbb` (or `rrggbb`) hex string into 0..=255 RGB.
 /// Returns `None` for any other shape so callers can treat a bad token
 /// as "unknown" rather than silently mis-coloring.
+// SPEC-3.23.2
 pub fn parse_hex(hex: &str) -> Option<(u8, u8, u8)> {
     let h = hex.strip_prefix('#').unwrap_or(hex);
     if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -35,6 +37,7 @@ fn linearize(channel: u8) -> f64 {
 }
 
 /// Relative luminance (0.0..=1.0) of an sRGB color, per WCAG 2.x.
+// SPEC-3.23.3
 pub fn relative_luminance(rgb: (u8, u8, u8)) -> f64 {
     let (r, g, b) = rgb;
     0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b)
@@ -42,6 +45,7 @@ pub fn relative_luminance(rgb: (u8, u8, u8)) -> f64 {
 
 /// Contrast ratio (1.0..=21.0) between two hex colors. Returns `None` if
 /// either color fails to parse.
+// SPEC-3.23.4
 pub fn contrast_ratio(a: &str, b: &str) -> Option<f64> {
     let la = relative_luminance(parse_hex(a)?);
     let lb = relative_luminance(parse_hex(b)?);
@@ -50,6 +54,7 @@ pub fn contrast_ratio(a: &str, b: &str) -> Option<f64> {
 }
 
 /// True when `fg` on `bg` meets WCAG AA for normal text.
+// SPEC-3.23.5: an unparseable color fails closed to "does not pass".
 pub fn passes_aa(fg: &str, bg: &str) -> bool {
     contrast_ratio(fg, bg).is_some_and(|r| r >= WCAG_AA_NORMAL)
 }
@@ -97,6 +102,7 @@ mod tests {
     // Tailwind v4.1 emits (`--color-red-400: oklch(70.4% 0.191 22.216)`, and so
     // on); sRGB is the conservative reading, a P3 display renders them more
     // saturated. Dark bases are the `.dark` block in input.css.
+    // SPEC-3.23.6
     const DARK_SURFACE: &str = "#1e293b"; // --surface, --raised
     const DARK_APP: &str = "#0f172a"; // --bg, --surface-2
 

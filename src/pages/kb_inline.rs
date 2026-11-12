@@ -14,6 +14,7 @@
 //!
 //! What this module owns is the orchestration; the resolver is pure and
 //! tested on strings, the DOM work lives in the platform layer.
+// SPEC-12.7.3: no HTTP endpoint is called here; the comment POST belongs to the composer.
 
 use dioxus::prelude::*;
 
@@ -66,6 +67,7 @@ fn capture_selection(text: &str, range: std::ops::Range<usize>) -> Result<Anchor
 
 /// Resolve every anchored, live root against `text`: the fragments to mark,
 /// in document order, and the roots that no longer resolve.
+// SPEC-12.2.4: only live root comments own anchors; unresolved anchors are orphans.
 pub fn place(text: &str, roots: &[KbComment]) -> (Vec<MarkSpec>, Vec<uuid::Uuid>) {
     let mut ranges: Vec<(String, std::ops::Range<usize>)> = Vec::new();
     let mut orphans: Vec<uuid::Uuid> = Vec::new();
@@ -94,6 +96,7 @@ pub fn place(text: &str, roots: &[KbComment]) -> (Vec<MarkSpec>, Vec<uuid::Uuid>
 /// as saved (`before`) and no longer resolve in the unsaved body (`after`).
 /// What the editor warns about on save. A root already orphaned before the
 /// edit is not this edit's doing and is left out.
+// SPEC-12.2.5: charge an edit only with anchors it breaks.
 ///
 /// `people` is the directory the article page renders mentions with, so the
 /// text compared here is the text the page's anchors were placed in
@@ -119,6 +122,7 @@ pub fn orphaned_by_edit(
 
 /// A stable fingerprint of what the placement depends on, so the effect
 /// re-runs exactly when the body or an anchor changed.
+// SPEC-12.6.5: hash of body plus id, deleted flag and anchor of each root.
 fn placement_key(content: &str, roots: &[KbComment]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -164,9 +168,11 @@ pub fn InlineComments(
             let _ = key;
             let roots = roots_for_effect.clone();
             spawn(async move {
+                // SPEC-12.5.7: no body in the DOM yet means nothing to mark.
                 let Some(text) = anchor_dom::text_of(KB_ARTICLE_BODY_ID).await else {
                     return;
                 };
+                // SPEC-12.6.5: clear, place, apply, then measure, in that order.
                 anchor_dom::clear_highlights(KB_ARTICLE_BODY_ID);
                 // Once per change of body or anchors, not per placement pass:
                 // the editor preview runs `place` on a timer.
@@ -177,11 +183,13 @@ pub fn InlineComments(
                 }
                 let (specs, orphan_ids) = place(&text, &roots);
                 anchor_dom::apply_highlights(KB_ARTICLE_BODY_ID, &specs);
+                // SPEC-12.21.3: publish orphan ids to the stream.
                 orphans.set(orphan_ids);
                 markers.set(anchor_dom::mark_positions(KB_ARTICLE_BODY_ID).await);
             });
         }));
         let on_open = EventHandler::new(move |ids: Vec<String>| open_at.set(Some(ids)));
+        // SPEC-12.1.14: mark activation opens the passage dialog.
         use_effect(move || anchor_dom::watch_mark_activation(KB_ARTICLE_BODY_ID, on_open));
     }
 
@@ -197,6 +205,7 @@ pub fn InlineComments(
 
     rsx! {
         // The gutter: one marker per passage, at the mark's own height.
+        // SPEC-12.1.14, SPEC-12.21.1: one gutter marker per passage.
         div { class: "pointer-events-none absolute left-0 top-0 h-full w-7", "aria-label": "Inline comment markers",
             for m in markers.read().iter().cloned() {
                 {
@@ -226,15 +235,18 @@ pub fn InlineComments(
                 // The wrapper takes the mousedown: the default action of a
                 // mousedown on a button collapses the selection, and it is
                 // decided after the event has bubbled here.
+                // SPEC-12.4.6: keep the selection alive until it is captured.
                 span { onmousedown: move |e: MouseEvent| e.prevent_default(),
                 Button {
                     variant: ButtonVariant::Secondary,
                     size: ButtonSize::Small,
+                    // SPEC-12.1.15, SPEC-12.4.1: disabled with a reason while the server is unreachable.
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't comment while the server is unreachable".to_string()),
                     onclick: move |_| {
                         spawn(async move {
                             let Some(range) = anchor_dom::selection_in(KB_ARTICLE_BODY_ID).await else {
+                                // SPEC-12.1.15: no live selection.
                                 hint.set(NO_SELECTION_HINT.to_string());
                                 return;
                             };
@@ -245,6 +257,7 @@ pub fn InlineComments(
                                 hint.set(NOT_READY_HINT.to_string());
                                 return;
                             };
+                            // SPEC-12.21.4: captured selection opens the composer and clears hint and selection.
                             match capture_selection(&text, range) {
                                 Ok(a) => {
                                     hint.set(String::new());
@@ -264,6 +277,7 @@ pub fn InlineComments(
             }
 
             // The threads at the activated passage.
+            // SPEC-12.1.14, SPEC-12.21.2: dialog listing the threads at the passage.
             if let Some(ids) = open_at() {
                 div { class: "rounded-md border border-line bg-surface p-3 shadow-sm", role: "dialog", "aria-label": "Comments on this passage",
                     div { class: "flex items-center justify-between",
@@ -273,11 +287,13 @@ pub fn InlineComments(
                         Button { variant: ButtonVariant::Ghost, size: ButtonSize::Small, onclick: move |_| open_at.set(None), "Close" }
                     }
                     if open_ids.is_empty() {
+                        // SPEC-12.5.7: stale ids render a message, not an empty list.
                         p { class: "mt-1 text-xs text-subtle", "These comments are no longer in the list ({ids.len()})." }
                     }
                     ul { class: "mt-2 divide-y divide-line",
                         for c in open_ids.iter() {
                             {
+                                // SPEC-12.1.14: body excerpt capped at 120 characters.
                                 let excerpt: String = c.body.chars().take(120).collect();
                                 let id = c.id;
                                 rsx! {
@@ -290,6 +306,7 @@ pub fn InlineComments(
                                             variant: ButtonVariant::Link,
                                             size: ButtonSize::Small,
                                             onclick: move |_| {
+                                                // SPEC-12.21.2: Open thread focuses the stream row.
                                                 focus_thread.set(Some(id));
                                                 open_at.set(None);
                                                 crate::platform::dom::scroll_into_view(&format!("kb-comment-{id}"), true);
@@ -305,6 +322,7 @@ pub fn InlineComments(
             }
 
             // The composer for a captured passage.
+            // SPEC-12.1.15, SPEC-12.21.4: composer for the captured passage.
             if let Some(a) = pending() {
                 div { class: "rounded-md border border-accent/40 bg-surface-2 p-3",
                     p { class: "text-xs text-muted", "Commenting on:" }
@@ -324,6 +342,7 @@ pub fn InlineComments(
                                 pending.set(None);
                                 on_changed.call(());
                             },
+                            // SPEC-12.9.5: cancel clears only local state.
                             on_cancel: Some(EventHandler::new(move |_: ()| pending.set(None))),
                         }
                     }

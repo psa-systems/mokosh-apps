@@ -26,6 +26,7 @@ use crate::components::{
 /// their invoices should not have to know that `invoices:pay` and
 /// `invoices:download_pdf` are separate strings, and the server picks the role
 /// that answers the request.
+// SPEC-5.1.1: the closed area set below mirrors the server's keys.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AccessArea {
     /// As the server's closed set names it.
@@ -65,7 +66,9 @@ pub const CONTRACTS: AccessArea = AccessArea {
 /// administrator, and the person they need is the MSP they hired.
 pub(crate) fn access_required_body(area: &str, msp_name: Option<&str>) -> String {
     match msp_name {
+        // SPEC-5.1.5
         Some(name) => format!("Your {name} portal does not share {area} with your account. You can ask them for access."),
+        // SPEC-5.1.6
         None => format!("This portal does not share {area} with your account. You can ask your provider for access."),
     }
 }
@@ -74,6 +77,7 @@ pub(crate) fn access_required_body(area: &str, msp_name: Option<&str>) -> String
 ///
 /// Says the request landed and who has it, so the customer knows the next move
 /// is not theirs. It deliberately does not promise a timeframe.
+// SPEC-5.1.8: confirms where the request went and promises no timeframe.
 pub(crate) fn access_requested_body(msp_name: Option<&str>) -> String {
     match msp_name {
         Some(name) => format!(
@@ -88,6 +92,7 @@ pub(crate) fn access_requested_body(msp_name: Option<&str>) -> String {
 
 /// The heading, which names the area so a customer who opened two tabs knows
 /// which one this is.
+// SPEC-5.1.3
 pub(crate) fn access_required_title(area: &str) -> String {
     let mut chars = area.chars();
     match chars.next() {
@@ -105,6 +110,7 @@ pub(crate) fn access_required_title(area: &str) -> String {
 /// Typed rather than a `json!` literal for the MAPPS-685 reason the contacts
 /// page has a guard about: a literal compiles clean against any DTO, so the
 /// field names and the server's agree only by luck.
+// SPEC-5.1.10: `note` is omitted entirely when empty.
 #[derive(Debug, serde::Serialize)]
 struct AccessRequestBody {
     /// The portal area, keyed the way the server's closed `ACCESS_AREAS` set
@@ -129,6 +135,7 @@ pub struct PortalAccessRequiredProps {
 pub fn PortalAccessRequired(props: PortalAccessRequiredProps) -> Element {
     let area = props.area;
     let brand = crate::hooks::branding::EFFECTIVE_BRANDING.read().clone();
+    // SPEC-5.1.4
     let msp_name = brand
         .display_name
         .clone()
@@ -146,6 +153,7 @@ pub fn PortalAccessRequired(props: PortalAccessRequiredProps) -> Element {
     let heading = access_required_title(area.label);
 
     let handle_ask = move |_| {
+        // SPEC-5.1.11
         if *sending.read() || *sent.read() {
             return;
         }
@@ -158,6 +166,7 @@ pub fn PortalAccessRequired(props: PortalAccessRequiredProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-5.1.10
                 match crate::hooks::fetch::api::post_authed_any_typed::<serde_json::Value, _>(
                     "/access-requests",
                     &body,
@@ -165,16 +174,19 @@ pub fn PortalAccessRequired(props: PortalAccessRequiredProps) -> Element {
                 .await
                 {
                     Ok(_) => sent.set(true),
+                    // SPEC-5.1.13
                     Err(err) => error.set(format!(
                         "Could not send your request: {}",
                         err.user_message()
                     )),
                 }
             }
+            // SPEC-5.1.14
             sending.set(false);
         });
     };
 
+    // SPEC-5.1.2
     rsx! {
         PageHeader { title: "{props.title}" }
         Card {
@@ -183,10 +195,12 @@ pub fn PortalAccessRequired(props: PortalAccessRequiredProps) -> Element {
                     InformationIcon { size: IconSize::Large, class: "text-subtle".to_string() }
                 }
                 h3 { class: "text-base font-medium text-content", "{heading}" }
+                // SPEC-5.1.8
                 if *sent.read() {
                     p { class: "mt-2 text-sm text-muted", "{sent_body}" }
                 } else {
                     p { class: "mt-2 text-sm text-muted", "{body}" }
+                    // SPEC-5.1.9
                     div { class: "mt-4 w-full",
                         crate::components::Textarea {
                             name: "access_request_note",
@@ -203,6 +217,7 @@ pub fn PortalAccessRequired(props: PortalAccessRequiredProps) -> Element {
                         Button {
                             variant: ButtonVariant::Primary,
                             loading: *sending.read(),
+                            // SPEC-5.1.12
                             disabled: !can_mutate || *sending.read(),
                             title: (!can_mutate).then(|| "Can't reach the server to send your request".to_string()),
                             onclick: handle_ask,
@@ -222,6 +237,7 @@ mod tests {
     /// The MSP is named where the brand supplies one, because "ask Niceguy IT"
     /// is actionable and "ask your administrator" is not: a customer has no
     /// administrator.
+    // SPEC-5.1.7: copy never mentions an administrator or leaves a placeholder.
     #[test]
     fn the_copy_names_the_msp_when_it_can() {
         let named = access_required_body("invoices", Some("Niceguy IT"));

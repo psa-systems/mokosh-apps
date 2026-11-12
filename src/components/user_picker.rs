@@ -19,6 +19,7 @@ use crate::components::{Button, ButtonSize, ButtonVariant, ErrorBanner, Input};
 use crate::hooks::use_dropdown_nav;
 use crate::utils::url::urlencoding_minimal;
 
+// SPEC-5.74.3: response row shape; absent fields default to empty
 /// One row of `GET /auth/users`, mokosh-server's `UserResponse`.
 ///
 /// MAPPS-1247: no `#[serde(default)]`. The server serialises all four name
@@ -35,6 +36,7 @@ struct PickerUser {
 }
 
 impl PickerUser {
+    // SPEC-5.74.4: display name rule
     /// The name to show: the full name, else first and last, else the email.
     /// A user with none of those shows [`UNNAMED_USER`] and is logged once
     /// with its id (MAPPS-1247), rather than rendering a blank row and chip.
@@ -74,6 +76,7 @@ pub struct UserPickerProps {
     /// as a chip with a Change button instead of the search dropdown.
     pub selected_id: Option<String>,
     /// Field label rendered above the input.
+    // SPEC-5.75.5: prop defaults
     #[props(default = String::from("User"))]
     pub label: String,
     /// Placeholder on the search input.
@@ -82,6 +85,7 @@ pub struct UserPickerProps {
     /// Mark the underlying input required.
     #[props(default)]
     pub required: bool,
+    // SPEC-5.74.5: ids hidden from the match list
     /// Hide a user id from the match list. Used to filter out the
     /// current team roster so an already-added member doesn't surface
     /// as a selectable row.
@@ -96,14 +100,17 @@ pub struct UserPickerProps {
 #[component]
 pub fn UserPicker(props: UserPickerProps) -> Element {
     let mut query = use_signal(String::new);
+    // SPEC-5.77.2: keyboard navigation, Enter takes the first match
     let mut nav = use_dropdown_nav("user-picker").enter_takes_first_match();
     let mut editing = use_signal(|| false);
 
     let query_text = query.read().trim().to_string();
+    // SPEC-5.74.2: 300 ms debounce
     let query_debounced = crate::hooks::use_debounced_signal(query, 300);
     let results = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let q = query_debounced.read().trim().to_string();
+        // SPEC-5.74.1: empty query omits q; per_page is 20
         let path = if q.is_empty() {
             "/auth/users?per_page=20".to_string()
         } else {
@@ -112,13 +119,17 @@ pub fn UserPicker(props: UserPickerProps) -> Element {
         crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
             .await
             .map(|p| p.data)
+            // SPEC-5.74.6: log the failure; the dropdown shows it (SPEC-5.76.6)
             .inspect_err(|e| tracing::warn!("user search failed: {e}"))
     });
 
+    // SPEC-5.75.1: chip while selected and not editing
+    // SPEC-5.75.4: in editing mode the search input and dropdown show even with selected_id Some.
     if let Some(_id) = &props.selected_id {
         if !editing() {
             let name = props.value.clone();
             let onclear = props.onclear;
+            // SPEC-5.75.2: label shown only when non-blank
             let show_label = !props.label.trim().is_empty();
             return rsx! {
                 div { class: "space-y-1 w-full",
@@ -139,6 +150,7 @@ pub fn UserPicker(props: UserPickerProps) -> Element {
                             Button {
                                 variant: ButtonVariant::Link,
                                 size: ButtonSize::Small,
+                                // SPEC-5.75.3: Change clears, enters editing, opens the dropdown; SPEC-5.77.4 (the only onclear call)
                                 onclick: move |_| {
                                     onclear.call(());
                                     query.set(String::new());
@@ -160,6 +172,7 @@ pub fn UserPicker(props: UserPickerProps) -> Element {
     let rows: Vec<PickerUser> = match &*snap {
         Some(Ok(rows)) => rows
             .iter()
+            // SPEC-5.74.5: exclusion applied to rendered rows
             .filter(|r| !exclude.contains(&r.id))
             .cloned()
             .collect(),
@@ -170,12 +183,14 @@ pub fn UserPicker(props: UserPickerProps) -> Element {
     rsx! {
         div { class: "relative space-y-1",
             div {
+                // SPEC-5.76.1: combobox wrapper
                 role: "combobox",
                 aria_expanded: nav.expanded(),
                 aria_controls: nav.panel_id(),
                 aria_activedescendant: nav.active_descendant(),
                 onfocusin: move |_| nav.open(),
                 onclick: move |_| nav.open(),
+                // SPEC-5.77.3: keyboard selection mirrors click selection
                 onkeydown: move |e: KeyboardEvent| {
                     let rows = rows_for_keys.clone();
                     nav.keydown(&e, nav_len, move |index| {
@@ -193,6 +208,7 @@ pub fn UserPicker(props: UserPickerProps) -> Element {
                     placeholder: props.placeholder,
                     required: props.required,
                     value: query.read().clone(),
+                    // SPEC-5.76.2: each input stores the query and reopens fresh
                     oninput: move |e: FormEvent| {
                         query.set(e.value());
                         nav.open_fresh();
@@ -200,6 +216,7 @@ pub fn UserPicker(props: UserPickerProps) -> Element {
                 }
             }
             if nav.is_open() {
+                // SPEC-5.76.3: overlay click closes and leaves editing
                 div {
                     class: "fixed inset-0 z-10",
                     onclick: move |_| {
@@ -207,17 +224,21 @@ pub fn UserPicker(props: UserPickerProps) -> Element {
                         editing.set(false);
                     },
                 }
+                // SPEC-5.76.4: listbox panel
                 div {
                     id: nav.panel_id(),
                     role: "listbox",
                     class: "dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto",
                     match &*snap {
+                        // SPEC-5.76.5: loading text
                         None => rsx! {
                             div { class: "px-3 py-2 text-sm text-muted", "Searching…" }
                         },
+                        // SPEC-5.76.6: visible search failure
                         Some(Err(_)) => rsx! {
                             ErrorBanner { class: "m-1", "Could not search. Try again." }
                         },
+                        // SPEC-5.76.7: empty states by query
                         Some(Ok(_)) if rows.is_empty() => rsx! {
                             div { class: "px-3 py-2 text-sm text-muted",
                                 if query_text.is_empty() {
@@ -227,6 +248,7 @@ pub fn UserPicker(props: UserPickerProps) -> Element {
                                 }
                             }
                         },
+                        // SPEC-5.76.8: option rows
                         Some(Ok(_)) => rsx! {
                             ul { class: "py-1", role: "none",
                                 for (index , row) in rows.iter().enumerate() {
@@ -250,6 +272,7 @@ pub fn UserPicker(props: UserPickerProps) -> Element {
                                                     r#type: "button",
                                                     tabindex: "-1",
                                                     class: nav.row_class(index, "w-full text-left px-3 py-2 text-sm hover:bg-surface-2"),
+                                                    // SPEC-5.77.1: click selection; SPEC-5.77.4 (onselect once per action)
                                                     onclick: move |_| {
                                                         onselect.call((id_for_click.clone(), name_for_click.clone()));
                                                         nav.close();

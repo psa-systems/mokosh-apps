@@ -15,6 +15,7 @@
 //! it, and the caller's own fallback chain runs.
 
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.32.3: an empty value reads as absent so the caller's own fallback runs.
 pub fn get(field: &str) -> Option<String> {
     use wasm_bindgen::JsValue;
 
@@ -33,6 +34,7 @@ pub fn get(field: &str) -> Option<String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.32.4
 pub fn get(field: &str) -> Option<String> {
     if let Ok(v) = std::env::var(format!("MOKOSH_{}", field.to_uppercase())) {
         if !v.is_empty() {
@@ -45,6 +47,7 @@ pub fn get(field: &str) -> Option<String> {
 /// Where a desktop user puts their `config.json`, for the message that
 /// tells them so.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.32.5
 pub fn file_path() -> Option<std::path::PathBuf> {
     Some(crate::platform::prefs::config_dir()?.join("config.json"))
 }
@@ -57,11 +60,13 @@ mod native {
     /// Read once per run. The web side reads a global the container
     /// wrote at start and never re-reads it either, so the desktop side
     /// matching that means one resolution path, not two.
+    // SPEC-3.32.6
     pub(super) fn file() -> &'static HashMap<String, String> {
         static FILE: OnceLock<HashMap<String, String>> = OnceLock::new();
         FILE.get_or_init(load)
     }
 
+    // SPEC-3.32.6, SPEC-3.32.7
     fn load() -> HashMap<String, String> {
         let Some(path) = super::file_path() else {
             tracing::warn!("no per-user config directory; using built-in defaults");

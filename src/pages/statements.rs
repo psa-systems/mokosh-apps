@@ -51,6 +51,7 @@ struct RemoteStatement {
     credit_notes: Vec<RemoteStatementCredit>,
     /// PMS-1036 (MAPPS-727): the write-offs dated in the period, taken out
     /// of the closing balance; absent from an older server.
+    // SPEC-10.47.9
     #[serde(default)]
     write_offs: Vec<RemoteStatementWriteOff>,
     #[serde(default)]
@@ -156,6 +157,7 @@ pub(crate) mod period {
 
     /// The preset keys, in the order the select offers them. `custom` is
     /// what the select shows once either date is edited by hand.
+    // SPEC-10.46.1
     pub(crate) const PRESETS: &[(&str, &str)] = &[
         ("this_month", "This month to date"),
         ("last_month", "Last month"),
@@ -166,10 +168,12 @@ pub(crate) mod period {
 
     /// The default on first load: the current month to date, whose closing
     /// balance is what is owed now.
+    // SPEC-10.45.4
     pub(crate) const DEFAULT: &str = "this_month";
 
     /// The inclusive range a preset names on `today`, or `None` for `custom`
     /// and anything unknown.
+    // SPEC-10.46.2, SPEC-10.46.3
     pub(crate) fn range(preset: &str, today: NaiveDate) -> Option<(NaiveDate, NaiveDate)> {
         let first_of_month = today.with_day(1)?;
         match preset {
@@ -193,6 +197,7 @@ pub(crate) mod period {
     /// Why the two dates cannot be sent, if they cannot. Both must parse and
     /// the end must not precede the start; the server's own validation says
     /// the same, this just says it beside the fields.
+    // SPEC-10.46.5
     pub(crate) fn error(start: &str, end: &str) -> Option<String> {
         let start = NaiveDate::parse_from_str(start.trim(), "%Y-%m-%d").ok();
         let end = NaiveDate::parse_from_str(end.trim(), "%Y-%m-%d").ok();
@@ -206,6 +211,7 @@ pub(crate) mod period {
     }
 
     /// The query string for both statement routes.
+    // SPEC-10.45.6
     pub(crate) fn query(company_id: &str, start: &str, end: &str) -> String {
         format!("company_id={company_id}&period_start={start}&period_end={end}")
     }
@@ -228,6 +234,7 @@ pub fn StatementPage() -> Element {
         .unwrap_or(false);
 
     use_page_title("Statement");
+    // SPEC-10.45.1: gate before the body so no statement request is made.
     if !has_finance {
         return rsx! { crate::pages::billing::NoFinancePermission { title: "Statement" } };
     }
@@ -239,12 +246,14 @@ pub fn StatementPage() -> Element {
 fn StatementBody() -> Element {
     // Seeded from `?company_id=` so the company page's Statement link lands
     // here already scoped; the name is resolved below for the picker.
+    // SPEC-10.45.2
     let mut company_id =
         use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut company_name = use_signal(String::new);
     let today = crate::utils::datetime::user_today();
     let (default_start, default_end) =
         period::range(period::DEFAULT, today).unwrap_or((today, today));
+    // SPEC-10.45.4
     let mut preset = use_signal(|| period::DEFAULT.to_string());
     let mut period_start = use_signal(|| period::iso(default_start));
     let mut period_end = use_signal(|| period::iso(default_end));
@@ -259,6 +268,7 @@ fn StatementBody() -> Element {
             if id.is_empty() || !company_name.read().is_empty() {
                 return;
             }
+            // SPEC-10.45.3
             let _gen = crate::hooks::fetch::active_tenant_generation();
             match crate::hooks::fetch::api::get_authed::<CompanyNameRow>(&format!(
                 "/contacts/companies/{id}"
@@ -293,6 +303,7 @@ fn StatementBody() -> Element {
         let ready = !company_text.is_empty() && period::error(&start_text, &end_text).is_none();
         let query = period::query(&company_text, &start_text, &end_text);
         async move {
+            // SPEC-10.45.6: no request until a company and a valid period exist.
             if !ready {
                 return None;
             }
@@ -325,6 +336,7 @@ fn StatementBody() -> Element {
 
     // Every hook above every early return (MAPPS-602): the title hook sits
     // here, before the outage exit below, so no render is a hook short.
+    // SPEC-10.45.9
     let header_title = match &statement {
         Some(s) => match s.company_name.as_deref().filter(|n| !n.trim().is_empty()) {
             Some(name) => format!("Statement for {name}"),
@@ -334,6 +346,7 @@ fn StatementBody() -> Element {
     };
     use_page_title(&header_title);
 
+    // SPEC-10.45.8: an outage replaces the page; otherwise the banner below shows.
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Statement".to_string() }
@@ -359,6 +372,7 @@ fn StatementBody() -> Element {
             title: "{header_title}",
             subtitle: "Your customer's account over a period: what you invoiced, what they paid, what you refunded and credited, with the balance carried in and out",
             actions: rsx! {
+                // SPEC-10.45.11
                 Link {
                     to: Route::InvoiceList {},
                     Button { variant: ButtonVariant::Secondary, "Invoices" }
@@ -366,6 +380,7 @@ fn StatementBody() -> Element {
                 // MAPPS-641: rendered now from current branding, because a
                 // statement is computed and stored nowhere (PMS-954). The
                 // artefact a client received is whatever PDF somebody sent.
+                // SPEC-10.45.10
                 if statement.is_some() {
                     crate::components::DownloadButton {
                         path: format!("/statements/pdf?{query_for_pdf}"),
@@ -378,6 +393,7 @@ fn StatementBody() -> Element {
             },
         }
 
+        // SPEC-10.45.12
         // Nothing here is issued or stored. Say so, because a document with
         // totals and a Download button reads as one that was.
         p { class: "mb-4 text-sm text-muted",
@@ -386,6 +402,7 @@ fn StatementBody() -> Element {
 
         Card { class: "mb-4",
             div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4",
+                // SPEC-10.45.5
                 crate::components::CompanyPicker {
                     value: company_name.read().clone(),
                     selected_id: picker_selected_id,
@@ -406,6 +423,7 @@ fn StatementBody() -> Element {
                     options: preset_options,
                     value: preset.read().clone(),
                     onchange: move |e: FormEvent| {
+                        // SPEC-10.46.2, SPEC-10.46.3
                         let key = e.value();
                         if let Some((start, end)) = period::range(&key, today) {
                             period_start.set(period::iso(start));
@@ -420,6 +438,7 @@ fn StatementBody() -> Element {
                     required: true,
                     value: period_start.read().clone(),
                     oninput: move |e: FormEvent| {
+                        // SPEC-10.46.4
                         period_start.set(e.value());
                         preset.set("custom".to_string());
                     },
@@ -428,9 +447,11 @@ fn StatementBody() -> Element {
                     name: "statement_period_end",
                     label: "To",
                     required: true,
+                    // SPEC-10.46.6
                     error: period_err.clone().unwrap_or_default(),
                     value: period_end.read().clone(),
                     oninput: move |e: FormEvent| {
+                        // SPEC-10.46.4
                         period_end.set(e.value());
                         preset.set("custom".to_string());
                     },
@@ -441,10 +462,12 @@ fn StatementBody() -> Element {
         if !act_err.is_empty() {
             ErrorBanner { class: "mb-3", "{act_err}" }
         }
+        // SPEC-10.45.8
         if fetch_failed {
             ErrorBanner { class: "mb-3", "Could not load the statement. Check the period and try again." }
         }
 
+        // SPEC-10.45.5, SPEC-10.45.7
         if company_text.is_empty() {
             Card {
                 div { class: "py-10 text-center",
@@ -468,12 +491,14 @@ fn StatementDocument(statement: RemoteStatement) -> Element {
     let refunded = format_money_str(&s.total_refunded);
     let paid = format_money_str(&s.total_paid);
     let credited = format_money_str(&s.total_credited);
+    // SPEC-10.47.3
     let written_off = format_money_str(if s.total_written_off.is_empty() {
         "0"
     } else {
         &s.total_written_off
     });
     let closing = format_money_str(&s.closing_balance);
+    // SPEC-10.47.1
     let period_label = format!("{} to {}", s.period_start, s.period_end);
     let quiet = s.invoices.is_empty()
         && s.payments.is_empty()
@@ -486,6 +511,7 @@ fn StatementDocument(statement: RemoteStatement) -> Element {
             // The identity the server tests, as one sum. Signs are spelled
             // out so a reader can add it up: a refund puts money back on the
             // account, a credit takes it off.
+            // SPEC-10.47.2
             Card { title: "Balance",
                 p { class: "mb-4 text-sm text-muted", "{period_label}" }
                 if quiet {
@@ -527,6 +553,7 @@ fn StatementDocument(statement: RemoteStatement) -> Element {
                 }
             }
 
+            // SPEC-10.47.4
             Card { title: "Invoices", class: "overflow-x-auto",
                 Table {
                     TableHead {
@@ -567,6 +594,7 @@ fn StatementDocument(statement: RemoteStatement) -> Element {
                 }
             }
 
+            // SPEC-10.47.5
             Card { title: "Payments", class: "overflow-x-auto",
                 Table {
                     TableHead {
@@ -596,6 +624,7 @@ fn StatementDocument(statement: RemoteStatement) -> Element {
                 }
             }
 
+            // SPEC-10.47.6
             Card { title: "Refunds", class: "overflow-x-auto",
                 Table {
                     TableHead {
@@ -621,6 +650,7 @@ fn StatementDocument(statement: RemoteStatement) -> Element {
                 }
             }
 
+            // SPEC-10.47.7
             Card { title: "Credit Notes", class: "overflow-x-auto",
                 Table {
                     TableHead {
@@ -660,6 +690,7 @@ fn StatementDocument(statement: RemoteStatement) -> Element {
 
             // PMS-1036 (MAPPS-727): what was let go in the period, as its
             // own section the way the PDF prints it.
+            // SPEC-10.47.8
             Card { title: "Write-offs", class: "overflow-x-auto",
                 Table {
                     TableHead {
@@ -700,6 +731,7 @@ fn StatementDocument(statement: RemoteStatement) -> Element {
 
 /// A cell that shows a subtle dash for a missing value, the way the invoice
 /// list does, so an empty reference does not read as a rendering slip.
+// SPEC-10.47.5, SPEC-10.47.6, SPEC-10.47.7
 fn dash_if_empty(value: Option<&str>) -> Element {
     match value.map(str::trim).filter(|v| !v.is_empty()) {
         Some(v) => rsx! { "{v}" },

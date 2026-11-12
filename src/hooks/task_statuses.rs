@@ -10,6 +10,7 @@
 
 use dioxus::prelude::*;
 
+// SPEC-4.39.1: one path constant shared by the list and the admin calls.
 /// `GET /task-statuses` and its admin-table create/update/delete calls all
 /// target this path.
 pub const ENDPOINT: &str = "/task-statuses";
@@ -18,6 +19,7 @@ pub const ENDPOINT: &str = "/task-statuses";
 /// former `projects::RemoteTaskStatus`.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
 pub struct TaskStatusRow {
+    // SPEC-4.39.1: id is required; name and is_completed default.
     pub id: uuid::Uuid,
     #[serde(default)]
     pub name: String,
@@ -28,6 +30,7 @@ pub struct TaskStatusRow {
 /// Provide the shared task-statuses list at the App root (MAPPS-1001: see
 /// [`crate::hooks::shared_list`]).
 pub fn use_task_statuses_provider() {
+    // SPEC-4.39.5: provider mounted at the App root.
     crate::hooks::shared_list::use_shared_list_provider::<TaskStatusRow>("task statuses", ENDPOINT);
 }
 

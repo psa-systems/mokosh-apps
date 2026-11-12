@@ -15,6 +15,7 @@ use crate::Route;
 /// mirror a payload nothing consumed, and keeping them now would mean inventing
 /// four values per row.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+// SPEC-4.1.14: only the two ids/names are required; the grant id is optional.
 pub struct MembershipView {
     pub tenant_id: String,
     pub tenant_name: String,
@@ -46,6 +47,7 @@ pub struct MembershipView {
 /// facts apart is what lets the shell wait for the answer instead of asserting
 /// one it never asked for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+// SPEC-4.1.17: the three states and the default.
 pub enum SessionConfirmation {
     /// Nothing is outstanding: nobody is signed in, this page lifetime
     /// performed the sign-in itself, or a rotation / `/api/v1/auth/me` has
@@ -61,6 +63,7 @@ pub enum SessionConfirmation {
 
 /// Authentication context for the application
 #[derive(Clone, Default)]
+// SPEC-4.1.1: Default is the signed-out, confirmed context.
 pub struct AuthContext {
     pub user: Option<CurrentUser>,
     pub is_loading: bool,
@@ -101,6 +104,7 @@ pub struct AuthContext {
 
 impl AuthContext {
     /// Check if user is authenticated
+    // SPEC-4.1.2: a user is the only signal.
     pub fn is_authenticated(&self) -> bool {
         self.user.is_some()
     }
@@ -114,11 +118,13 @@ impl AuthContext {
     /// shows the loading state before it ever reads
     /// [`Self::is_authenticated`]; this names the same rule so it can be
     /// asserted without a browser.
+    // SPEC-4.1.3: loading holds the signed-in shell back.
     pub fn may_render_signed_in(&self) -> bool {
         self.is_authenticated() && !self.is_loading
     }
 
     /// Check if user has a specific role
+    // SPEC-4.1.4: exact role match, false without a user.
     pub fn has_role(&self, role: UserRole) -> bool {
         self.user.as_ref().is_some_and(|u| u.role == role)
     }
@@ -127,6 +133,7 @@ impl AuthContext {
     /// privileges" (admin OR super_admin). Mirrors the pattern used by
     /// every existing admin-gated page (audit_log.rs, sla.rs, settings.rs)
     /// that manually walks `.user.as_ref().map(|u| u.role.is_admin())`.
+    // SPEC-4.1.5: admin-tier roles only.
     pub fn is_admin(&self) -> bool {
         self.user.as_ref().is_some_and(|u| u.role.is_admin())
     }
@@ -136,6 +143,7 @@ impl AuthContext {
     /// not [`Self::is_admin`], to gate a control whose server route is
     /// `RequireManager` rather than `RequireAdmin`: `is_admin` wrongly
     /// excludes `manager`, which `RequireManager` allows.
+    // SPEC-4.1.6: manager floor, wider than is_admin.
     pub fn can_manage(&self) -> bool {
         self.user
             .as_ref()
@@ -145,6 +153,7 @@ impl AuthContext {
     /// PMS-791 / MAPPS-462: true when the caller's tenant is a
     /// multi-user org tenant. Empty tenant_kind (older server) reads as
     /// org (fail-open UI; server still gates the actual endpoints).
+    // SPEC-4.1.7: an empty kind (or no user) reads as org.
     pub fn is_org_tenant(&self) -> bool {
         let kind = self
             .user
@@ -156,6 +165,7 @@ impl AuthContext {
 
     /// PMS-791 / MAPPS-462: strict "personal tenant" check; only true
     /// when tenant_kind is explicitly "personal".
+    // SPEC-4.1.8: strict match on "personal".
     pub fn is_personal_tenant(&self) -> bool {
         self.user
             .as_ref()
@@ -166,6 +176,7 @@ impl AuthContext {
     /// pull a display-ready tenant name or role for the current scope
     /// without re-walking the membership list. None before sign-in or
     /// while memberships are still loading.
+    // SPEC-4.1.9: match on the string form of the active tenant id.
     pub fn active_membership(&self) -> Option<&MembershipView> {
         let active = self.active_tenant_id?;
         let active_str = active.to_string();
@@ -175,6 +186,7 @@ impl AuthContext {
     /// Display name for the active org, or `None` when there isn't one
     /// to show (pre-login, mid-bootstrap, or active tenant somehow
     /// missing from memberships).
+    // SPEC-4.1.10: name of the active membership, else none.
     pub fn active_org_name(&self) -> Option<&str> {
         self.active_membership().map(|m| m.tenant_name.as_str())
     }
@@ -201,14 +213,17 @@ impl AuthContext {
     /// here means the response was not what it claimed, and the previous name is
     /// a better answer than none.
     pub fn set_active_org_name(&mut self, name: &str) -> bool {
+        // SPEC-4.1.11: trimmed-empty names change nothing.
         let name = name.trim();
         if name.is_empty() {
             return false;
         }
+        // SPEC-4.1.12: no active tenant or no matching row means no change and no new row.
         let Some(active) = self.active_tenant_id.map(|id| id.to_string()) else {
             return false;
         };
         match self.memberships.iter_mut().find(|m| m.tenant_id == active) {
+            // SPEC-4.1.13: only the active tenant's row is renamed.
             Some(m) => {
                 m.tenant_name = name.to_string();
                 true
@@ -219,6 +234,7 @@ impl AuthContext {
 }
 
 /// Hook to access authentication state
+// SPEC-4.1.15: the shared context signal.
 pub fn use_auth() -> Signal<AuthContext> {
     use_context::<Signal<AuthContext>>()
 }
@@ -230,6 +246,7 @@ pub fn use_require_auth() -> Signal<AuthContext> {
 
     use_effect(move || {
         let auth_state = auth.read();
+        // SPEC-4.1.16: redirect only once loading has finished.
         if !auth_state.is_loading && !auth_state.is_authenticated() {
             navigator.push(Route::Login {});
         }
@@ -247,6 +264,7 @@ pub fn use_require_auth() -> Signal<AuthContext> {
 /// get its answer at mount, not up to 30 seconds later, and it holds the
 /// signed-in shell back until it has one.
 pub fn use_auth_provider() -> Signal<AuthContext> {
+    // SPEC-4.3.1: confirmation starts with the app, not with a poll tick.
     let auth = use_signal(initial_auth_context);
     use_context_provider(|| auth);
     let mut confirming = auth;
@@ -269,6 +287,7 @@ pub fn use_auth_provider() -> Signal<AuthContext> {
 /// shipped artifact.
 #[cfg(all(debug_assertions, feature = "dev_admin_bypass"))]
 fn initial_auth_context() -> AuthContext {
+    // SPEC-4.2.2: dev-only bypass, compiled out of shipped artifacts.
     match (option_env!("ADMIN_EMAIL"), option_env!("ADMIN_PASSWORD")) {
         (Some(email), Some(password)) if !email.is_empty() && !password.is_empty() => AuthContext {
             user: Some(CurrentUser {
@@ -310,6 +329,7 @@ fn initial_auth_context() -> AuthContext {
 
 #[cfg(not(all(debug_assertions, feature = "dev_admin_bypass")))]
 fn initial_auth_context() -> AuthContext {
+    // SPEC-4.2.1: OIDC bundle, then standalone session, then signed out.
     rehydrate_from_storage()
         .or_else(rehydrate_standalone)
         .unwrap_or_default()
@@ -354,6 +374,7 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
     use crate::modules::oidc::storage::load_auth;
     use crate::modules::oidc::Tokens;
 
+    // SPEC-4.2.3: no bundle or unparseable id_token falls through to the next source.
     let stored = load_auth()?;
     let tokens = Tokens {
         access_token: stored.access_token,
@@ -362,6 +383,7 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
         expires_at: stored.expires_at,
         scope: stored.scope,
     };
+    // SPEC-4.2.4: identity claims seed the user; /me fills the rest later.
     let claims = tokens.id_claims().ok()?;
     let (user_id, home_tenant) =
         match identity_from_claims(&claims.sub, claims.tenant_id.as_deref()) {
@@ -386,7 +408,9 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
     // MAPPS-661: a bundle whose access token is spent (or nearly) is the
     // discarded-tab case, and nothing signed-in renders until the confirmation
     // answers.
+    // SPEC-4.2.8: spent or near-spent token holds the render.
     let awaiting_confirmation = confirmation_gates_render(tokens.expires_at, chrono::Utc::now());
+    // SPEC-4.2.6: the fetch layer gets the stored bearer.
     crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
     Some(AuthContext {
         user: Some(CurrentUser {
@@ -418,6 +442,7 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
         // `AuthGuard` shows it before it reads `is_authenticated`, so a
         // restored tab with a spent token waits for the answer instead of
         // presenting a shell it has not confirmed.
+        // SPEC-4.2.5: tokens held, memberships empty, /me not yet landed.
         is_loading: awaiting_confirmation,
         error: None,
         tokens: Some(tokens),
@@ -444,10 +469,13 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
 fn rehydrate_standalone() -> Option<AuthContext> {
     use crate::modules::oidc::storage::load_standalone;
 
+    // SPEC-4.2.7: the stored user is used unchanged; no OIDC tokens.
     let stored = load_standalone()?;
     let active_tenant_id = Some(stored.user.tenant_id);
     // MAPPS-661: same gate as the OIDC path above, for the same reason.
+    // SPEC-4.2.8: same render gate as the OIDC path.
     let awaiting_confirmation = confirmation_gates_render(stored.expires_at, chrono::Utc::now());
+    // SPEC-4.2.6: the fetch layer gets the stored bearer.
     crate::hooks::fetch::api::set_access_token(Some(stored.access_token.clone()));
     Some(AuthContext {
         user: Some(stored.user),
@@ -474,6 +502,7 @@ fn rehydrate_standalone() -> Option<AuthContext> {
 /// issued by the OP moments ago, which is confirmation enough to render while
 /// `/api/v1/auth/me` catches up. That is what keeps ordinary navigation free
 /// of a spinner.
+// SPEC-4.2.8: 60 s window, inclusive.
 const CONFIRMATION_WINDOW_SECS: i64 = 60;
 
 /// Does a restored bundle expiring at `expires_at` have to be confirmed before
@@ -482,6 +511,7 @@ fn confirmation_gates_render(
     expires_at: chrono::DateTime<chrono::Utc>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> bool {
+    // SPEC-4.2.8, SPEC-4.3.4: inclusive 60 s boundary.
     expires_at - now <= chrono::Duration::seconds(CONFIRMATION_WINDOW_SECS)
 }
 
@@ -514,6 +544,7 @@ fn confirmation_gates_render(
 ///   outcome, and a 401 there ends the session through the fetch layer. No
 ///   renewal ran here to tie a second reconcile to.
 async fn confirm_restored_session(auth: &mut Signal<AuthContext>) {
+    // SPEC-4.3.2: only an unconfirmed restore needs asking.
     if auth.peek().confirmation != SessionConfirmation::Unconfirmed {
         return;
     }
@@ -523,16 +554,20 @@ async fn confirm_restored_session(auth: &mut Signal<AuthContext>) {
         // no question left to ask, so release the gate rather than hold the
         // user on a loading screen forever; the first request to 401 ends the
         // session through the fetch layer.
+        // SPEC-4.3.3: release the gate with a logged warning.
         release_render_gate(auth, "there is no persisted session to confirm");
         return;
     };
+    // SPEC-4.3.4: a comfortably valid token waits for the /me answer instead.
     if !confirmation_gates_render(expires_at, chrono::Utc::now()) {
         return;
     }
     // Which session kind this is decides which store the failure branch must
     // clear. `renew_access_token` prefers the OIDC bundle for the same reason.
     let standalone = crate::modules::oidc::storage::load_auth().is_none();
+    // SPEC-4.3.5: the shared single-flight renewal is the only vehicle.
     match crate::hooks::fetch::api::renew_access_token().await {
+        // SPEC-4.3.6: success mirrors (OIDC only), confirms, then reconciles /me.
         Ok(()) => {
             // A standalone session keeps `tokens: None` by design (there is no
             // OIDC bundle to mirror), so only the OIDC path has a copy to
@@ -546,6 +581,7 @@ async fn confirm_restored_session(auth: &mut Signal<AuthContext>) {
             // land next.
             refresh_user_from_me(auth).await;
         }
+        // SPEC-4.3.7: a dead grant ends the session of the matching kind.
         Err(e) if renewal_is_unrecoverable(&e) => {
             if standalone {
                 end_standalone_session(auth, &e);
@@ -556,12 +592,14 @@ async fn confirm_restored_session(auth: &mut Signal<AuthContext>) {
         // Same policy as the loops (MAPPS-645): a network-shaped failure is not
         // evidence the session ended, and signing the user out over a blip is
         // worse than the one 401 that follows.
+        // SPEC-4.3.8: any other failure keeps the session and logs.
         Err(e) => release_render_gate(auth, &e),
     }
 }
 
 /// Record that the OP has answered for this session in this page lifetime, and
 /// release the render gate the unconfirmed state was holding.
+// SPEC-4.3.9: the one helper that moves a session to confirmed (SPEC-4.3.11).
 fn mark_session_confirmed(auth: &mut Signal<AuthContext>) {
     let mut a = auth.write();
     a.confirmation = SessionConfirmation::Confirmed;
@@ -577,6 +615,7 @@ fn mark_session_confirmed(auth: &mut Signal<AuthContext>) {
 /// a session that really is over. Holding the loading screen instead would
 /// strand a live session behind one failed request.
 fn release_render_gate(auth: &mut Signal<AuthContext>, cause: &str) {
+    // SPEC-4.3.3, SPEC-4.3.8: suppression is logged and leaves the state Unconfirmed.
     tracing::warn!("could not confirm the restored session, rendering it anyway: {cause}");
     auth.write().is_loading = false;
 }
@@ -589,6 +628,7 @@ fn release_render_gate(auth: &mut Signal<AuthContext>, cause: &str) {
 /// reuse detection answers by killing the grant.
 ///
 /// Only for OIDC sessions; a standalone one holds no `tokens` to mirror.
+// SPEC-4.3.10: the store is the source of truth for the rotated bundle.
 fn mirror_rotated_bundle(auth: &mut Signal<AuthContext>) {
     match crate::modules::oidc::storage::load_auth() {
         Some(fresh) => {
@@ -633,6 +673,7 @@ fn mirror_rotated_bundle(auth: &mut Signal<AuthContext>) {
 pub fn use_memberships_loader() {
     let mut auth = use_auth();
     use_effect(move || {
+        // SPEC-4.6.9: runs once per unloaded, authenticated session.
         let needs_load = {
             let a = auth.read();
             a.is_authenticated() && !a.memberships_loaded
@@ -650,12 +691,14 @@ pub fn use_memberships_loader() {
                 )
                 .await
                 {
+                    // SPEC-4.6.9: a populated list wins outright.
                     Ok(list) if !list.is_empty() => {
                         let mut a = auth.write();
                         a.memberships = list;
                         a.memberships_loaded = true;
                         return;
                     }
+                    // SPEC-4.6.10: empty and failed reads both fall back to the tenant row.
                     Ok(_) => {
                         tracing::debug!(
                             "mokosh /auth/memberships returned no rows; \
@@ -685,7 +728,9 @@ pub fn use_memberships_loader() {
                     #[serde(default)]
                     name: String,
                 }
+                // SPEC-4.6.13: the name comes from the server's own tenant row only.
                 match crate::hooks::fetch::api::get_authed::<TenantView>("/tenants/current").await {
+                    // SPEC-4.6.11: a named tenant becomes the single membership row.
                     Ok(t) if !t.name.trim().is_empty() => {
                         // MAPPS-1238: a row with an id that is not a UUID used
                         // to be stored while the active tenant silently kept
@@ -713,6 +758,7 @@ pub fn use_memberships_loader() {
                         }];
                         a.memberships_loaded = true;
                     }
+                    // SPEC-4.6.12: no name or a failure leaves the list empty, attempt recorded.
                     Ok(_) => {
                         tracing::warn!("organisation load returned no name; leaving it unset");
                         auth.write().memberships_loaded = true;
@@ -725,6 +771,7 @@ pub fn use_memberships_loader() {
             }
             #[cfg(not(feature = "web"))]
             {
+                // SPEC-4.6.15: no request outside web builds.
                 auth.write().memberships_loaded = true;
             }
         });
@@ -734,6 +781,7 @@ pub fn use_memberships_loader() {
 /// Historical name used by `src/main.rs` and older doc comments. Kept as an
 /// alias so the mid-merge boot path keeps compiling; delegates straight to
 /// [`use_memberships_loader`].
+// SPEC-4.6.16: alias for use_memberships_loader.
 pub fn use_active_org_loader() {
     use_memberships_loader();
 }
@@ -768,6 +816,7 @@ pub fn use_token_refresh() {
     // failure we fall back to a hard `window.location` redirect to
     // `/login`. Same end result for the user.
 
+    // SPEC-4.4.1: evaluate first, wait last.
     use_future(move || async move {
         crate::platform::dom::watch_visibility();
         loop {
@@ -784,6 +833,7 @@ pub fn use_token_refresh() {
 
 /// How long a poll tick waits before re-evaluating, when nothing wakes it.
 #[cfg(feature = "app")]
+// SPEC-4.4.2: 30 s between ticks when nothing wakes the loop.
 const POLL_INTERVAL_MS: u32 = 30_000;
 
 /// Wait for the next scheduled tick, or for the app to come back to the
@@ -795,6 +845,7 @@ const POLL_INTERVAL_MS: u32 = 30_000;
 /// only re-entering the same race. Both arms mean the same thing to the
 /// caller, "evaluate now", so there is no outcome to inspect.
 #[cfg(feature = "app")]
+// SPEC-4.4.2: earlier of the timer and a return to the foreground.
 async fn sleep_or_wake(ms: u32) {
     let sleep = std::pin::pin!(crate::platform::timer::sleep_ms(ms));
     let wake = std::pin::pin!(crate::platform::dom::visible_again());
@@ -814,6 +865,7 @@ async fn sleep_or_wake(ms: u32) {
 fn renewal_is_unrecoverable(err: &str) -> bool {
     // Refused before it reached the wire: there is nothing to renew from and
     // there never will be.
+    // SPEC-4.4.9: only a dead grant is unrecoverable; unknown text is transient.
     if err.contains("carries no refresh token") || err.contains("no persisted session to renew") {
         return true;
     }
@@ -842,6 +894,7 @@ fn renewal_is_unrecoverable(err: &str) -> bool {
 /// The one place that branch lives, so the wake-triggered evaluation and the
 /// scheduled one end a dead session identically.
 fn end_oidc_session(auth: &mut Signal<AuthContext>, cause: &str) {
+    // SPEC-4.5.1: state, storage and redirect are all cleared together.
     tracing::warn!("token refresh failed unrecoverably; signing out: {cause}");
     {
         let mut a = auth.write();
@@ -860,6 +913,7 @@ fn end_oidc_session(auth: &mut Signal<AuthContext>, cause: &str) {
 
 /// The standalone (non-OIDC) equivalent of [`end_oidc_session`].
 fn end_standalone_session(auth: &mut Signal<AuthContext>, cause: &str) {
+    // SPEC-4.5.2: standalone twin of the OIDC sign-out.
     tracing::warn!("standalone token refresh failed unrecoverably; signing out: {cause}");
     {
         let mut a = auth.write();
@@ -887,6 +941,7 @@ async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
         Some(s) => s,
         None => return, // not signed in through OIDC, nothing to do
     };
+    // SPEC-4.4.3, SPEC-4.4.4: the persisted bundle decides, and only inside the 60 s window.
     // Refresh window: 60s before expiry. If we already missed it (clock jump /
     // tab was backgrounded), refresh now.
     let now = chrono::Utc::now();
@@ -898,6 +953,7 @@ async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
     // there is nothing to do; once it is spent the session cannot come back,
     // so end it here rather than leave the user on a page whose every request
     // 401s until something else notices.
+    // SPEC-4.4.5: no refresh token ends the session only once the access token is spent.
     if stored.refresh_token.is_none() {
         if stored.expires_at <= now {
             end_oidc_session(auth, "the stored OIDC session carries no refresh token");
@@ -907,6 +963,7 @@ async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
 
     // Renewal itself lives in the fetch layer so a tick and a request-time
     // renewal that coincide share one flight (MAPPS-435).
+    // SPEC-4.4.6: success mirrors, confirms and reconciles /me.
     match crate::hooks::fetch::api::renew_access_token().await {
         Ok(()) => {
             // Mirror the rotated bundle into the context so its copy does not
@@ -927,6 +984,7 @@ async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
             // cleared so the membership-loader effect re-runs.
             refresh_user_from_me(auth).await;
         }
+        // SPEC-4.4.7: dead grant signs out; anything else is logged and retried next tick.
         Err(e) if renewal_is_unrecoverable(&e) => end_oidc_session(auth, &e),
         // MAPPS-645: a wake-triggered tick runs the moment the tab is
         // foregrounded, which is where a network-shaped failure is most
@@ -955,6 +1013,7 @@ async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
 /// session and retries (MAPPS-645).
 pub fn use_standalone_token_refresh() {
     let mut auth = use_auth();
+    // SPEC-4.4.1: evaluate first, wait last.
 
     use_future(move || async move {
         crate::platform::dom::watch_visibility();
@@ -972,6 +1031,7 @@ pub fn use_standalone_token_refresh() {
 async fn standalone_refresh_tick(auth: &mut Signal<AuthContext>) {
     // An OIDC session is the loop above's business, and the shared renewal
     // prefers the OIDC bundle, so bail before reaching for it.
+    // SPEC-4.4.8: standalone ticks skip when an OIDC bundle exists, mirroring the OIDC window rules.
     if crate::modules::oidc::storage::load_auth().is_some() {
         return;
     }
@@ -989,6 +1049,7 @@ async fn standalone_refresh_tick(auth: &mut Signal<AuthContext>) {
     // MAPPS-645: a standalone session with no refresh token cannot be renewed.
     // Same policy as the OIDC tick above: nothing to do while the access token
     // is still good, sign out once it is spent.
+    // SPEC-4.4.8: same no-refresh-token rule as the OIDC tick.
     if session.refresh_token.is_none() {
         if session.expires_at <= now {
             end_standalone_session(
@@ -1004,6 +1065,7 @@ async fn standalone_refresh_tick(auth: &mut Signal<AuthContext>) {
     match crate::hooks::fetch::api::renew_access_token().await {
         // MAPPS-661: the server honoured the refresh token, so the session
         // behind it exists.
+        // SPEC-4.4.8: confirm on success, sign out on a dead grant, else log and retry.
         Ok(()) => mark_session_confirmed(auth),
         Err(e) if renewal_is_unrecoverable(&e) => end_standalone_session(auth, &e),
         // MAPPS-645: transient, for the reason given on the OIDC tick.
@@ -1041,6 +1103,7 @@ async fn standalone_refresh_tick(auth: &mut Signal<AuthContext>) {
 /// goes through `get_authed_typed`, so it renews a spent bearer on the way
 /// out and the generation bump re-drives every mounted resource with it.
 pub fn use_auth_heartbeat() {
+    // SPEC-4.4.1: evaluate first, wait last.
     use_future(move || async move {
         crate::platform::dom::watch_visibility();
         loop {
@@ -1057,6 +1120,7 @@ pub fn use_auth_heartbeat() {
 async fn heartbeat_tick() {
     #[cfg(feature = "app")]
     {
+        // SPEC-4.7.1: skip when the overlay is up, nobody is signed in, or the tab is hidden.
         if *crate::hooks::fetch::ACCOUNT_DELETED.peek() {
             return;
         }
@@ -1066,6 +1130,7 @@ async fn heartbeat_tick() {
         if tab_is_hidden() {
             return;
         }
+        // SPEC-4.7.2: the response body is unused; the fetch layer owns 401 and 410.
         // The fetch layer handles the 410 case (flips ACCOUNT_DELETED) and,
         // since MAPPS-435, the 401 case (renew, else clear the session and
         // redirect). MAPPS-1238: anything else used to vanish; it is logged
@@ -1101,6 +1166,7 @@ fn log_heartbeat_failure(e: &crate::hooks::fetch::api::ApiError) {
 /// the `app` feature.
 #[cfg(feature = "app")]
 fn tab_is_hidden() -> bool {
+    // SPEC-4.7.3: platform hidden state in app builds.
     crate::platform::dom::window_hidden()
 }
 
@@ -1119,6 +1185,7 @@ fn tab_is_hidden() -> bool {
 /// with it. MAPPS-504: a desktop window has no document to replace, and
 /// the cleared context is what moves it.
 fn redirect_to_login() {
+    // SPEC-4.5.3: browser builds hard-navigate; other builds rely on the cleared context.
     // `/client/login` is the MAPPS-518 tenant URL. Since MAPPS-520 the
     // router's `/login` is the unified page for both personas and
     // `/client/login` is a legacy stub (`ClientLoginLegacy`) that forwards
@@ -1147,6 +1214,7 @@ struct MeBody {
     // `false` until the user confirms first + last name via the
     // onboarding screen. Default `true` for backwards-compat with
     // older server builds.
+    // SPEC-4.6.1: required and defaulted fields of the /me body.
     #[serde(default = "default_true_me")]
     profile_completed: bool,
     #[serde(default)]
@@ -1180,14 +1248,17 @@ fn default_true_me() -> bool {
 /// here. An unrecognized value is handled explicitly (warn + keep the current
 /// role) rather than silently coerced to the Technician default (PMS-158).
 fn apply_me_response(user: &mut CurrentUser, me: MeBody) {
+    // SPEC-4.6.3: id changes only when it parses.
     if let Ok(id) = me.id.parse::<uuid::Uuid>() {
         user.id = id;
     }
+    // SPEC-4.6.2: remaining fields are overwritten from the response.
     user.email = me.email;
     user.first_name = me.first_name.unwrap_or_default();
     user.last_name = me.last_name.unwrap_or_default();
     user.timezone = me.timezone;
     user.avatar_url = me.avatar_url;
+    // SPEC-4.6.4: an unrecognised role keeps the cached one and warns.
     match crate::modules::auth::UserRole::from_str(&me.role) {
         Some(role) => user.role = role,
         None => tracing::warn!(
@@ -1216,6 +1287,7 @@ fn apply_me_response(user: &mut CurrentUser, me: MeBody) {
 ///
 /// Best-effort: on error we leave the cached user as-is.
 async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
+    // SPEC-4.6.5: a standalone 401 ends the session here; an OIDC 401 is the fetch layer's.
     let me = match crate::hooks::fetch::api::get_authed_typed::<MeBody>("/auth/me").await {
         Ok(m) => m,
         // MAPPS-368: a 401 with no refreshable token is an expired standalone
@@ -1247,11 +1319,13 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
             // alone; a restored context stays Unconfirmed and the loops (or
             // the next 401) decide. The render gate is released here because
             // one failed /me must not strand a live session on a spinner.
+            // SPEC-4.6.6: keep the cached user, release the gate, log the cause.
             tracing::warn!("/api/v1/auth/me failed; keeping cached user: {e:?}");
             auth.write().is_loading = false;
             return;
         }
     };
+    // SPEC-4.6.7: merge, then flip the gates and force the org loader to run again.
     let mut a = auth.write();
     if let Some(u) = a.user.as_mut() {
         apply_me_response(u, me);
@@ -1272,6 +1346,7 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
     // the session. Clearing the flag rather than the list, because the effect
     // keys off the flag: an empty list is a legitimate outcome (the load
     // failed), not a signal to retry on every render.
+    // SPEC-4.6.14: the only place the loaded flag is cleared.
     a.memberships.clear();
     a.memberships_loaded = false;
 }
@@ -1290,6 +1365,7 @@ pub fn use_current_user_loader() {
     let mut auth = use_auth();
     let mut loaded = use_signal(|| false);
     use_effect(move || {
+        // SPEC-4.6.8: one fetch per mount once authenticated.
         if !auth.read().is_authenticated() || *loaded.peek() {
             return;
         }
@@ -1331,6 +1407,7 @@ pub fn use_bfcache_invalidator() {
                     .ok()
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+            // SPEC-4.5.5: only a bfcache restore reloads the page.
             if persisted {
                 crate::platform::location::reload();
             }
@@ -1368,6 +1445,7 @@ pub fn use_bfcache_invalidator() {}
 pub fn use_session_end_watch() {
     let mut auth = use_auth();
     use_effect(move || {
+        // SPEC-4.5.4: desktop only; clear the context and lower the one-shot flag.
         if !*crate::hooks::fetch::SESSION_ENDED.read() {
             return;
         }
@@ -1521,6 +1599,7 @@ mod tests {
     /// an effect that needs a browser; what is being pinned is which endpoint it
     /// reaches for, and that is visible in the source.
     #[test]
+    // SPEC-4.6.13: source scan pinning the org-name endpoint.
     fn the_org_name_is_read_from_mokosh_not_the_issuer() {
         assert!(
             production_src().contains("get_authed::<TenantView>(\"/tenants/current\")"),
@@ -1616,6 +1695,7 @@ mod tests {
     /// above: both writers of `tenants.name` live in pages that need a browser,
     /// so what is pinned here is the thing this file owns.
     #[test]
+    // SPEC-4.6.14: the loaded flag is cleared in exactly one place.
     fn a_rename_refreshes_the_cache_rather_than_re_running_the_loader() {
         let src = production_src();
         assert!(
@@ -1644,6 +1724,7 @@ mod tests {
     /// stale, and every page that mounts in that window 401s. The condition
     /// therefore has to be evaluated once at mount, before any sleep.
     #[test]
+    // SPEC-4.19.3: three loops, each evaluating before its first wait.
     fn the_auth_loops_evaluate_before_they_sleep() {
         let mut loops = 0;
         for segment in production_src().split("loop {").skip(1) {
@@ -1670,6 +1751,7 @@ mod tests {
     /// of that sleep runs out. Every loop therefore waits on the wake-aware
     /// sleep, and the raw timer is reached from exactly one place.
     #[test]
+    // SPEC-4.19.3: every loop waits on sleep_or_wake and installs the listener.
     fn the_auth_loops_wake_when_the_app_returns_to_the_foreground() {
         let src = production_src();
         assert_eq!(
@@ -1999,6 +2081,7 @@ mod tests {
     /// this pins the two properties that make `is_loading` the gate: the
     /// branch exists, and it is reached BEFORE the authenticated one.
     #[test]
+    // SPEC-4.2.9: the guard's loading branch precedes its authenticated branch.
     fn the_route_guard_shows_the_loading_state_before_it_reads_the_session() {
         const LIB_SRC: &str = include_str!("../lib.rs");
         let guard = LIB_SRC

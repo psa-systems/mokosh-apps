@@ -14,6 +14,7 @@
 use crate::modules::theme::accents;
 use crate::utils::prefs;
 
+// SPEC-4.42.1 / SPEC-4.42.6: stable preference keys; renaming resets every user.
 const THEME_KEY: &str = "mokosh_theme";
 const ACCENT_KEY: &str = "mokosh_accent";
 
@@ -37,6 +38,7 @@ impl Theme {
     }
 
     pub fn parse(s: &str) -> Self {
+        // SPEC-4.42.2: anything but light/dark parses as system.
         match s {
             "light" => Self::Light,
             "dark" => Self::Dark,
@@ -47,12 +49,14 @@ impl Theme {
 
 /// Read the current preference. Defaults to `System` when unset.
 pub fn current() -> Theme {
+    // SPEC-4.42.1: unset reads as system.
     Theme::parse(&prefs::get_str(THEME_KEY, Theme::default().as_str()))
 }
 
 /// Persist `theme` and immediately re-apply the resolved class to
 /// `<html>` so the UI flips without a reload.
 pub fn set(theme: Theme) {
+    // SPEC-4.42.3: persist, then apply at once without a reload.
     prefs::set_str(THEME_KEY, theme.as_str());
     apply_now();
 }
@@ -60,12 +64,14 @@ pub fn set(theme: Theme) {
 /// Read the current accent preference. Falls back to the default accent
 /// when unset, on a non-`app` build, or when the stored id is unknown.
 pub fn current_accent() -> &'static accents::Accent {
+    // SPEC-4.42.6: unset or unknown ids resolve to the default accent.
     accents::resolve(&prefs::get_str(ACCENT_KEY, accents::DEFAULT_ACCENT_ID))
 }
 
 /// Persist the accent by id and immediately re-apply so the whole app
 /// recolors without a reload. Unknown ids resolve to the default on read.
 pub fn set_accent(id: &str) {
+    // SPEC-4.42.7: the id is stored as given and validated only on read.
     prefs::set_str(ACCENT_KEY, id);
     apply_now();
 }
@@ -80,6 +86,7 @@ pub fn current_is_dark() -> bool {
 /// Resolve which palette to actually show right now: explicit `Light`
 /// / `Dark` pass through; `System` reads `prefers-color-scheme: dark`.
 fn resolved_is_dark(theme: Theme) -> bool {
+    // SPEC-4.42.4: explicit modes win; system follows the OS query.
     match theme {
         Theme::Light => false,
         Theme::Dark => true,
@@ -102,6 +109,7 @@ fn system_prefers_dark() -> bool {
 /// script in the webview on the desktop.
 pub fn apply_now() {
     let is_dark = resolved_is_dark(current());
+    // SPEC-4.42.5: the dark class on the root follows the resolved mode.
     crate::platform::dom::set_root_dark(is_dark);
     apply_accent(is_dark);
 }
@@ -127,6 +135,7 @@ fn apply_accent(is_dark: bool) {
         "--accent-900",
         "--accent-950",
     ];
+    // SPEC-4.42.8: eleven ramp variables plus fill and on-accent for the base.
     let mut vars: Vec<(&str, &str)> = RAMP_VARS
         .iter()
         .copied()
@@ -149,11 +158,13 @@ fn apply_accent(is_dark: bool) {
 pub fn use_apply_theme() {
     use dioxus::prelude::*;
     use_effect(move || {
+        // SPEC-4.42.9: apply on mount, then follow OS changes on both hosts.
         apply_now();
         #[cfg(target_arch = "wasm32")]
         subscribe_to_system_theme();
         #[cfg(not(target_arch = "wasm32"))]
         crate::platform::dom::watch_system_theme(|| {
+            // SPEC-4.42.9: re-apply on an OS change only for the system theme.
             // Only the System branch reacts to OS changes; the explicit
             // settings already wrote the right class via `set`.
             if matches!(current(), Theme::System) {
@@ -195,6 +206,7 @@ fn subscribe_to_system_theme() {
         .add_event_listener_with_callback("change", cb.as_ref().unchecked_ref())
         .is_err()
     {
+        // SPEC-4.42.10: a refused listener is logged at error level.
         // Silently losing this leaves `Theme::System` users pinned to
         // whatever the OS said at boot, with no way to tell why.
         tracing::error!("could not subscribe to OS dark-mode changes");

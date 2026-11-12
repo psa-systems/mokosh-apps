@@ -58,6 +58,7 @@ use std::rc::Rc;
 
 /// Mark this pair of ids as synced. Idempotent: a second call for the same
 /// pair does nothing, so it is safe to run from an effect that re-runs.
+// SPEC-3.47.1: SPEC-3.47.2, 3.50.4
 #[cfg(target_arch = "wasm32")]
 pub fn link(source_id: &str, preview_id: &str) {
     use wasm_bindgen::closure::Closure;
@@ -84,6 +85,7 @@ pub fn link(source_id: &str, preview_id: &str) {
     // Installing twice would double every scroll event and re-create the guard,
     // which defeats it. The marker rides on the element so it survives a
     // re-render of the component that asked for the link.
+    // SPEC-3.47.3
     if source.has_attribute(INSTALLED_ATTR) {
         return;
     }
@@ -97,6 +99,7 @@ pub fn link(source_id: &str, preview_id: &str) {
         }
     }
 
+    // SPEC-3.47.4: one listener per direction, one shared echo flag.
     // One flag for the pair: whichever pane is being driven sets it, and the
     // resulting scroll event on the other is swallowed rather than answered.
     let echo = Rc::new(Cell::new(false));
@@ -109,6 +112,7 @@ pub fn link(source_id: &str, preview_id: &str) {
         let to = to.clone();
         let echo = echo.clone();
         let cb = Closure::wrap(Box::new(move |_evt: web_sys::Event| {
+            // SPEC-3.47.6
             // PMS-949: a jump we made ourselves, from "sync to cursor". It is
             // not a position the author chose to be proportional to, so it is
             // swallowed rather than answered - otherwise landing the preview on
@@ -116,6 +120,7 @@ pub fn link(source_id: &str, preview_id: &str) {
             if take_programmatic() {
                 return;
             }
+            // SPEC-3.47.5
             if echo.get() {
                 echo.set(false);
                 return;
@@ -136,6 +141,7 @@ pub fn link(source_id: &str, preview_id: &str) {
             .add_event_listener_with_callback("scroll", cb.as_ref().unchecked_ref())
             .is_err()
         {
+            // SPEC-3.47.8
             tracing::error!("could not attach the split-view scroll listener");
             return;
         }
@@ -155,6 +161,7 @@ fn scrolled_fraction(el: &web_sys::Element) -> Option<f64> {
 /// Pixels this element can actually scroll through, or `None` when that is
 /// zero: dividing by it is how a short pane would drag the other to the top.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.47.7
 fn scrollable_extent(el: &web_sys::Element) -> Option<i32> {
     let extent = el.scroll_height() - el.client_height();
     (extent > 0).then_some(extent)
@@ -190,6 +197,7 @@ fn take_programmatic() -> bool {
 /// different number of children the correspondence has broken (ammonia can drop
 /// a raw HTML block), and this does nothing rather than scrolling somewhere
 /// confidently wrong. Returns whether it moved anything.
+// SPEC-3.48.1: SPEC-3.48.2
 #[cfg(target_arch = "wasm32")]
 pub fn scroll_to_block(preview_id: &str, index: usize, expected: usize) -> bool {
     let Some(document) = web_sys::window().and_then(|w| w.document()) else {
@@ -204,6 +212,7 @@ pub fn scroll_to_block(preview_id: &str, index: usize, expected: usize) -> bool 
     let Some(rendered) = box_el.first_element_child() else {
         return false;
     };
+    // SPEC-3.48.3
     if rendered.child_element_count() as usize != expected {
         return false;
     }
@@ -223,6 +232,7 @@ pub fn scroll_to_block(preview_id: &str, index: usize, expected: usize) -> bool 
     let top = target.get_bounding_client_rect().top() - box_el.get_bounding_client_rect().top()
         + f64::from(box_el.scroll_top());
     let next = top.round().max(0.0) as i32;
+    // SPEC-3.48.4
     if next == box_el.scroll_top() {
         return false;
     }
@@ -244,11 +254,13 @@ pub fn scroll_to_block(preview_id: &str, index: usize, expected: usize) -> bool 
 /// That answer is only known in the webview and would have to come back
 /// asynchronously; no caller reads the value, and the alternative is reporting
 /// a fixed `false` that a stub is indistinguishable from.
+// SPEC-3.48.5: SPEC-3.48.6, 3.51.7
 #[cfg(not(target_arch = "wasm32"))]
 pub fn scroll_to_block(preview_id: &str, index: usize, expected: usize) -> bool {
     if !crate::platform::dom::in_runtime() {
         return false;
     }
+    // SPEC-3.48.7: the id goes in as an escaped JS string literal, index and expected as integers.
     crate::platform::dom::eval(&format!(
         "const boxEl = document.getElementById({}); \
          if (!boxEl) return; \
@@ -273,6 +285,7 @@ pub fn scroll_to_block(preview_id: &str, index: usize, expected: usize) -> bool 
 /// jump and the scroll listener that has to swallow it have no other way to
 /// name the same variable.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.47.9
 const PROGRAMMATIC_FLAG: &str = "__mokoshScrollProgrammatic";
 
 #[cfg(target_arch = "wasm32")]
@@ -293,6 +306,7 @@ const INSTALLED_ATTR: &str = "data-scroll-synced";
 /// once; the reporter pushes the value instead. It belongs here because this is
 /// the call that runs exactly when the split view exists, which is the only
 /// place that button is rendered.
+// SPEC-3.47.9: SPEC-3.47.1 to 3.50.7 restated in the webview script
 #[cfg(not(target_arch = "wasm32"))]
 pub fn link(source_id: &str, preview_id: &str) {
     crate::platform::dom::eval(&format!(

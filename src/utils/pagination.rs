@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct PaginationParams {
     /// Page number (1-indexed)
+    // SPEC-4.75.1: serde defaults apply only on deserialize, not to Default.
     #[serde(default = "default_page")]
     pub page: u32,
     /// Items per page
@@ -34,6 +35,7 @@ impl PaginationParams {
     /// Maximum allowed items per page
     pub const MAX_PER_PAGE: u32 = 100;
 
+    // SPEC-4.75.3, SPEC-4.75.4: the multiplication is not yet overflow-safe (see defects).
     /// Calculate the offset for database queries.
     ///
     /// Saturating (MAPPS-1242): a huge `page` used to overflow, panicking in a
@@ -51,6 +53,7 @@ impl PaginationParams {
     }
 
     /// Get the per_page value, clamped to MAX_PER_PAGE
+    // SPEC-4.75.2, SPEC-4.75.6: a minimum of 1 also covers the Default value of 0.
     pub fn per_page(&self) -> u32 {
         self.per_page.clamp(1, Self::MAX_PER_PAGE)
     }
@@ -61,6 +64,7 @@ impl PaginationParams {
     }
 
     /// Check if sort direction is ascending
+    // SPEC-4.75.5
     pub fn is_ascending(&self) -> bool {
         self.sort_dir.to_lowercase() == "asc"
     }
@@ -78,15 +82,19 @@ impl PaginationParams {
     pub fn order_by(&self, default_field: &str, allowed_fields: &[&str]) -> String {
         let direction = if self.is_ascending() { "ASC" } else { "DESC" };
 
+        // SPEC-4.76.2, SPEC-4.76.5: the allow-list filter keeps request text out of SQL.
         match self
             .sort
             .as_ref()
             .filter(|f| allowed_fields.contains(&f.as_str()))
         {
+            // SPEC-4.76.1
             Some(field) => format!("{field} {direction}"),
             // A compound or already-directional default is emitted as-is;
             // appending a direction here would corrupt it.
+            // SPEC-4.76.4
             None if default_field.contains([' ', ',']) => default_field.to_string(),
+            // SPEC-4.76.3
             None => format!("{default_field} {direction}"),
         }
     }
@@ -125,6 +133,7 @@ impl<T> PaginatedResponse<T> {
     /// and reported `total_pages` as `u32::MAX` for any non-empty total. The
     /// page count is integer arithmetic, capped at `u32::MAX`.
     pub fn new(data: Vec<T>, page: u32, per_page: u32, total: u64) -> Self {
+        // SPEC-4.77.1, SPEC-4.77.2, SPEC-4.77.5: per_page must be >= 1 here.
         let per_page = per_page.max(1);
         let total_pages = u32::try_from(total.div_ceil(u64::from(per_page))).unwrap_or(u32::MAX);
 
@@ -135,6 +144,7 @@ impl<T> PaginatedResponse<T> {
                 per_page,
                 total,
                 total_pages,
+                // SPEC-4.77.3
                 has_next: page < total_pages,
                 has_prev: page > 1,
             },
@@ -145,10 +155,12 @@ impl<T> PaginatedResponse<T> {
     /// served (MAPPS-1242): `?page=0` serves page 1, and used to say page 0
     /// with `has_prev` false.
     pub fn from_params(data: Vec<T>, params: &PaginationParams, total: u64) -> Self {
+        // SPEC-4.77.4
         Self::new(data, params.page(), params.per_page(), total)
     }
 
     /// Map the data items to a new type
+    // SPEC-4.77.6
     pub fn map<U, F>(self, f: F) -> PaginatedResponse<U>
     where
         F: FnMut(T) -> U,

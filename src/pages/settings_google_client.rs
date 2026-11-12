@@ -54,6 +54,7 @@ const CALLBACK_PATH: &str = "/public/contact-sync/google/callback";
 /// consent screen that grants less than the sync asks for fails later and
 /// vaguely, and the redirect URI, which is why this page prints it rather than
 /// describing it.
+// SPEC-11.46.2
 const CONSOLE_STEPS: &[&str] = &[
     "In the Google Cloud console, create a project or pick one.",
     "APIs and Services, Library: enable the Google People API. Without it every import fails with SERVICE_DISABLED.",
@@ -64,12 +65,14 @@ const CONSOLE_STEPS: &[&str] = &[
 ];
 
 /// What publishing costs, which belongs to the procedure and not to the code.
+// SPEC-11.46.3
 const TESTING_MODE_WARNING: &str = "While the app is in Testing, Google expires every refresh token after seven days, so connections stop working a week later with no warning. Publishing without Google's verification caps the app at 100 users and shows each of them an unverified-app screen.";
 
 /// `GET`/`PUT /settings/google-contacts-client`, for the server's
 /// `GoogleClientView`. Names and booleans only: there is no field here that
 /// could carry a credential, and that is the point.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+// SPEC-11.44.3
 struct GoogleClientView {
     #[serde(default)]
     client_id_set: bool,
@@ -98,6 +101,7 @@ struct GoogleClientBody {
 /// rather than rebuilt from the origin: deriving it from `window.location`
 /// would be wrong on every deployment whose API is on a different host from the
 /// SPA, which is every hosted one.
+// SPEC-11.46.1
 fn callback_uri(api_base: &str) -> String {
     format!("{}{CALLBACK_PATH}", api_base.trim_end_matches('/'))
 }
@@ -116,6 +120,7 @@ fn redirect_uri() -> String {
 #[component]
 pub fn GoogleClientPage() -> Element {
     use_page_title("Google sign-in client");
+    // SPEC-11.44.1
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Google sign-in client" } };
     }
@@ -133,6 +138,7 @@ fn GoogleClientForm() -> Element {
 
     let can_mutate = crate::hooks::use_can_mutate();
 
+    // SPEC-11.44.2
     let settings_resource = use_resource(move || async move {
         let _reachable = crate::hooks::use_server_reachable();
         crate::pages::settings::load_operator_setting::<GoogleClientView>(
@@ -159,8 +165,10 @@ fn GoogleClientForm() -> Element {
     let uri = redirect_uri();
     // Both halves or nothing: the server refuses a partial write, so the button
     // refuses to make one.
+    // SPEC-11.45.2
     let complete = !client_id.read().trim().is_empty() && !client_secret.read().trim().is_empty();
 
+    // SPEC-11.45.4: in-flight guard, trimmed pair body.
     let handle_save = move |_| {
         if saving() {
             return;
@@ -170,6 +178,7 @@ fn GoogleClientForm() -> Element {
             client_id: client_id.read().trim().to_string(),
             client_secret: client_secret.read().trim().to_string(),
         };
+        // SPEC-11.45.3
         if body.client_id.is_empty() || body.client_secret.is_empty() {
             error.set(
                 "Enter both the client ID and the client secret. A deployment holding one half of \
@@ -189,6 +198,7 @@ fn GoogleClientForm() -> Element {
                 .await
                 {
                     Ok(saved) => {
+                        // SPEC-11.45.5
                         // The server says whether its write is live, and this
                         // line is the only thing an operator has to go on, so it
                         // reads the field rather than restating what PMS-1444
@@ -209,6 +219,7 @@ fn GoogleClientForm() -> Element {
                         crate::hooks::push_toast(crate::components::AlertType::Success, message);
                     }
                     Err(err) => {
+                        // SPEC-11.45.6
                         crate::hooks::push_api_error(&err);
                         error.set(err.user_message());
                     }
@@ -228,6 +239,7 @@ fn GoogleClientForm() -> Element {
         }
 
         div { class: "space-y-6",
+            // SPEC-11.44.2
             if fetch_failed {
                 Card {
                     ErrorBanner { "Could not load the Google sign-in client settings." }
@@ -244,6 +256,7 @@ fn GoogleClientForm() -> Element {
             Card {
                 div { class: "space-y-3 max-w-2xl",
                     div { class: "flex items-center gap-3",
+                        // SPEC-11.44.4
                         if view.configured {
                             Badge { variant: BadgeVariant::Green, "Configured" }
                         } else {
@@ -259,16 +272,19 @@ fn GoogleClientForm() -> Element {
                     }
                     // Named per half, because a deployment holding one refuses
                     // to start and "not configured" would not say which.
+                    // SPEC-11.44.5
                     if view.client_id_set != view.client_secret_set {
                         ErrorBanner {
                             "Only one half of the pair is stored, which stops this deployment from starting. Enter both below."
                         }
                     }
+                    // SPEC-11.44.6
                     if view.configured && view.restart_required {
                         p { class: "text-sm text-muted",
                             "A change here needs the deployment restarted before it is used."
                         }
                     }
+                    // SPEC-11.44.7
                     if !view.provider.is_empty() {
                         p { class: "text-sm text-muted",
                             "Stored in the {view.provider} secret provider."
@@ -282,6 +298,7 @@ fn GoogleClientForm() -> Element {
                 }
             }
 
+            // SPEC-11.44.8
             Card {
                 title: if view.configured {
                     "Replace the client".to_string()
@@ -302,6 +319,7 @@ fn GoogleClientForm() -> Element {
                     }
                     Input {
                         name: "google_client_id",
+                        // SPEC-11.45.1
                         label: "Client ID",
                         value: client_id(),
                         disabled: is_loading || saving() || !view.writable,
@@ -351,6 +369,7 @@ fn GoogleClientForm() -> Element {
                         p { class: "text-sm text-muted",
                             "Paste this into the Google console exactly as it appears. One character out and Google refuses the sign-in before Mokosh is involved."
                         }
+                        // SPEC-11.46.1
                         code {
                             class: "block text-xs break-all rounded bg-surface-2 p-2 text-content",
                             "data-testid": "google-client-redirect-uri",

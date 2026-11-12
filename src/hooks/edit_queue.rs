@@ -47,6 +47,7 @@ pub enum PendingMethod {
 /// DELETE) so the queue does not need to be generic over every request
 /// type. A monotonic `seq` preserves submit order across replay.
 #[derive(Clone, Debug, PartialEq)]
+// SPEC-4.18.1: seq, path, method and serialized body of a held edit.
 pub struct PendingEdit {
     /// Submit order; replay drains ascending so edits apply as issued.
     pub seq: u64,
@@ -69,6 +70,7 @@ pub static EDIT_QUEUE: GlobalSignal<Vec<PendingEdit>> = Signal::global(Vec::new)
 /// unused (writes are blocked at the button while down).
 #[cfg(feature = "app")]
 pub fn enqueue_pending_edit(edit: PendingEdit) {
+    // SPEC-4.18.2: append only; the non-app stub below does nothing.
     EDIT_QUEUE.write().push(edit);
 }
 
@@ -86,6 +88,7 @@ pub fn enqueue_pending_edit(_edit: PendingEdit) {}
 /// silently dropping their edit.
 #[cfg(feature = "app")]
 pub async fn replay_pending_edits() {
+    // SPEC-4.18.3: empty queue returns at once; otherwise it is cleared, not replayed.
     // Nothing is ever enqueued in the shipped build, so this returns at
     // once. Keeping the drain here means the reconnect call site is already
     // correct.
@@ -161,6 +164,7 @@ pub async fn replay_pending_edits() {}
 /// blocking render.
 #[cfg(feature = "app")]
 pub fn use_replay_pending_edits() {
+    // SPEC-4.18.4: starts no task in any build.
     // Placeholder for the local-first epic. Intentionally does not spawn
     // anything yet so the shipped build has no behavior change.
 }

@@ -7,6 +7,7 @@
 
 /// The local zone as an IANA name, e.g. `America/Chicago`.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.45.1: SPEC-3.45.2
 pub fn local_iana() -> Option<String> {
     use wasm_bindgen::{JsCast, JsValue};
 
@@ -25,13 +26,16 @@ pub fn local_iana() -> Option<String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.45.1: SPEC-3.45.2, 3.48.4
 pub fn local_iana() -> Option<String> {
+    // SPEC-3.45.4: only pre-fills the timezone picker; None leaves the picker on its default.
     match iana_time_zone::get_timezone() {
         Ok(tz) => Some(tz),
         Err(e) => {
             // Not fatal: the picker falls back to its own default. Worth
             // a line, because the user is about to see a timezone that
             // is not theirs and will have no idea why.
+            // SPEC-3.45.3
             tracing::warn!("could not read the system timezone: {e}");
             None
         }

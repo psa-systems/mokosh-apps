@@ -19,14 +19,17 @@ use crate::platform::window_close;
 /// nothing until `platform::window_close` refuses a close request.
 #[component]
 pub fn CloseConfirmModal() -> Element {
+    // SPEC-5.12.1
     rsx! {
         ConfirmDialog {
             open: window_close::close_confirm_open(),
+            // SPEC-5.12.2
             title: "Unsaved changes".to_string(),
             message: "This window has unsaved changes. Closing it now discards them.".to_string(),
             confirm_text: "Discard and close".to_string(),
             cancel_text: "Keep editing".to_string(),
             destructive: true,
+            // SPEC-5.12.3
             onconfirm: move |_| window_close::confirm_close(),
             oncancel: move |_| window_close::cancel_close(),
         }

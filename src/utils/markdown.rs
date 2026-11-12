@@ -16,6 +16,7 @@ use crate::utils::mentions::{self, Mention};
 /// see the same document the renderer does: an extension enabled for one and
 /// not the other changes how many top-level blocks there are, and the map is
 /// nothing but an index into them.
+// SPEC-4.64.1
 fn render_options() -> Options {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -33,6 +34,7 @@ fn render_options() -> Options {
 /// image destination rather than any other URL-shaped string. A regex over the
 /// finished HTML cannot tell those apart and would happily rewrite the inside
 /// of an `href`.
+// SPEC-4.64.3
 fn to_html(src: &str, people: &[Mention], api_origin: &str) -> String {
     to_html_with(src, people, api_origin, false)
 }
@@ -78,6 +80,7 @@ fn to_html_with(src: &str, people: &[Mention], api_origin: &str, interactive: bo
                 attrs,
                 ..
             }) => {
+                // SPEC-4.67.5
                 events.push(Event::Start(Tag::Heading {
                     level,
                     id: heading_ids.next().map(|slug| heading_dom_id(&slug).into()),
@@ -97,6 +100,7 @@ fn to_html_with(src: &str, people: &[Mention], api_origin: &str, interactive: bo
                 events.push(event);
             }
             Event::Text(ref text) if in_code.is_some() => {
+                // SPEC-4.64.4
                 let lang = in_code.as_deref().unwrap_or("");
                 // Already-escaped HTML, so it goes back as `Html`, not `Text`:
                 // pushing it as text would escape the spans we just added.
@@ -109,6 +113,7 @@ fn to_html_with(src: &str, people: &[Mention], api_origin: &str, interactive: bo
                 title,
                 id,
             }) => {
+                // SPEC-4.66.2: images only, never link hrefs.
                 events.push(Event::Start(Tag::Image {
                     link_type,
                     dest_url: absolutize_attachment(&dest_url, api_origin).into(),
@@ -126,6 +131,7 @@ fn to_html_with(src: &str, people: &[Mention], api_origin: &str, interactive: bo
                 id,
             }) => {
                 link_depth += 1;
+                // SPEC-4.66.3
                 let dest_url = match dest_url.strip_prefix('#') {
                     Some(fragment) => format!("#{}", heading_dom_id(fragment)).into(),
                     None => dest_url,
@@ -141,6 +147,7 @@ fn to_html_with(src: &str, people: &[Mention], api_origin: &str, interactive: bo
                 link_depth = link_depth.saturating_sub(1);
                 events.push(event);
             }
+            // SPEC-4.64.5
             Event::Text(ref text) if link_depth == 0 => {
                 autolink_into(text, people, &mut events);
             }
@@ -169,6 +176,7 @@ fn to_html_with(src: &str, people: &[Mention], api_origin: &str, interactive: bo
 /// exactly this on the article page (read from the DOM); the editor runs it
 /// over the unsaved body to say, before the save, which anchors the edit
 /// will orphan, with no DOM in the loop and the same answer on both hosts.
+// SPEC-4.69.3
 ///
 /// MAPPS-1241: `people` is the same mention directory the page renders with,
 /// so a resolved `@handle` reads as the chip's `@<display name>` here too. With
@@ -200,6 +208,7 @@ pub fn rendered_text(src: &str, people: &[Mention]) -> String {
                         break;
                     }
                 }
+                // SPEC-4.69.5: an undecodable entity is kept as typed.
                 let decoded = if terminated {
                     decode_entity(&name)
                 } else {
@@ -222,6 +231,7 @@ pub fn rendered_text(src: &str, people: &[Mention]) -> String {
     out
 }
 
+// SPEC-4.69.4
 fn decode_entity(name: &str) -> Option<char> {
     match name {
         "amp" => Some('&'),
@@ -250,6 +260,7 @@ pub struct Heading {
     pub slug: String,
 }
 
+// SPEC-4.67.6
 /// The prefix every `id` in rendered Markdown carries (MAPPS-741), so nothing
 /// an author writes can name an element of the page chrome. The renderer
 /// writes it on heading ids and on `#fragment` links itself (`to_html`);
@@ -258,6 +269,7 @@ pub struct Heading {
 pub const ID_PREFIX: &str = "kb-";
 
 /// The id a heading has in the rendered document.
+// SPEC-4.67.6, SPEC-4.67.7
 pub fn heading_dom_id(slug: &str) -> String {
     format!("{ID_PREFIX}{slug}")
 }
@@ -268,6 +280,7 @@ pub fn heading_dom_id(slug: &str) -> String {
 /// so it survives any edit that leaves the heading unchanged; a repeated
 /// heading gets `-2`, `-3` and so on, in order, so two "Notes" sections
 /// stay distinct and stable while nothing above them changes.
+// SPEC-4.67.1
 pub fn headings(src: &str) -> Vec<Heading> {
     let mut out: Vec<Heading> = Vec::new();
     let mut current: Option<(u8, String)> = None;
@@ -276,6 +289,7 @@ pub fn headings(src: &str) -> Vec<Heading> {
             Event::Start(Tag::Heading { level, .. }) => {
                 current = Some((heading_level(level), String::new()));
             }
+            // SPEC-4.67.2
             Event::Text(t) | Event::Code(t) => {
                 if let Some((_, text)) = current.as_mut() {
                     text.push_str(&t);
@@ -290,6 +304,7 @@ pub fn headings(src: &str) -> Vec<Heading> {
                 if let Some((level, text)) = current.take() {
                     let text = text.trim().to_string();
                     let base = heading_slug(&text);
+                    // SPEC-4.67.4
                     let mut slug = base.clone();
                     let mut n = 1;
                     while out.iter().any(|h| h.slug == slug) {
@@ -319,6 +334,7 @@ fn heading_level(level: HeadingLevel) -> u8 {
 /// The slug rule. Unicode letters and digits are kept (an article in
 /// Vietnamese or German has headings in it), so the id is readable in the
 /// URL bar; a heading with nothing else is `section`.
+// SPEC-4.67.3
 fn heading_slug(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut prev_dash = true;
@@ -355,6 +371,7 @@ fn autolink_into<'a>(text: &str, people: &[Mention], events: &mut Vec<Event<'a>>
         // markup emitted by the first.
         let url = find_url(rest);
         let mention = find_mention(rest, people);
+        // SPEC-4.66.9: earliest first, the URL wins a tie.
         let take_url = match (&url, &mention) {
             (Some(u), Some(m)) => u.start <= m.start,
             (Some(_), None) => true,
@@ -372,6 +389,7 @@ fn autolink_into<'a>(text: &str, people: &[Mention], events: &mut Vec<Event<'a>>
         }
         if take_url {
             let href = rest[start..end].to_string();
+            // SPEC-4.66.4
             events.push(Event::Start(Tag::Link {
                 link_type: pulldown_cmark::LinkType::Autolink,
                 dest_url: href.clone().into(),
@@ -393,6 +411,7 @@ fn autolink_into<'a>(text: &str, people: &[Mention], events: &mut Vec<Event<'a>>
             events.push(Event::Text(rest.to_string().into()));
         }
     } else {
+        // SPEC-4.66.13
         events.push(Event::Text(text.to_string().into()));
     }
 }
@@ -409,6 +428,7 @@ struct FoundMention {
 /// An `@` that does not resolve is skipped, not marked: the text stays exactly
 /// as the author wrote it. That is the whole point, so an unresolved mention
 /// is visibly unresolved rather than looking authoritative (MAPPS-578).
+// SPEC-4.66.10
 fn find_mention(s: &str, people: &[Mention]) -> Option<FoundMention> {
     if people.is_empty() {
         return None;
@@ -438,6 +458,7 @@ fn find_mention(s: &str, people: &[Mention]) -> Option<FoundMention> {
 /// reload the whole WASM bundle. `data-mention` carries the user id and the
 /// `Markdown` component's existing delegated click listener routes on it, for
 /// viewers who can reach the destination.
+// SPEC-4.66.11, SPEC-4.66.12
 fn mention_html(person: &Mention) -> String {
     format!(
         "<span class=\"mention\" data-mention=\"{}\" title=\"{}\">@{}</span>",
@@ -474,6 +495,7 @@ struct Found {
 /// and `note:see below` into links. The end is trimmed of trailing punctuation
 /// so a URL at the end of a sentence does not swallow the full stop, and of an
 /// unbalanced closing paren so a URL inside `(see https://x)` stays intact.
+// SPEC-4.66.4
 fn find_url(s: &str) -> Option<Found> {
     let mut at = 0usize;
     while let Some(rel_start) = ["https://", "http://"]
@@ -485,6 +507,7 @@ fn find_url(s: &str) -> Option<Found> {
         // A scheme glued to the end of a word (`xhttps://y`) is not a link;
         // skip just this candidate and keep scanning the rest of `s`, the
         // way `find_mention` does, rather than giving up on the whole run.
+        // SPEC-4.66.5
         if start > 0 {
             let prev = s[..start].chars().next_back().unwrap_or(' ');
             if prev.is_alphanumeric() {
@@ -492,17 +515,19 @@ fn find_url(s: &str) -> Option<Found> {
                 continue;
             }
         }
+        // SPEC-4.66.6
         let mut end = s[start..]
             .find(|c: char| c.is_whitespace() || c == '<' || c == '"')
             .map(|p| start + p)
             .unwrap_or(s.len());
         let body = &s[start..end];
-        // Nothing after the scheme is not a URL.
+        // Nothing after the scheme is not a URL. SPEC-4.66.8
         let scheme_len = if body.starts_with("https://") { 8 } else { 7 };
         if body.len() <= scheme_len {
             at = start + 1;
             continue;
         }
+        // SPEC-4.66.7
         let mut trimmed = body;
         while let Some(last) = trimmed.chars().next_back() {
             let drop = matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*' | '_')
@@ -546,6 +571,7 @@ fn find_url(s: &str) -> Option<Found> {
 /// anything else keeps what they wrote, and an absolute URL is already
 /// addressed. An empty origin (dev, where the SPA and the API share one) is a
 /// no-op, so what ships there is byte-identical to what shipped before.
+// SPEC-4.66.1
 pub fn absolutize_attachment(dest: &str, api_origin: &str) -> String {
     if api_origin.is_empty() || !dest.starts_with("/api/") {
         return dest.to_string();
@@ -565,10 +591,12 @@ pub fn absolutize_attachment(dest: &str, api_origin: &str) -> String {
 /// per-call variation, so the `Builder` is built once behind a
 /// `LazyLock` and reused across every `sanitize` call instead of being
 /// reconstructed (and its whole allowlist reapplied) per render.
+// SPEC-4.65.1, SPEC-4.65.2
 fn sanitize(html: &str) -> String {
     static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
         let mut builder = ammonia::Builder::default();
         builder
+            // SPEC-4.65.4
             // MAPPS-741: headings carry the id the renderer gave them (already
             // prefixed), and only headings carry an id at all. `id_prefix` puts
             // `kb-` on any id that lacks it, so an author-written id cannot name
@@ -581,6 +609,7 @@ fn sanitize(html: &str) -> String {
             .add_tag_attributes("h5", ["id"])
             .add_tag_attributes("h6", ["id"])
             .id_prefix(Some(ID_PREFIX))
+            // SPEC-4.65.3
             .add_tags(["input"])
             .add_tag_attributes("input", ["checked", "disabled", "data-ti"])
             .add_tag_attribute_values("input", "type", ["checkbox"])
@@ -589,6 +618,7 @@ fn sanitize(html: &str) -> String {
             // writes raw `<span class="...">` in an article cannot reach for an
             // arbitrary app style; the tag also has to be one we already allow.
             // MAPPS-578: the mention chip, alongside the highlighter's tokens.
+            // SPEC-4.65.5
             .add_allowed_classes(
                 "span",
                 highlight::CLASSES.iter().copied().chain(["mention"]),
@@ -596,10 +626,12 @@ fn sanitize(html: &str) -> String {
             // `data-mention` carries the user id for the delegated click listener;
             // `title` carries the name and email the chip shows on hover. Both are
             // scoped to `span`, so nothing else in an article gains them.
+            // SPEC-4.65.6
             .add_tag_attributes("span", ["data-mention", "title"])
             // The language marker pulldown puts on a fenced block. Kept for the
             // block styling and so a reader can see what the fence claimed, even
             // though the colours come from the spans inside.
+            // SPEC-4.65.7
             .add_allowed_classes("code", LANGUAGE_CLASSES.iter().map(String::as_str))
             .add_tag_attributes("span", ["style"])
             // MAPPS-573: authors colour text with `<span style="color:red">`, which
@@ -610,6 +642,7 @@ fn sanitize(html: &str) -> String {
             // a second declaration. Anything else is dropped, not sanitized in
             // place, so a rejected style leaves no half-applied rule behind.
             .attribute_filter(|_tag, attr, value| {
+                // SPEC-4.65.10
                 if attr != "style" {
                     return Some(value.into());
                 }
@@ -620,6 +653,7 @@ fn sanitize(html: &str) -> String {
     SANITIZER.clean(html).to_string()
 }
 
+// SPEC-4.65.5
 /// `class` values permitted on a fenced code block: `language-<name>` for
 /// every fence name the highlighter recognises. Derived from
 /// [`highlight::LANGUAGE_NAMES`] (MAPPS-1241): the hand-kept list here had
@@ -640,12 +674,14 @@ static LANGUAGE_CLASSES: LazyLock<Vec<String>> = LazyLock::new(|| {
 /// escaped sequence, or a second property smuggled in after a `;`, so the
 /// filter does not need to know what those look like: everything outside the
 /// shape is rejected rather than scrubbed.
+// SPEC-4.65.8
 fn safe_color_style(value: &str) -> Option<String> {
     let decl = value.trim().trim_end_matches(';').trim();
     let (prop, raw) = decl.split_once(':')?;
     if !prop.trim().eq_ignore_ascii_case("color") {
         return None;
     }
+    // SPEC-4.65.9
     let color = raw.trim();
     if color.is_empty() || color.len() > 32 {
         return None;
@@ -660,6 +696,7 @@ fn safe_color_style(value: &str) -> Option<String> {
 
 /// Render Markdown source to sanitized HTML. Task-list checkboxes render
 /// `disabled` (read-only display).
+// SPEC-4.64.2, SPEC-4.64.7
 pub fn render_markdown(src: &str) -> String {
     render_markdown_with_mentions(src, &[], "")
 }
@@ -688,6 +725,7 @@ pub fn render_markdown_interactive_with_mentions(
     people: &[Mention],
     api_origin: &str,
 ) -> String {
+    // SPEC-4.64.6
     // Each real task checkbox is emitted clickable and indexed by `to_html_with`;
     // an author's raw `<input>` passes through untouched (MAPPS-1241).
     sanitize(&to_html_with(src, people, api_origin, true))
@@ -704,6 +742,7 @@ pub fn render_markdown_interactive_with_mentions(
 /// disagreed with the renderer on edge cases (blank-line-terminated items,
 /// items nested inside other blocks), so the reported count and the
 /// checkboxes that actually appeared could differ.
+// SPEC-4.68.2
 fn task_marker_offsets(src: &str) -> Vec<usize> {
     Parser::new_ext(src, render_options())
         .into_offset_iter()
@@ -717,6 +756,7 @@ fn task_marker_offsets(src: &str) -> Vec<usize> {
 /// Number of GFM task-list markers in `src` that render as an interactive
 /// checkbox, i.e. the same count `render_markdown_interactive` would produce
 /// (MAPPS-835).
+// SPEC-4.68.1
 pub fn count_tasks(src: &str) -> usize {
     task_marker_offsets(src).len()
 }
@@ -727,8 +767,10 @@ pub fn count_tasks(src: &str) -> usize {
 /// out of range. Only the bracket marker flips; the rest of the line is
 /// untouched.
 pub fn toggle_task(src: &str, index: usize) -> Option<String> {
+    // SPEC-4.68.4: out of range returns None.
     let pos = *task_marker_offsets(src).get(index)?;
     let bytes = src.as_bytes();
+    // SPEC-4.68.3
     let new_char = if bytes[pos] == b' ' { 'x' } else { ' ' };
     let mut s = src.to_string();
     s.replace_range(pos..pos + 1, &new_char.to_string());
@@ -750,6 +792,7 @@ pub fn toggle_task(src: &str, index: usize) -> Option<String> {
 /// HTML block, which would shift every index after it. The caller compares this
 /// length against the number of children it actually finds and does nothing
 /// when they disagree, rather than scrolling somewhere confidently wrong.
+// SPEC-4.69.1
 pub fn top_level_block_ranges(src: &str) -> Vec<std::ops::Range<usize>> {
     let mut ranges = Vec::new();
     let mut depth = 0usize;
@@ -776,6 +819,7 @@ pub fn top_level_block_ranges(src: &str) -> Vec<std::ops::Range<usize>> {
 /// The last block that starts at or before the offset, so a caret in the blank
 /// line between two paragraphs belongs to the one above it rather than to
 /// nothing. `None` only for an empty document.
+// SPEC-4.69.2
 pub fn block_index_at(ranges: &[std::ops::Range<usize>], byte_offset: usize) -> Option<usize> {
     if ranges.is_empty() {
         return None;

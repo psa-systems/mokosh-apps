@@ -49,6 +49,7 @@ impl Mention {
     /// The last name alone is deliberately absent. It collides with a first
     /// name often enough to be a real source of wrong attribution, and nobody
     /// writes `@smith` meaning a specific colleague.
+    // SPEC-4.70.1, SPEC-4.70.2
     pub fn handles(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         let mut push = |s: String| {
@@ -82,6 +83,7 @@ impl Mention {
 /// to the wrong one, which is worse than leaving the text alone: an unresolved
 /// mention is visibly unresolved, a wrong one is not.
 pub fn resolve<'a>(handle: &str, people: &'a [Mention]) -> Option<&'a Mention> {
+    // SPEC-4.70.3
     let needle = handle.trim().to_lowercase();
     if needle.is_empty() {
         return None;
@@ -89,6 +91,7 @@ pub fn resolve<'a>(handle: &str, people: &'a [Mention]) -> Option<&'a Mention> {
     let mut found: Option<&Mention> = None;
     for person in people {
         if person.handles().contains(&needle) {
+            // SPEC-4.70.4
             if found.is_some() {
                 // Ambiguous.
                 return None;
@@ -113,9 +116,11 @@ pub fn resolve<'a>(handle: &str, people: &'a [Mention]) -> Option<&'a Mention> {
 /// (MAPPS-1241: this said `.` or `-`; the code also trims `_`).
 pub fn handle_end(text: &str, at: usize) -> Option<usize> {
     debug_assert!(text[at..].starts_with('@'));
+    // SPEC-4.70.5
     if !opens_a_handle(text, at) {
         return None;
     }
+    // SPEC-4.70.6
     let mut end = at + 1;
     while end < text.len() {
         let c = text[end..].chars().next().expect("in-bounds");
@@ -147,6 +152,7 @@ pub fn handle_end(text: &str, at: usize) -> Option<usize> {
 /// wants to see who is available. Everything else about "is this an `@` that
 /// could name somebody" is shared, so the editor cannot offer to complete
 /// something the renderer will not resolve.
+// SPEC-4.70.7
 pub fn opens_a_handle(text: &str, at: usize) -> bool {
     if at == 0 {
         return true;
@@ -178,6 +184,7 @@ pub struct ActiveMention {
 /// `caret` is a UTF-16 offset, as every selection offset in this codebase is;
 /// see [`crate::utils::md_edit`] for why that distinction is load-bearing.
 pub fn active_mention(text: &str, caret: u32) -> Option<ActiveMention> {
+    // SPEC-4.71.1
     let caret_byte = utf16_to_byte(text, caret);
     let before = &text[..caret_byte];
 
@@ -193,10 +200,12 @@ pub fn active_mention(text: &str, caret: u32) -> Option<ActiveMention> {
     // The same test the renderer applies to what PRECEDES the `@`. An `@`
     // inside an email address or mid-word does not open a handle, so it does
     // not open a list either.
+    // SPEC-4.71.2
     if !opens_a_handle(text, at_byte) {
         return None;
     }
 
+    // SPEC-4.71.3, SPEC-4.71.4
     let fragment = before[at_byte + 1..].to_string();
     // Everything between the `@` and the caret has to still be handle-shaped.
     // Typing `@alex more` is a finished mention followed by a word, not a
@@ -219,6 +228,7 @@ pub fn active_mention(text: &str, caret: u32) -> Option<ActiveMention> {
 ///
 /// An empty fragment (the caret just after a bare `@`) lists everyone, because
 /// that is the moment the author most wants to see who is available.
+// SPEC-4.71.5
 pub fn matches<'a>(fragment: &str, people: &'a [Mention]) -> Vec<&'a Mention> {
     let needle = fragment.trim().to_lowercase();
     let mut scored: Vec<(u8, &Mention)> = people
@@ -247,6 +257,7 @@ pub fn matches<'a>(fragment: &str, people: &'a [Mention]) -> Vec<&'a Mention> {
             }
         })
         .collect();
+    // SPEC-4.71.6
     scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.display.cmp(&b.1.display)));
     scored.into_iter().map(|(_, p)| p).collect()
 }
@@ -257,6 +268,7 @@ pub fn matches<'a>(fragment: &str, people: &'a [Mention]) -> Vec<&'a Mention> {
 /// A trailing space, because the author has finished naming somebody and is
 /// about to keep writing. Without it the next keystroke extends the handle and
 /// the mention stops resolving.
+// SPEC-4.71.7, SPEC-4.71.8
 pub fn accept(text: &str, active: &ActiveMention, handle: &str) -> (String, u32) {
     let a = utf16_to_byte(text, active.at);
     let b = utf16_to_byte(text, active.end);
@@ -270,6 +282,7 @@ pub fn accept(text: &str, active: &ActiveMention, handle: &str) -> (String, u32)
 }
 
 /// Byte offset of the `n`th UTF-16 code unit, clamped.
+// SPEC-4.71.8: clamps to the end of the text.
 fn utf16_to_byte(s: &str, target: u32) -> usize {
     let mut units = 0u32;
     for (byte, ch) in s.char_indices() {

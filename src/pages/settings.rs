@@ -42,12 +42,14 @@ use crate::utils::Paginated;
 use crate::Route;
 
 /// Rows per page for the settings list views.
+// SPEC-11.7.2: page size for every settings list.
 const PER_PAGE: usize = 25;
 
 /// True when the signed-in user is an admin/super_admin. The Settings
 /// surfaces configure tenant-wide behavior, so they match the same gate
 /// the sidebar uses to show the Settings entry. Server endpoints re-check,
 /// so this is a UX affordance, not a security boundary.
+// SPEC-11.3.1: UX gate only; the server re-checks.
 pub(crate) fn use_is_admin() -> bool {
     let auth = crate::hooks::use_auth();
     let auth_state = auth.read();
@@ -61,6 +63,7 @@ pub(crate) fn use_is_admin() -> bool {
 /// Shown in place of a settings page when a non-admin lands on one.
 #[component]
 pub(crate) fn AdminOnlyNotice(title: String) -> Element {
+    // SPEC-11.3.2: notice shown instead of any admin-gated settings page.
     use_page_title(title.clone());
     rsx! {
         PageHeader { title, subtitle: "Settings" }
@@ -101,6 +104,7 @@ pub(crate) async fn load_operator_setting<T: serde::de::DeserializeOwned>(
     path: &str,
     what: &str,
 ) -> OperatorLoad<T> {
+    // SPEC-11.6.1: 403 is "not the operator", every other error is a failure.
     match crate::hooks::fetch::api::get_authed_typed::<T>(path).await {
         Ok(value) => OperatorLoad::Loaded(value),
         Err(crate::hooks::fetch::api::ApiError::Status { code: 403, .. }) => {
@@ -119,7 +123,9 @@ pub fn AppearanceSettingsPage() -> Element {
     // MAPPS-357: N/A - per-user appearance (theme + accent) has no server-backed
     // resource; the ThemePicker persists to the account with no page fetch that
     // an outage could blank, so there is no unavailable state to render.
+    // SPEC-11.3.3: not admin-gated.
     use_page_title("Appearance");
+    // SPEC-11.3.5: density is a browser-local preference, default comfortable.
     let mut comfortable = use_signal(|| crate::utils::prefs::get_bool("kb_density", true));
     rsx! {
         PageHeader {
@@ -134,6 +140,7 @@ pub fn AppearanceSettingsPage() -> Element {
             Card {
                 ThemePicker {}
             }
+            // SPEC-11.3.4: reading density card.
             Card { title: "Reading",
                 div { class: "max-w-xl",
                     Select {
@@ -165,10 +172,12 @@ pub fn AppearanceSettingsPage() -> Element {
 pub fn TvViewSettingsPage() -> Element {
     // MAPPS-357: N/A - TV-view prefs are browser-local (prefs.rs), not fetched
     // from the server, so this page has no remote resource an outage can blank.
+    // SPEC-11.3.7: seeded from and written back to the browser-local TV view prefs.
     let mut enabled = use_signal(crate::hooks::tv_view::is_enabled);
     let mut team = use_signal(crate::hooks::tv_view::selected_team);
     let nav = use_navigator();
 
+    // SPEC-11.3.6: not admin-gated.
     use_page_title("TV View");
     rsx! {
         PageHeader {
@@ -207,6 +216,7 @@ pub fn TvViewSettingsPage() -> Element {
                     }
                 }
 
+                // SPEC-11.3.8: the shortcut shows only while TV view is on.
                 if enabled() {
                     Button {
                         onclick: move |_| {
@@ -252,6 +262,7 @@ impl SettingsGroupKey {
     /// and a key derived from it would have silently collapsed every user's
     /// expanded group on that rename. The route slug is the same reasoning the
     /// `/settings/group/data` path follows.
+    // SPEC-11.2.6: stable slug, not display copy.
     fn pref_key(self) -> &'static str {
         match self {
             SettingsGroupKey::Personalization => "personalization",
@@ -269,6 +280,7 @@ impl SettingsGroupKey {
     }
 
     /// Heading on the index and the middle crumb in a leaf's breadcrumb.
+    // SPEC-11.1.3: group titles.
     fn title(self) -> &'static str {
         match self {
             SettingsGroupKey::Personalization => "Personalization",
@@ -308,6 +320,7 @@ impl SettingsGroupKey {
 
     /// Landing route for the group, or `None` for Personalization which is
     /// not nested (its surfaces render directly on the index).
+    // SPEC-11.1.3: landing routes.
     fn landing(self) -> Option<Route> {
         match self {
             SettingsGroupKey::Personalization => None,
@@ -321,6 +334,7 @@ impl SettingsGroupKey {
 
     /// Color identity tying the group to its left-nav area (MAPPS-257).
     /// Drives the group heading tint and each card's left-accent border.
+    // SPEC-11.1.3: group colours.
     fn color(self) -> SectionColor {
         match self {
             SettingsGroupKey::Personalization => SectionColor::Rose,
@@ -336,6 +350,7 @@ impl SettingsGroupKey {
     /// larger padding so each card claims more of the row (MAPPS-257). The
     /// Service & Asset Types and Billing & SLA landings carry the most
     /// surfaces, so they read as the larger sections.
+    // SPEC-11.1.4: only these two groups render prominent.
     fn prominent(self) -> bool {
         matches!(
             self,
@@ -346,6 +361,7 @@ impl SettingsGroupKey {
 
 /// The nested admin groups, in index display order. Personalization is
 /// rendered separately (it is a direct leaf, not a group card).
+// SPEC-11.1.5: index order of the group cards.
 const SETTINGS_GROUP_ORDER: &[SettingsGroupKey] = &[
     SettingsGroupKey::ServiceTypes,
     SettingsGroupKey::Billing,
@@ -358,6 +374,7 @@ const SETTINGS_GROUP_ORDER: &[SettingsGroupKey] = &[
 /// still appears in the hub only when the current signed-in user
 /// clears the check. Defaults to `Always` for the vast majority of
 /// tiles.
+// SPEC-11.1.8: the three visibility rules.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SurfaceVisibility {
     /// Surface always shows to any signed-in user.
@@ -418,6 +435,7 @@ impl SettingsSection {
     /// organization on this deployment sends mail through.
     fn note(self) -> Option<&'static str> {
         match self {
+            // SPEC-11.2.10: the only section with a note.
             SettingsSection::Deployment => {
                 Some("These apply to every organization on this deployment, not only yours.")
             }
@@ -429,6 +447,7 @@ impl SettingsSection {
 /// Section render order on a group landing. A surface with no section renders
 /// above all of them, ungrouped. The Integrations group drives the first three
 /// entries; `ProductsAndInvoicing` is the first section inside Billing & SLA.
+// SPEC-11.2.9: section render order.
 const SETTINGS_SECTION_ORDER: &[SettingsSection] = &[
     SettingsSection::ConnectedServices,
     SettingsSection::RemoteMonitoring,
@@ -469,12 +488,16 @@ struct SettingsSurface {
 /// The old key is left where it is rather than migrated. It is a browser
 /// preference: reading it would restore a global mode this build no longer has,
 /// and nothing is lost by a group starting collapsed.
+// SPEC-11.2.8: the retired global key is intentionally never read.
+// SPEC-11.2.6: per-group disclosure preference prefix.
 const PREF_ADVANCED_PREFIX: &str = "settings_advanced_";
 
 /// Single source of truth for every settings surface. Order within a group
 /// is the display order on the index, group landing, and search results.
 /// The advanced set (per MAPPS-258) is Tax Rates, Payment Gateways, Ticket
 /// Categories, and the three RMM surfaces.
+// SPEC-11.1.1: the registry. SPEC-11.1.12 order, SPEC-11.1.13 advanced flags,
+// SPEC-11.1.14 sections, SPEC-11.1.15 visibility.
 const SETTINGS_SURFACES: &[SettingsSurface] = &[
     SettingsSurface {
         route: Route::SettingsAppearance {},
@@ -731,6 +754,7 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
     // and every existing deep link.
     SettingsSurface {
         route: Route::SettingsIntegrations {},
+        // SPEC-11.1.16: title differs from the group name on purpose.
         title: "Connected Services",
         description: "What this organization delegates to other systems, and what each one is allowed to do.",
         group: SettingsGroupKey::Integrations,
@@ -965,6 +989,7 @@ struct SurfaceContext {
 }
 
 impl SurfaceContext {
+    // SPEC-11.1.9: staff never get the contact-only tiles.
     fn snapshot() -> Self {
         let is_staff_admin = crate::hooks::auth::use_auth().read().is_admin();
         // Contact plane only. `use_capability` staff-bypasses to
@@ -984,6 +1009,7 @@ impl SurfaceContext {
         }
     }
 
+    // SPEC-11.1.8: unknown capabilities show to no one.
     fn allows(&self, v: SurfaceVisibility) -> bool {
         match v {
             SurfaceVisibility::Always => true,
@@ -1007,6 +1033,7 @@ impl SurfaceContext {
 /// disclosure row. Counted with the same visibility filter as the list, so a
 /// group whose only advanced surface is hidden from this caller shows no chevron
 /// rather than one that expands to nothing (MAPPS-979).
+// SPEC-11.2.4: counted with the same visibility filter as the list.
 fn advanced_count_in_group(group: SettingsGroupKey, ctx: SurfaceContext) -> usize {
     SETTINGS_SURFACES
         .iter()
@@ -1021,6 +1048,7 @@ fn advanced_count_in_group(group: SettingsGroupKey, ctx: SurfaceContext) -> usiz
 /// group is expanded, which is why the index passes `false` for every group and
 /// the landing page passes its own state: the two callers now ask different
 /// questions of the same function.
+// SPEC-11.2.3: advanced surfaces only when the group is expanded.
 fn surfaces_in_group(
     group: SettingsGroupKey,
     show_advanced: bool,
@@ -1040,6 +1068,7 @@ fn surfaces_in_group(
 /// here, so the landing never renders a heading over an empty grid: that is the
 /// case for Remote monitoring with the group collapsed, where all three tiles
 /// are advanced.
+// SPEC-11.2.9: empty sections are dropped. SPEC-11.2.11: called per pass.
 fn split_into_sections<'a>(
     surfaces: &[&'a SettingsSurface],
 ) -> (
@@ -1075,12 +1104,14 @@ pub fn SettingsHomePage() -> Element {
     // outage could blank, so there is no unavailable state to render.
     let mut query = use_signal(String::new);
 
+    // SPEC-11.1.10: the query is trimmed and compared case-insensitively.
     let q = query.read().trim().to_lowercase();
     let ctx = SurfaceContext::snapshot();
 
     // Personalization renders as a direct leaf (it is not nested).
     // MAPPS-979: the index lists BASIC surfaces only. Advanced ones are revealed
     // on their own group's page, where the person looking for one is standing.
+    // SPEC-11.1.7: basic surfaces only on the index.
     let personalization: Vec<&SettingsSurface> =
         surfaces_in_group(SettingsGroupKey::Personalization, false, ctx).collect();
 
@@ -1091,6 +1122,7 @@ pub fn SettingsHomePage() -> Element {
     // landing can now disclose its own advanced surfaces, so hiding the card
     // would make them reachable only by search. No group is all-advanced today;
     // this is so the next one that is does not vanish.
+    // SPEC-11.1.6: a card per group with any visible surface, advanced or not.
     let group_cards: Vec<(SettingsGroupKey, Route, &'static str, &'static str)> =
         SETTINGS_GROUP_ORDER
             .iter()
@@ -1120,6 +1152,7 @@ pub fn SettingsHomePage() -> Element {
             .collect()
     };
 
+    // SPEC-11.1.2: hub title and subtitle.
     use_page_title("Settings");
     rsx! {
         PageHeader {
@@ -1142,6 +1175,7 @@ pub fn SettingsHomePage() -> Element {
             }
         }
 
+        // SPEC-11.1.5: grouped view when there is no query.
         if q.is_empty() {
             if !personalization.is_empty() {
                 SettingsGroup {
@@ -1167,6 +1201,7 @@ pub fn SettingsHomePage() -> Element {
                 }
             }
         } else if results.is_empty() {
+            // SPEC-11.1.11: empty search result text.
             Card {
                 div { class: "py-12 text-center text-sm text-muted",
                     "No settings match \"{query}\"."
@@ -1200,6 +1235,7 @@ use crate::modules::theme::SectionColor;
 /// Card grid columns. Prominent (content-heavy) groups get fewer, wider
 /// columns so each card claims more of the row; `items-stretch` keeps every
 /// card the same height regardless of description length (MAPPS-257).
+// SPEC-11.1.4: column counts.
 fn group_grid_class(prominent: bool) -> &'static str {
     if prominent {
         "grid grid-cols-1 gap-4 items-stretch sm:grid-cols-2"
@@ -1212,6 +1248,7 @@ fn group_grid_class(prominent: bool) -> &'static str {
 /// Settings > {Group} > {Leaf}, with every ancestor a clickable `Link`.
 #[component]
 pub(crate) fn SettingsBreadcrumb(current: Route) -> Element {
+    // SPEC-11.2.12: unregistered routes get only the "Settings" crumb.
     let mut items = vec![BreadcrumbItem {
         label: "Settings".to_string(),
         route: Some(Route::SettingsHome {}),
@@ -1247,6 +1284,7 @@ fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
     // MAPPS-979: this group's own disclosure, remembered per group. A signal so
     // the chevron expands in place, seeded from the preference so a reload keeps
     // it, and written back on every toggle.
+    // SPEC-11.2.6: seeded from the per-group preference.
     let pref = group.advanced_pref();
     let mut expanded = use_signal({
         let pref = pref.clone();
@@ -1266,11 +1304,13 @@ fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
         Vec::new()
     };
 
+    // SPEC-11.2.1: landing title, subtitle and back button.
     use_page_title(title.to_string());
     rsx! {
         PageHeader {
             title: title.to_string(),
             subtitle: group.description().to_string(),
+            // SPEC-11.2.2: two-crumb trail.
             breadcrumbs: rsx! {
                 Breadcrumbs {
                     items: vec![
@@ -1293,11 +1333,13 @@ fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
         // The disclosure. Absent entirely when the group has no advanced
         // surfaces, which is the difference between "there is more here" and "
         // there is nothing behind this chevron".
+        // SPEC-11.2.4: no row at all without advanced surfaces.
         if advanced_count > 0 {
             div { class: "mt-6",
                 button {
                     r#type: "button",
                     class: "flex w-full items-center gap-2 rounded-md border border-line px-4 py-3 text-left text-sm font-medium text-content hover:bg-surface-2 focus:outline-none focus:ring-2 focus:ring-accent",
+                    // SPEC-11.2.5: state attributes. SPEC-11.2.7: toggle persists.
                     "aria-expanded": if is_expanded { "true" } else { "false" },
                     "data-testid": "settings-advanced-disclosure",
                     onclick: {
@@ -1353,6 +1395,7 @@ fn SettingsSurfaceGrid(surfaces: Vec<&'static SettingsSurface>, prominent: bool)
                 }
             }
         }
+        // SPEC-11.2.9: one headed grid per non-empty section.
         for (section , members) in sections {
             div { class: "mt-6 first:mt-0",
                 h2 { class: "text-sm font-semibold uppercase tracking-wide text-muted",
@@ -1389,6 +1432,7 @@ pub fn ServiceTypesGroupPage() -> Element {
     // MAPPS-357: N/A - static group landing (card list from the taxonomy), no
     // server resource to fail.
     rsx! {
+        // SPEC-11.2.1: landing for /settings/group/service-types.
         SettingsGroupLanding { group: SettingsGroupKey::ServiceTypes }
     }
 }
@@ -1399,6 +1443,7 @@ pub fn BillingGroupPage() -> Element {
     // MAPPS-357: N/A - static group landing (card list from the taxonomy), no
     // server resource to fail.
     rsx! {
+        // SPEC-11.2.1: landing for /settings/group/billing.
         SettingsGroupLanding { group: SettingsGroupKey::Billing }
     }
 }
@@ -1409,6 +1454,7 @@ pub fn TicketsGroupPage() -> Element {
     // MAPPS-357: N/A - static group landing (card list from the taxonomy), no
     // server resource to fail.
     rsx! {
+        // SPEC-11.2.1: landing for /settings/group/tickets.
         SettingsGroupLanding { group: SettingsGroupKey::Tickets }
     }
 }
@@ -1419,6 +1465,7 @@ pub fn IntegrationsGroupPage() -> Element {
     // MAPPS-357: N/A - static group landing (card list from the taxonomy), no
     // server resource to fail.
     rsx! {
+        // SPEC-11.2.1: landing for /settings/group/integrations.
         SettingsGroupLanding { group: SettingsGroupKey::Integrations }
     }
 }
@@ -1429,6 +1476,7 @@ pub fn DataGroupPage() -> Element {
     // MAPPS-357: N/A - static group landing (card list from the taxonomy), no
     // server resource to fail.
     rsx! {
+        // SPEC-11.2.1: landing for /settings/group/data.
         SettingsGroupLanding { group: SettingsGroupKey::Data }
     }
 }
@@ -1444,6 +1492,7 @@ pub fn DataGroupPage() -> Element {
 /// configured with `tenant_claim_name`, and falls back to the nil uuid. That is
 /// how `/settings/organization` came to request tenant 00000000-...-000000000000
 /// and fail to load. The server resolves the tenant from the session instead.
+// SPEC-11.4.2: addressed without a tenant id.
 const TENANT_PATH: &str = "/tenants/current";
 
 /// MAPPS-886: the organisation record, submitted whole. PMS-896 split this
@@ -1452,23 +1501,28 @@ const TENANT_PATH: &str = "/tenants/current";
 /// merge does not enforce that). This page owns both writers: the contact
 /// fields below go through here, the invoice identity below that still goes
 /// through `TENANT_PATH` because this endpoint carries no field for it.
+// SPEC-11.4.10: whole-record organization write.
 const ORGANIZATION_PATH: &str = "/tenants/current/organization";
 
 /// MAPPS-429: the tenant logo endpoint. Its own path because a file is PUT as
 /// multipart and lands immediately, rather than riding the JSON body above.
+// SPEC-11.5.2: logo upload and delete endpoint.
 const TENANT_LOGO_PATH: &str = "/tenants/current/logo";
 
 /// MAPPS-885 (PMS-789): the deployment-wide product name, a system value
 /// shared by every tenant on the box rather than a per-tenant field, so it is
 /// its own endpoint and its own save cycle on this page rather than riding
 /// [`TENANT_PATH`] or [`ORGANIZATION_PATH`].
+// SPEC-11.6.2: deployment-wide app name endpoint.
 const APP_NAME_PATH: &str = "/settings/app-name";
 
 /// Mirrors `MAX_APP_NAME_LEN` on mokosh-server.
+// SPEC-11.6.5: length limit in characters.
 const MAX_APP_NAME_LEN: i64 = 64;
 
 /// Trim, and treat blank as absent. A branding field saved as `""` would read
 /// back as "there is a contact, and it is empty".
+// SPEC-11.7.6: blank becomes absent.
 fn optional_text(raw: &str) -> Option<String> {
     let t = raw.trim();
     (!t.is_empty()).then(|| t.to_string())
@@ -1525,6 +1579,7 @@ struct BrandingView {
     /// Read to render the current logo. Never sent: the upload and the delete
     /// own this key, and PMS-758 is what happens when one writer overwrites
     /// another's half of the document.
+    // SPEC-11.4.16: read-only here; never written back.
     #[serde(default, skip_serializing)]
     logo_url: Option<String>,
 }
@@ -1532,6 +1587,7 @@ struct BrandingView {
 /// PMS-911 / PMS-896 / PMS-1006 bounds, mirrored from
 /// `validate_branding_value_as` on mokosh-server so an over-long value is
 /// refused in the field rather than by a 422.
+// SPEC-11.4.6: input length limits.
 const MAX_LEGAL_NAME: i64 = 120;
 const MAX_TAX_ID: i64 = 60;
 const MAX_POSTAL_ADDRESS: i64 = 300;
@@ -1542,6 +1598,7 @@ const MAX_PRIMARY_COLOR: i64 = 7;
 /// The three keys `branding.invoice_template` accepts, in the order the
 /// picker offers them, paired with the sentence describing each look
 /// (mirrors `pdf::Template` on mokosh-server).
+// SPEC-11.4.7: the three selectable invoice templates.
 const INVOICE_TEMPLATES: [(&str, &str, &str); 3] = [
     (
         "classic",
@@ -1563,6 +1620,7 @@ const INVOICE_TEMPLATES: [(&str, &str, &str); 3] = [
 /// The one bound `maxlength` cannot express: the server holds a postal address
 /// to six lines as well as 300 characters. `\r` is folded away there, so it is
 /// not counted here either.
+// SPEC-11.4.8: line-count validation message.
 fn address_lines_error(raw: &str) -> Option<String> {
     let lines = raw.replace('\r', "").lines().count();
     (lines > MAX_POSTAL_ADDRESS_LINES)
@@ -1667,6 +1725,7 @@ struct AppNameBody {
 
 /// `POST /api/v1/work-types` and `PUT /api/v1/work-types/{id}`, for
 /// `mokosh_types::time_tracking::UpsertWorkTypeRequest`.
+// SPEC-11.7.1: typed body mirroring the shared request type.
 #[derive(Debug, Serialize)]
 struct UpsertWorkTypeBody {
     name: String,
@@ -1674,6 +1733,7 @@ struct UpsertWorkTypeBody {
     default_billable: bool,
     /// `rust_decimal` serializes a `Decimal` as a JSON string, which is the
     /// shape the literal this replaced sent and the shape the list read back.
+    // SPEC-11.7.7: decimal as a JSON string.
     default_rate: Option<rust_decimal::Decimal>,
     is_active: bool,
     sort_order: i32,
@@ -1755,6 +1815,7 @@ struct UpsertTicketCategoryBody {
 /// untouched field has always meant here. Anything else that is not an `i32` is
 /// reported on the field and logged: it used to become `0` silently, so a typo
 /// reordered the list and said nothing (MAPPS-688).
+// SPEC-11.7.3: blank is 0; unparseable is warned and reported.
 fn parse_sort_order(raw: &str) -> Result<i32, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1778,6 +1839,7 @@ fn parse_sort_order(raw: &str) -> Result<i32, String> {
 /// Parse a rate field into the `Decimal` `UpsertWorkTypeRequest` declares.
 /// Blank clears the rate; anything unparseable is reported on the field rather
 /// than sent for the server to refuse (MAPPS-688).
+// SPEC-11.7.4: blank clears; unparseable is warned and reported.
 fn parse_rate(raw: &str) -> Result<Option<rust_decimal::Decimal>, String> {
     use std::str::FromStr;
     let trimmed = raw.trim();
@@ -1796,6 +1858,7 @@ fn parse_rate(raw: &str) -> Result<Option<rust_decimal::Decimal>, String> {
 /// Parse the parent picker's value into the `Uuid` the category request
 /// declares. Blank is "top level"; a value that is not a UUID is reported on
 /// the picker rather than sent (MAPPS-688).
+// SPEC-11.7.5: blank is top level; non-UUID is warned and reported.
 fn parse_parent_id(raw: &str) -> Result<Option<Uuid>, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1849,6 +1912,7 @@ fn parse_parent_id(raw: &str) -> Result<Option<Uuid>, String> {
 pub fn OrganizationSettingsPage() -> Element {
     use_page_title("Organization");
 
+    // SPEC-11.4.1: the form body, and its fetches, mount only for admins.
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Organization" } };
     }
@@ -1913,6 +1977,7 @@ fn OrganizationSettingsBody() -> Element {
     let mut app_name_saving = use_signal(|| false);
     let mut app_name_error = use_signal(String::new);
 
+    // SPEC-11.6.2: operator-only load, re-run on reachability change.
     let app_name_resource = use_resource(move || async move {
         let _reachable = crate::hooks::use_server_reachable();
         load_operator_setting::<AppNameView>(APP_NAME_PATH, "app name").await
@@ -1921,6 +1986,7 @@ fn OrganizationSettingsBody() -> Element {
     // PMS-1280: only the deployment's operator owns the app name; any other
     // organisation's admin does not see the card at all.
     let app_name_owned = !matches!(*app_name_snap, Some(OperatorLoad::NotOperator));
+    // SPEC-11.6.3: seed once from the first Loaded response.
     // MAPPS-1232: the form only once the value has loaded. A failed load (or
     // one still in flight) used to render an editable empty input, and Save
     // would then send a blank that clears the stored override.
@@ -1935,6 +2001,7 @@ fn OrganizationSettingsBody() -> Element {
     }
 
     let handle_save_app_name = move |_| {
+        // SPEC-11.6.5: re-entrancy guard, then trim and length check.
         if app_name_saving() {
             return;
         }
@@ -1954,6 +2021,7 @@ fn OrganizationSettingsBody() -> Element {
                 )
                 .await
                 {
+                    // SPEC-11.6.6: show what the server stored.
                     Ok(saved) => {
                         app_name_value.set(saved.app_name.clone().unwrap_or_default());
                         app_name_effective.set(saved.effective);
@@ -1962,6 +2030,7 @@ fn OrganizationSettingsBody() -> Element {
                             "App name saved. Applies to every tenant on this deployment.",
                         );
                     }
+                    // SPEC-11.6.7: field message wins over the generic one.
                     Err(err) => {
                         crate::hooks::push_api_error(&err);
                         if let Some(m) = err.field_message("app_name") {
@@ -1976,6 +2045,7 @@ fn OrganizationSettingsBody() -> Element {
         });
     };
 
+    // SPEC-11.4.2: re-fetch on org switch and reachability change. SPEC-11.4.3: failure logged.
     let tenant = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
@@ -1992,6 +2062,7 @@ fn OrganizationSettingsBody() -> Element {
         Some(Some(t)) => t.name.clone(),
         _ => String::new(),
     };
+    // SPEC-11.4.5: seed once so typing is never overwritten.
     if !seeded() && !current_name.is_empty() {
         name.set(current_name.clone());
         if let Some(Some(t)) = &*snap {
@@ -2016,12 +2087,14 @@ fn OrganizationSettingsBody() -> Element {
 
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // SPEC-11.4.4: outage view instead of the form.
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Organization".to_string() }
         };
     }
 
+    // SPEC-11.4.8: validation order; SPEC-11.4.9: in-flight guard.
     let handle_save = move |_| {
         if saving() {
             return;
@@ -2073,6 +2146,7 @@ fn OrganizationSettingsBody() -> Element {
                 // own whole-record submission on ORGANIZATION_PATH; the
                 // invoice identity is a separate merge patch on TENANT_PATH
                 // below, so neither call re-nulls the other's keys.
+                // SPEC-11.4.10: organization record first, branding patch only after it succeeds.
                 match crate::hooks::fetch::api::put_authed_typed::<TenantView, _>(
                     ORGANIZATION_PATH,
                     &OrganizationProfileBody {
@@ -2091,6 +2165,7 @@ fn OrganizationSettingsBody() -> Element {
                         // the next full page load and the toast below reads as
                         // though the rename only half took. The server's own
                         // value, not `trimmed`: it is the one that was stored.
+                        // SPEC-11.4.11: cache the stored name, not the typed one.
                         auth.write().set_active_org_name(&saved.name);
 
                         match crate::hooks::fetch::api::put_authed_typed::<TenantView, _>(
@@ -2117,6 +2192,7 @@ fn OrganizationSettingsBody() -> Element {
                         .await
                         {
                             Ok(_) => {
+                                // SPEC-11.4.12: success only after both calls.
                                 crate::hooks::push_toast(
                                     crate::components::AlertType::Success,
                                     "Organization saved. New emails will use it.",
@@ -2128,6 +2204,7 @@ fn OrganizationSettingsBody() -> Element {
                                 // `branding.{key}`; hang the message on the
                                 // field rather than only in the banner at the
                                 // top.
+                                // SPEC-11.4.14: branding failure leaves the record saved.
                                 if let Some(m) = err.field_message("branding.postal_address") {
                                     postal_address_error.set(m);
                                 } else if let Some(m) = err.field_message("branding.primary_color")
@@ -2143,6 +2220,7 @@ fn OrganizationSettingsBody() -> Element {
                         crate::hooks::push_api_error(&err);
                         // ORGANIZATION_PATH names a rejected field by its own
                         // name, not `branding.{key}` (MAPPS-886).
+                        // SPEC-11.4.13: first matching field wins; no second call.
                         if let Some(m) = err.field_message("name") {
                             name_error.set(m);
                         } else if let Some(m) = err.field_message("phone") {
@@ -2174,6 +2252,7 @@ fn OrganizationSettingsBody() -> Element {
             },
         }
 
+        // SPEC-11.4.3: visible load failure.
         if fetch_failed {
             LoadError { what: "your organization" }
         }
@@ -2199,6 +2278,7 @@ fn OrganizationSettingsBody() -> Element {
                         name: "app_name",
                         label: "App name",
                         value: app_name_value(),
+                        // SPEC-11.6.4: limit and blank-value help text.
                         maxlength: MAX_APP_NAME_LEN,
                         disabled: app_name_saving(),
                         help: format!(
@@ -2216,6 +2296,7 @@ fn OrganizationSettingsBody() -> Element {
                             loading: app_name_saving(),
                             disabled: !can_mutate,
                             title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                            // SPEC-11.6.8: disabled while the server cannot be mutated.
                             onclick: handle_save_app_name,
                             "Save Changes"
                         }
@@ -2231,6 +2312,7 @@ fn OrganizationSettingsBody() -> Element {
                         ErrorBanner { "{error()}" }
                     }
 
+                    // SPEC-11.4.6: field set. SPEC-11.4.15: editing clears that field's error.
                     Input {
                         name: "name",
                         label: "Organization name",
@@ -2356,6 +2438,7 @@ fn OrganizationSettingsBody() -> Element {
                     // on this page, and a made-up sample would misrepresent the
                     // MSP's own data. The real preview is on a draft invoice
                     // itself (`src/pages/billing.rs`).
+                    // SPEC-11.4.7: always one template selected.
                     fieldset { class: "space-y-3",
                         legend { class: "block text-sm font-medium text-content",
                             "Invoice template"
@@ -2384,6 +2467,7 @@ fn OrganizationSettingsBody() -> Element {
                     // It is a separate request either way (multipart, not JSON), and
                     // a file input whose effect waits for a Save button is one people
                     // forget to press.
+                    // SPEC-11.5.1: accepted types and disabled rules.
                     FileField {
                         name: "org_logo",
                         label: "Logo",
@@ -2402,6 +2486,7 @@ fn OrganizationSettingsBody() -> Element {
                                             src: "{crate::hooks::fetch::api::api_origin()}{src}",
                                             alt: "Current organization logo",
                                             class: "max-h-14 max-w-56 rounded border border-line bg-surface p-1",
+                                            // SPEC-11.5.4: swap to the text fallback on load error.
                                             onerror: move |_| logo_broken.set(true),
                                         }
                                     } else {
@@ -2419,6 +2504,7 @@ fn OrganizationSettingsBody() -> Element {
                                     }
                                 }
                             }
+                            // SPEC-11.5.5: confirm before DELETE. SPEC-11.5.6: close after either outcome.
                             crate::components::ConfirmDialog {
                                 open: confirming_logo_remove(),
                                 title: "Remove logo".to_string(),
@@ -2441,6 +2527,7 @@ fn OrganizationSettingsBody() -> Element {
                                                     logo_url.set(None);
                                                     logo_broken.set(false);
                                                 }
+                                                // SPEC-11.5.6: failure text under the logo field.
                                                 Err(e) => {
                                                     // MAPPS-1232: shown, and now logged.
                                                     tracing::error!("logo removal failed: {e}");
@@ -2459,6 +2546,7 @@ fn OrganizationSettingsBody() -> Element {
                                 },
                             }
                         },
+                        // SPEC-11.5.2: upload starts on selection. SPEC-11.5.3: errors under the field.
                         onchange: move |evt: FormEvent| {
                                 logo_error.set(String::new());
                                 let Some(file) = evt.files().into_iter().next() else {
@@ -2508,6 +2596,7 @@ fn OrganizationSettingsBody() -> Element {
                         Button {
                             variant: ButtonVariant::Primary,
                             loading: saving(),
+                            // SPEC-11.4.9: save disabled while loading or unreachable.
                             disabled: is_loading || !can_mutate,
                             title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                             onclick: handle_save,
@@ -2535,10 +2624,12 @@ struct ImportSummary {
 /// tenant-name confirmation that matches the backend `confirm` guard.
 #[component]
 pub fn ImportExportSettingsPage() -> Element {
+    // SPEC-11.8.1: title, gate and panel order.
     use_page_title("Import & Export");
     // MAPPS-377: read auth before the admin gate so the hook set stays stable
     // across renders; it only reads context and feeds the tenant-name
     // confirmation used past the gate.
+    // SPEC-11.8.2: hooks stay above the admin gate.
     let auth = crate::hooks::use_auth();
     // MAPPS-602: and the tenant read has to be above the gate for the same
     // reason MAPPS-377 moved `use_auth` there. It was left below, so a render
@@ -2579,6 +2670,7 @@ pub fn ImportExportSettingsPage() -> Element {
     // configured to mint it, and the failure hid behind the switcher-name
     // fallback below: the page then asked for a confirmation phrase the server
     // would never accept.
+    // SPEC-11.8.3: fetched name first, cached org name only as a logged fallback.
     let fetched_name = match &*tenant.read_unchecked() {
         Some(Some(t)) if !t.name.is_empty() => Some(t.name.clone()),
         _ => None,
@@ -2614,6 +2706,7 @@ fn ExportPanel() -> Element {
     // destination itself. Empty on the web, where the browser says so.
     let mut saved_to = use_signal(String::new);
 
+    // SPEC-11.8.5: one download at a time; default file name when none is sent.
     let on_download = move |_| {
         if *downloading.read() {
             return;
@@ -2633,13 +2726,16 @@ fn ExportPanel() -> Element {
                             // desktop build chose the destination itself, and
                             // a file that lands somewhere the user cannot
                             // find has not been delivered.
+                            // SPEC-11.8.6: show where a host-chosen path landed.
                             Ok(Some(path)) => saved_to.set(path),
                             Ok(None) => {}
+                            // SPEC-11.8.7: save failure text.
                             Err(e) => {
                                 error.set(format!("Fetched the export but could not save it: {e}"))
                             }
                         }
                     }
+                    // SPEC-11.8.7: request failure text.
                     Err(e) => error.set(format!("Could not export: {e}")),
                 }
             }
@@ -2649,6 +2745,7 @@ fn ExportPanel() -> Element {
 
     rsx! {
         Card {
+            // SPEC-11.8.4: export card text.
             title: "Export".to_string(),
             subtitle: "Download a JSON snapshot of all of this tenant's data. The file contains your records. Store it somewhere safe.".to_string(),
             div { class: "space-y-3",
@@ -2684,6 +2781,7 @@ fn ImportPanel(tenant_name: String) -> Element {
     // MAPPS-357: block the destructive write while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
 
+    // SPEC-11.8.11: every condition must hold before import is enabled.
     let confirm_matches = !expected.is_empty() && confirm.read().trim() == expected.trim();
     let has_file = file_text.read().is_some();
     let can_import = confirm_matches && has_file && can_mutate && !*importing.read();
@@ -2697,6 +2795,7 @@ fn ImportPanel(tenant_name: String) -> Element {
         let Some(text) = file_text.read().clone() else {
             return;
         };
+        // SPEC-11.8.12: reject invalid JSON before any request.
         let export_json: serde_json::Value = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(e) => {
@@ -2706,6 +2805,7 @@ fn ImportPanel(tenant_name: String) -> Element {
         };
         let confirm_val = confirm.read().trim().to_string();
         importing.set(true);
+        // SPEC-11.8.13: the server re-checks the confirmation against the tenant name.
         let body = serde_json::json!({ "confirm": confirm_val, "export": export_json });
         spawn(async move {
             #[cfg(feature = "app")]
@@ -2716,6 +2816,7 @@ fn ImportPanel(tenant_name: String) -> Element {
                 )
                 .await
                 {
+                    // SPEC-11.8.14: summary on success. SPEC-11.8.15: failure text.
                     Ok(s) => summary.set(Some(s)),
                     Err(e) => error.set(format!("Import failed: {}", e.user_message())),
                 }
@@ -2728,6 +2829,7 @@ fn ImportPanel(tenant_name: String) -> Element {
         Card {
             title: "Import".to_string(),
             div { class: "space-y-4",
+                // SPEC-11.8.8: destructive-action warning.
                 ErrorBanner {
                     strong { "This replaces all current data for this tenant." }
                     " Importing wipes every existing record and restores from the uploaded file. This cannot be undone. Export a fresh snapshot first."
@@ -2736,6 +2838,7 @@ fn ImportPanel(tenant_name: String) -> Element {
                 FileField {
                     name: "import_file",
                     label: "Import file",
+                    // SPEC-11.8.9: accepted types, selection feedback and read failure.
                     accept: "application/json,.json",
                     help: if file_name.read().is_empty() {
                         String::new()
@@ -2766,6 +2869,7 @@ fn ImportPanel(tenant_name: String) -> Element {
                     },
                 }
 
+                // SPEC-11.8.10: typed-confirmation input.
                 crate::components::Input {
                     name: "import_confirm",
                     label: "Type the tenant name to confirm",
@@ -2805,6 +2909,7 @@ fn ImportPanel(tenant_name: String) -> Element {
                                 // instead - the same mechanism an org switch
                                 // uses - rather than leaving a dead button after
                                 // a destructive import.
+                                // SPEC-11.8.16: reload, or bump the generation on hosts with no document.
                                 if !crate::platform::location::reload() {
                                     crate::hooks::fetch::bump_tenant_generation();
                                 }
@@ -2847,6 +2952,7 @@ fn SeedDemoPanel() -> Element {
     // MAPPS-357: block the write while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
 
+    // SPEC-11.9.2: guarded, empty-object POST.
     let on_load = move |_| {
         if *loading.read() || !can_mutate {
             return;
@@ -2864,6 +2970,7 @@ fn SeedDemoPanel() -> Element {
                 .await
                 {
                     Ok(r) => result.set(Some(r)),
+                    // SPEC-11.9.4: failure text.
                     Err(e) => error.set(format!("Could not load demo data: {}", e.user_message())),
                 }
             }
@@ -2874,6 +2981,7 @@ fn SeedDemoPanel() -> Element {
 
     rsx! {
         Card {
+            // SPEC-11.9.1: demo data card text.
             title: "Load demo data".to_string(),
             // Dynamic, so a `format!` rather than a literal, which is the shape
             // MAPPS-966 used for the profile page's headings.
@@ -2883,6 +2991,7 @@ fn SeedDemoPanel() -> Element {
                     ErrorBanner { "{error.read()}" }
                 }
                 if let Some(r) = result.read().clone() {
+                    // SPEC-11.9.3: an already-populated tenant is a warning, not an error.
                     if r.seeded {
                         StatusBanner { tone: BannerTone::Success, "{r.message}" }
                     } else {
@@ -2915,6 +3024,7 @@ fn SettingsGroup(
         color: color.unwrap_or(SectionColor::Blue),
         prominent,
     });
+    // SPEC-11.1.17: coloured heading, muted when no colour is given.
     let heading_class = match color {
         Some(c) => c.heading_class(),
         None => "text-muted",
@@ -2944,6 +3054,7 @@ fn SettingsCard(
         color: SectionColor::Blue,
         prominent: false,
     });
+    // SPEC-11.1.18: own colour, else group colour, else blue.
     let border = color.unwrap_or(style.color).card_border_class();
     let padding = if style.prominent { "p-6" } else { "p-4" };
     rsx! {
@@ -2975,6 +3086,7 @@ struct SettingValueRow {
 /// separately. A row that exists holding something that is not a whole number
 /// is a stored-data fault nobody can see from the form, so it is logged before
 /// `default` stands in rather than substituted in silence (MAPPS-700).
+// SPEC-11.10.3: warn and substitute the default. SPEC-11.12.2, SPEC-11.11.2: same rule.
 fn setting_u64(value: &serde_json::Value, path: &str, default: u64) -> u64 {
     value.as_u64().unwrap_or_else(|| {
         tracing::warn!("setting {path} holds {value}, not a whole number; reading it as {default}");
@@ -2996,6 +3108,7 @@ fn setting_in_range(value: u64, path: &str, min: u64, max: u64) -> u64 {
 }
 
 const DEFAULT_DUE_SETTING_PATH: &str = "/settings/scheduling/default_due_business_days";
+// SPEC-11.10.6: upper bound mirrors the server range.
 const MAX_DUE_BUSINESS_DAYS: u32 = 365;
 
 /// `/settings/scheduling` - edit the tenant-wide standard due date that the
@@ -3005,6 +3118,7 @@ const MAX_DUE_BUSINESS_DAYS: u32 = 365;
 /// `validate_setting_value` range (0..=365) on the server (PMS-345).
 #[component]
 pub fn SchedulingSettingsPage() -> Element {
+    // SPEC-11.10.1: admin-only.
     use_page_title("Scheduling");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Scheduling" } };
@@ -3025,6 +3139,7 @@ fn SchedulingSettingsBody() -> Element {
             // An unset setting is the unconfigured state, not an error:
             // treat it as `0` (no default due date). A failed read is
             // surfaced so the form does not silently seed 0.
+            // SPEC-11.10.2: re-runs on tenant and reachability change (reads above).
             match crate::modules::tenant_settings::get("scheduling", "default_due_business_days")
                 .await
             {
@@ -3036,6 +3151,7 @@ fn SchedulingSettingsBody() -> Element {
                 ) as u32),
                 Ok(None) => Some(0u32),
                 Err(e) => {
+                    // SPEC-11.10.4: logged, then rendered as a failure state.
                     tracing::error!("default due-date setting load failed: {e}");
                     None
                 }
@@ -3057,6 +3173,7 @@ fn SchedulingSettingsBody() -> Element {
     let reachable = crate::hooks::use_server_reachable();
     if matches!(*snap, Some(None)) && !reachable {
         return rsx! {
+            // SPEC-11.10.4: outage view.
             crate::components::ContentUnavailable { title: "Scheduling".to_string() }
         };
     }
@@ -3104,6 +3221,7 @@ fn StandardDueDateForm(initial: u32) -> Element {
         let raw = value.read().trim().to_string();
         // Mirror the server-side validation (0..=365) so the user gets an
         // inline message instead of a 422 round-trip.
+        // SPEC-11.10.6: inline range check before any request.
         let parsed = match raw.parse::<u32>() {
             Ok(n) if n <= MAX_DUE_BUSINESS_DAYS => n,
             _ => {
@@ -3122,6 +3240,7 @@ fn StandardDueDateForm(initial: u32) -> Element {
             #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::put_authed_typed::<SettingValueRow, _>(
+                    // SPEC-11.10.7: per-key PUT.
                     DEFAULT_DUE_SETTING_PATH,
                     &body,
                 )
@@ -3152,6 +3271,7 @@ fn StandardDueDateForm(initial: u32) -> Element {
                     ErrorBanner { "{error}" }
                 }
                 crate::components::Input {
+                    // SPEC-11.10.5, SPEC-11.10.8: input bounds; edits hide the saved notice.
                     name: "default_due_business_days",
                     label: "Default due date (business days)",
                     r#type: "number",
@@ -3187,7 +3307,9 @@ fn StandardDueDateForm(initial: u32) -> Element {
 // GET `/settings/billing_reminders`, PUT `/settings/billing_reminders/{key}`
 // ============================================================================
 
+// SPEC-11.11.2: category read and per-key write path.
 const REMINDERS_CATEGORY_PATH: &str = "/settings/billing_reminders";
+// SPEC-11.11.4: schedule limits.
 const REMINDER_MAX_STEPS: usize = 10;
 const REMINDER_MAX_DAY: u64 = 365;
 
@@ -3211,6 +3333,7 @@ struct ReminderSettings {
 }
 
 impl ReminderSettings {
+    // SPEC-11.11.2: absent rows keep the defaults.
     fn from_rows(rows: &[SettingRow]) -> Self {
         let mut s = Self {
             enabled: false,
@@ -3260,6 +3383,7 @@ impl ReminderSettings {
 /// (`billing_reminders/schedule`, PMS-1037): 1 to 10 whole days, each in
 /// 1..=365, strictly ascending. Mirrored here so a slip reads as an inline
 /// message rather than a 422 round trip; the server's rule still wins.
+// SPEC-11.11.4: client-side mirror of the server schedule rule.
 pub(crate) fn parse_reminder_schedule(raw: &str) -> Result<Vec<u64>, String> {
     let mut days = Vec::new();
     for part in raw
@@ -3306,6 +3430,7 @@ fn schedule_text(days: &[u64]) -> String {
 /// local sending hour.
 #[component]
 pub fn PaymentRemindersSettingsPage() -> Element {
+    // SPEC-11.11.1: admin-only.
     use_page_title("Payment Reminders");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Payment Reminders" } };
@@ -3327,6 +3452,7 @@ fn PaymentRemindersBody() -> Element {
             {
                 Ok(rows) => Some(ReminderSettings::from_rows(&rows)),
                 // No row yet is the unconfigured state: the server's defaults.
+                // SPEC-11.11.3: 404 means unconfigured, not failed.
                 Err(e) if e.status_code() == Some(404) => Some(ReminderSettings::from_rows(&[])),
                 Err(e) => {
                     tracing::error!("payment reminder settings load failed: {e}");
@@ -3394,6 +3520,7 @@ fn PaymentRemindersForm(initial: ReminderSettings) -> Element {
                 return;
             }
         };
+        // SPEC-11.11.5: schedule is validated first, then the hour.
         let hour = match send_hour.read().trim().parse::<u64>() {
             Ok(h) if h <= 23 => h,
             _ => {
@@ -3410,6 +3537,7 @@ fn PaymentRemindersForm(initial: ReminderSettings) -> Element {
                 // Three rows, three writes, the schedule first: a refused
                 // schedule then leaves the switch where it was rather than
                 // turning reminders on against the old steps.
+                // SPEC-11.11.6: ordered writes, stop at the first failure.
                 let writes = [
                     ("schedule", serde_json::json!(days)),
                     ("send_hour", serde_json::json!(hour)),
@@ -3425,6 +3553,7 @@ fn PaymentRemindersForm(initial: ReminderSettings) -> Element {
                         )
                         .await
                     {
+                        // SPEC-11.11.7: the message names the failing key.
                         failed = Some(format!(
                             "Could not save payment reminder settings ({key}): {}",
                             e.user_message()
@@ -3457,6 +3586,7 @@ fn PaymentRemindersForm(initial: ReminderSettings) -> Element {
                 if !error.read().is_empty() {
                     ErrorBanner { "{error}" }
                 }
+                // SPEC-11.11.8: field set; edits hide the saved notice.
                 crate::components::Checkbox {
                     name: "billing_reminders_enabled",
                     label: "Send payment reminders",
@@ -3529,6 +3659,7 @@ const DEFAULT_MAX_HOURS_PER_DAY: u32 = 24;
 /// 422 round-trip.
 #[component]
 pub fn MaxHoursPerDaySettingsPage() -> Element {
+    // SPEC-11.12.1: admin-only.
     use_page_title("Time Tracking");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Time Tracking" } };
@@ -3555,6 +3686,7 @@ fn MaxHoursPerDaySettingsBody() -> Element {
                         &value,
                         MAX_HOURS_PER_DAY_SETTING_PATH,
                         u64::from(DEFAULT_MAX_HOURS_PER_DAY),
+                        // SPEC-11.12.2: seeded value is held to 1..=24.
                     ),
                     MAX_HOURS_PER_DAY_SETTING_PATH,
                     1,
@@ -3562,6 +3694,7 @@ fn MaxHoursPerDaySettingsBody() -> Element {
                 ) as u32),
                 Ok(None) => Some(DEFAULT_MAX_HOURS_PER_DAY),
                 Err(e) => {
+                    // SPEC-11.12.3: logged, then rendered as a failure state.
                     tracing::error!("max-hours-per-day setting load failed: {e}");
                     None
                 }
@@ -3630,6 +3763,7 @@ fn MaxHoursPerDayForm(initial: u32) -> Element {
         // Mirror the server-side validation (1..=24) so the user gets an
         // inline message instead of a 422 round-trip.
         let parsed = match raw.parse::<u32>() {
+            // SPEC-11.12.4: inline range check before any request.
             Ok(n) if (1..=MAX_HOURS_PER_DAY_CEILING).contains(&n) => n,
             _ => {
                 error.set(format!(
@@ -3647,6 +3781,7 @@ fn MaxHoursPerDayForm(initial: u32) -> Element {
             #[cfg(feature = "app")]
             {
                 match crate::hooks::fetch::api::put_authed_typed::<SettingValueRow, _>(
+                    // SPEC-11.12.5: per-key PUT.
                     MAX_HOURS_PER_DAY_SETTING_PATH,
                     &body,
                 )
@@ -3677,6 +3812,7 @@ fn MaxHoursPerDayForm(initial: u32) -> Element {
                     ErrorBanner { "{error}" }
                 }
                 crate::components::Input {
+                    // SPEC-11.12.6: input bounds; edits hide the saved notice.
                     name: "max_hours_per_day",
                     label: "Maximum hours per day",
                     r#type: "number",
@@ -3731,6 +3867,7 @@ struct WorkTypeRow {
 
 #[component]
 pub fn WorkTypesSettingsPage() -> Element {
+    // SPEC-11.13.1: admin-only. SPEC-11.14.1: work types list page.
     use_page_title("Work Types");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Work Types" } };
@@ -3750,9 +3887,11 @@ fn WorkTypesSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.13.2: paged list, refetched on tenant or reachability change.
         let path = format!("/work-types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeRow>>(&path)
             .await
+            // SPEC-11.13.3: failure is logged, then rendered as a failure state.
             .inspect_err(|e| tracing::error!("work type settings load failed: {e}"))
             .ok()
     });
@@ -3760,6 +3899,7 @@ fn WorkTypesSettingsBody() -> Element {
     let snap = resource.read_unchecked();
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
+    // SPEC-11.13.5: total comes from the response meta.
     let (rows, total): (Vec<WorkTypeRow>, u64) = match &*snap {
         Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
@@ -3773,6 +3913,7 @@ fn WorkTypesSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.13.3: outage view.
             crate::components::ContentUnavailable { title: "Work Types".to_string() }
         };
     }
@@ -3790,6 +3931,7 @@ fn WorkTypesSettingsBody() -> Element {
                     // MAPPS-357: block creates while the server is unreachable.
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    // SPEC-11.13.6: blank form, blocked while unreachable.
                     onclick: move |_| editing.set(Some(WorkTypeFormState::new())),
                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                     "New Work Type"
@@ -3822,6 +3964,7 @@ fn WorkTypesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 4,
+                        // SPEC-11.13.4: empty state only when the load succeeded.
                         title: "No work types yet".to_string(),
                         description: "Work types are the billable categories you pick when logging a time entry.".to_string(),
                         actions: rsx! {
@@ -3841,11 +3984,13 @@ fn WorkTypesSettingsBody() -> Element {
                         for row in rows.iter().cloned() {
                             {
                                 let key = row.id.to_string();
+                                // SPEC-11.13.7: row opens the edit form.
                                 let edit_state = WorkTypeFormState::from_existing(&row);
                                 let name = row.name.clone();
                                 let billable = row.default_billable;
                                 let active = row.is_active;
                                 let rate = row.default_rate.clone().unwrap_or_default();
+                                // SPEC-11.14.2: blank rate shows "-".
                                 let rate_display = if rate.trim().is_empty() {
                                     "-".to_string()
                                 } else {
@@ -3912,6 +4057,7 @@ impl WorkTypeFormState {
             id: None,
             name: String::new(),
             description: String::new(),
+            // SPEC-11.14.3: new work types default to billable and active.
             default_billable: true,
             default_rate: String::new(),
             is_active: true,
@@ -3972,6 +4118,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
             error.set("Name is required.".to_string());
             return;
         }
+        // SPEC-11.14.4: name, then rate, then sort order. SPEC-11.13.9: name required.
         let rate = match parse_rate(&default_rate.read()) {
             Ok(v) => v,
             Err(message) => {
@@ -4000,6 +4147,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.13.8: POST or PUT. SPEC-11.13.10: failure stays in the form.
                 match save_lookup(id, "/work-types", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save work type: {err}")),
@@ -4020,6 +4168,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.13.11: runs only after the confirmation dialog.
                 match delete_lookup(&id, "/work-types").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
@@ -4040,6 +4189,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
+            // SPEC-11.14.3: form labels.
             create_label: "Create Work Type".to_string(),
             crate::components::Input {
                 name: "work_type_name",
@@ -4071,6 +4221,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
                 },
             }
             crate::components::Input {
+                // SPEC-11.13.12: bounded number, inline parse error.
                 name: "work_type_sort_order",
                 label: "Sort order",
                 r#type: "number",
@@ -4093,6 +4244,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
                 },
             }
             crate::components::Checkbox {
+                // SPEC-11.13.13: active by default on a new row.
                 name: "work_type_active",
                 label: "Active",
                 checked: *is_active.read(),
@@ -4124,6 +4276,7 @@ struct TaskStatusRow {
 
 #[component]
 pub fn TaskStatusesSettingsPage() -> Element {
+    // SPEC-11.13.1: admin-only. SPEC-11.15.1: task statuses list page.
     use_page_title("Task Statuses");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Task Statuses" } };
@@ -4143,9 +4296,11 @@ fn TaskStatusesSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.13.2: paged list, refetched on tenant or reachability change.
         let path = format!("/task-statuses?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TaskStatusRow>>(&path)
             .await
+            // SPEC-11.13.3: failure is logged, then rendered as a failure state.
             .inspect_err(|e| tracing::error!("task status settings load failed: {e}"))
             .ok()
     });
@@ -4166,6 +4321,7 @@ fn TaskStatusesSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.13.3: outage view.
             crate::components::ContentUnavailable { title: "Task Statuses".to_string() }
         };
     }
@@ -4183,6 +4339,7 @@ fn TaskStatusesSettingsBody() -> Element {
                     // MAPPS-357: block creates while the server is unreachable.
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    // SPEC-11.13.6: blank form, blocked while unreachable.
                     onclick: move |_| editing.set(Some(TaskStatusFormState::new())),
                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                     "New Status"
@@ -4214,6 +4371,7 @@ fn TaskStatusesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
+                        // SPEC-11.13.4: empty state only when the load succeeded.
                         title: "No task statuses yet".to_string(),
                         description: "Task statuses are the workflow states a project task moves through.".to_string(),
                         actions: rsx! {
@@ -4233,6 +4391,7 @@ fn TaskStatusesSettingsBody() -> Element {
                         for row in rows.iter().cloned() {
                             {
                                 let key = row.id.to_string();
+                                // SPEC-11.13.7: row opens the edit form.
                                 let edit_state = TaskStatusFormState::from_existing(&row);
                                 let name = row.name.clone();
                                 let color = row.color.clone();
@@ -4249,6 +4408,7 @@ fn TaskStatusesSettingsBody() -> Element {
                                             onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
+                                        // SPEC-11.15.2: swatch plus completed/open badge.
                                         TableCell { ColorSwatch { color } }
                                         TableCell {
                                             if completed {
@@ -4294,6 +4454,7 @@ impl TaskStatusFormState {
             id: None,
             name: String::new(),
             color: "#6b7280".to_string(),
+            // SPEC-11.15.4: new rows start gray, open, order 0.
             is_completed: false,
             sort_order: "0".to_string(),
         }
@@ -4350,6 +4511,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
             error.set("Name is required.".to_string());
             return;
         }
+        // SPEC-11.15.5: name, then color, then sort order. SPEC-11.13.9: name required.
         let color_val = color.read().trim().to_string();
         if color_val.is_empty() {
             error.set("Color is required.".to_string());
@@ -4374,6 +4536,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.13.8: POST or PUT. SPEC-11.13.10: failure stays in the form.
                 match save_lookup(id, crate::hooks::task_statuses::ENDPOINT, &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save task status: {err}")),
@@ -4394,6 +4557,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.13.11: runs only after the confirmation dialog.
                 match delete_lookup(&id, crate::hooks::task_statuses::ENDPOINT).await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
@@ -4414,6 +4578,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
+            // SPEC-11.15.3: form labels.
             create_label: "Create Status".to_string(),
             crate::components::Input {
                 name: "task_status_name",
@@ -4431,6 +4596,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
                 oninput: move |e: FormEvent| color.set(e.value()),
             }
             crate::components::Input {
+                // SPEC-11.13.12: bounded number, inline parse error.
                 name: "task_status_sort_order",
                 label: "Sort order",
                 r#type: "number",
@@ -4483,6 +4649,7 @@ struct AssetTypeRow {
 
 #[component]
 pub fn AssetTypesSettingsPage() -> Element {
+    // SPEC-11.13.1: admin-only. SPEC-11.16.1: asset types list page.
     use_page_title("Asset Types");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Asset Types" } };
@@ -4502,9 +4669,11 @@ fn AssetTypesSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.13.2: paged list, refetched on tenant or reachability change.
         let path = format!("/asset-types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeRow>>(&path)
             .await
+            // SPEC-11.13.3: failure is logged, then rendered as a failure state.
             .inspect_err(|e| tracing::error!("asset type settings load failed: {e}"))
             .ok()
     });
@@ -4525,6 +4694,7 @@ fn AssetTypesSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.13.3: outage view.
             crate::components::ContentUnavailable { title: "Asset Types".to_string() }
         };
     }
@@ -4542,6 +4712,7 @@ fn AssetTypesSettingsBody() -> Element {
                     // MAPPS-357: block creates while the server is unreachable.
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    // SPEC-11.13.6: blank form, blocked while unreachable.
                     onclick: move |_| editing.set(Some(AssetTypeFormState::new())),
                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                     "New Asset Type"
@@ -4573,6 +4744,7 @@ fn AssetTypesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
+                        // SPEC-11.13.4: empty state only when the load succeeded.
                         title: "No asset types yet".to_string(),
                         description: "Asset types categorize the equipment you track for each company.".to_string(),
                         actions: rsx! {
@@ -4592,6 +4764,7 @@ fn AssetTypesSettingsBody() -> Element {
                         for row in rows.iter().cloned() {
                             {
                                 let key = row.id.to_string();
+                                // SPEC-11.13.7: row opens the edit form.
                                 let edit_state = AssetTypeFormState::from_existing(&row);
                                 let name = row.name.clone();
                                 let icon = row.icon.clone().unwrap_or_default();
@@ -4609,6 +4782,7 @@ fn AssetTypesSettingsBody() -> Element {
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
+                                            // SPEC-11.16.2: blank icon shows "-".
                                             if icon.is_empty() {
                                                 span { class: "text-subtle", "-" }
                                             } else {
@@ -4717,6 +4891,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         // PMS-476: `itil_category` is free-text so the tenant can coin
         // a new value; the help text on the input surfaces the
         // standard ITIL classes as suggestions.
+        // SPEC-11.16.4: flat types only; parent is always null. SPEC-11.13.9: name required.
         let body = serde_json::json!({
             "name": name.read().trim(),
             "icon": opt_str(&icon_val),
@@ -4728,6 +4903,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.13.8: POST or PUT. SPEC-11.13.10: failure stays in the form. SPEC-11.16.5: hook endpoint.
                 match save_lookup(id, crate::hooks::asset_types::ENDPOINT, &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save asset type: {err}")),
@@ -4748,6 +4924,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.13.11: runs only after the confirmation dialog.
                 match delete_lookup(&id, crate::hooks::asset_types::ENDPOINT).await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
@@ -4768,6 +4945,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
+            // SPEC-11.16.3: form labels.
             create_label: "Create Asset Type".to_string(),
             crate::components::Input {
                 name: "asset_type_name",
@@ -4797,6 +4975,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
                 oninput: move |e: FormEvent| itil_category.set(e.value()),
             }
             crate::components::Checkbox {
+                // SPEC-11.13.13: active by default on a new row.
                 name: "asset_type_active",
                 label: "Active",
                 checked: *is_active.read(),
@@ -4828,6 +5007,7 @@ struct CompanyIndustryRow {
 
 #[component]
 pub fn CompanyIndustriesSettingsPage() -> Element {
+    // SPEC-11.13.1: admin-only. SPEC-11.17.1: industries list page.
     use_page_title("Company Industries");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Company Industries" } };
@@ -4847,9 +5027,11 @@ fn CompanyIndustriesSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.13.2: paged list, refetched on tenant or reachability change.
         let path = format!("/contacts/company-industries?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<CompanyIndustryRow>>(&path)
             .await
+            // SPEC-11.13.3: failure is logged, then rendered as a failure state.
             .inspect_err(|e| tracing::error!("company industry settings load failed: {e}"))
             .ok()
     });
@@ -4870,6 +5052,7 @@ fn CompanyIndustriesSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.13.3: outage view.
             crate::components::ContentUnavailable { title: "Company Industries".to_string() }
         };
     }
@@ -4887,6 +5070,7 @@ fn CompanyIndustriesSettingsBody() -> Element {
                     // MAPPS-357: block creates while the server is unreachable.
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    // SPEC-11.13.6: blank form, blocked while unreachable.
                     onclick: move |_| editing.set(Some(CompanyIndustryFormState::new())),
                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                     "New Industry"
@@ -4917,6 +5101,7 @@ fn CompanyIndustriesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 2,
+                        // SPEC-11.13.4: empty state only when the load succeeded.
                         title: "No industries yet".to_string(),
                         description: "Industries are the suggestions offered when you categorize a company.".to_string(),
                         actions: rsx! {
@@ -4936,6 +5121,7 @@ fn CompanyIndustriesSettingsBody() -> Element {
                         for row in rows.iter().cloned() {
                             {
                                 let key = row.id.to_string();
+                                // SPEC-11.13.7: row opens the edit form.
                                 let edit_state = CompanyIndustryFormState::from_existing(&row);
                                 let name = row.name.clone();
                                 let active = row.is_active;
@@ -5031,6 +5217,7 @@ fn CompanyIndustryFormModal(props: CompanyIndustryFormModalProps) -> Element {
         }
         saving.set(true);
         error.set(String::new());
+        // SPEC-11.17.3: body shape. SPEC-11.13.9: name required.
         let body = UpsertCompanyIndustryBody {
             name: name.read().trim().to_string(),
             is_active: *is_active.read(),
@@ -5039,6 +5226,7 @@ fn CompanyIndustryFormModal(props: CompanyIndustryFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.13.8: POST or PUT. SPEC-11.13.10: failure stays in the form.
                 match save_lookup(id, "/contacts/company-industries", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save industry: {err}")),
@@ -5061,6 +5249,7 @@ fn CompanyIndustryFormModal(props: CompanyIndustryFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.13.11: runs only after the confirmation dialog.
                 match delete_lookup(&id, "/contacts/company-industries").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
@@ -5081,6 +5270,7 @@ fn CompanyIndustryFormModal(props: CompanyIndustryFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
+            // SPEC-11.17.2: form labels.
             create_label: "Create Industry".to_string(),
             crate::components::Input {
                 name: "company_industry_name",
@@ -5091,6 +5281,7 @@ fn CompanyIndustryFormModal(props: CompanyIndustryFormModalProps) -> Element {
                 oninput: move |e: FormEvent| name.set(e.value()),
             }
             crate::components::Checkbox {
+                // SPEC-11.13.13: active by default on a new row.
                 name: "company_industry_active",
                 label: "Active",
                 checked: *is_active.read(),
@@ -5129,6 +5320,7 @@ struct ProjectTypeRow {
 
 #[component]
 pub fn ProjectTypesSettingsPage() -> Element {
+    // SPEC-11.13.1: admin-only. SPEC-11.18.1: project types list page.
     use_page_title("Project Types");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Project Types" } };
@@ -5148,9 +5340,11 @@ fn ProjectTypesSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.13.2: paged list, refetched on tenant or reachability change.
         let path = format!("/project-types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<ProjectTypeRow>>(&path)
             .await
+            // SPEC-11.13.3: failure is logged, then rendered as a failure state.
             .inspect_err(|e| tracing::error!("project type settings load failed: {e}"))
             .ok()
     });
@@ -5171,6 +5365,7 @@ fn ProjectTypesSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.13.3: outage view.
             crate::components::ContentUnavailable { title: "Project Types".to_string() }
         };
     }
@@ -5188,6 +5383,7 @@ fn ProjectTypesSettingsBody() -> Element {
                     // MAPPS-357: block creates while the server is unreachable.
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    // SPEC-11.13.6: blank form, blocked while unreachable.
                     onclick: move |_| editing.set(Some(ProjectTypeFormState::new())),
                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                     "New Project Type"
@@ -5219,6 +5415,7 @@ fn ProjectTypesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
+                        // SPEC-11.13.4: empty state only when the load succeeded.
                         title: "No project types yet".to_string(),
                         description: "Project types classify projects, for example client work against internal work.".to_string(),
                         actions: rsx! {
@@ -5238,6 +5435,7 @@ fn ProjectTypesSettingsBody() -> Element {
                         for row in rows.iter().cloned() {
                             {
                                 let key = row.id.to_string();
+                                // SPEC-11.13.7: row opens the edit form.
                                 let edit_state = ProjectTypeFormState::from_existing(&row);
                                 let name = row.name.clone();
                                 let default = row.is_default;
@@ -5256,6 +5454,7 @@ fn ProjectTypesSettingsBody() -> Element {
                                             div { class: "flex items-center gap-2",
                                                 span { class: "font-medium text-accent", "{name}" }
                                                 if system {
+                                                    // SPEC-11.18.2: system rows are badged.
                                                     Badge { variant: BadgeVariant::Gray, "System" }
                                                 }
                                             }
@@ -5368,6 +5567,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
         };
         saving.set(true);
         error.set(String::new());
+        // SPEC-11.18.5: name, then sort order; is_system never sent. SPEC-11.13.9: name required.
         // `is_system` is server-owned and not sent.
         let body = serde_json::json!({
             "name": name.read().trim(),
@@ -5379,6 +5579,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.13.8: POST or PUT. SPEC-11.13.10: failure stays in the form.
                 match save_lookup(id, "/project-types", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save project type: {err}")),
@@ -5399,6 +5600,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.13.11: runs only after the confirmation dialog.
                 match delete_lookup(&id, "/project-types").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
@@ -5413,6 +5615,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
         SettingFormModal {
             title: if is_edit { "Edit Project Type".to_string() } else { "New Project Type".to_string() },
             is_edit,
+            // SPEC-11.18.4: system rows cannot be deleted.
             deletable: !is_system,
             saving: *saving.read(),
             deleting: *deleting.read(),
@@ -5420,6 +5623,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
+            // SPEC-11.18.3: form labels.
             create_label: "Create Project Type".to_string(),
             if is_system {
                 div {
@@ -5432,11 +5636,13 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
                 label: "Name",
                 placeholder: "e.g. Client",
                 required: true,
+                // SPEC-11.18.4: system rows keep a fixed name.
                 disabled: is_system,
                 value: name.read().clone(),
                 oninput: move |e: FormEvent| name.set(e.value()),
             }
             crate::components::Input {
+                // SPEC-11.13.12: bounded number, inline parse error.
                 name: "project_type_sort_order",
                 label: "Sort order",
                 r#type: "number",
@@ -5460,6 +5666,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
                 },
             }
             crate::components::Checkbox {
+                // SPEC-11.13.13: active by default on a new row.
                 name: "project_type_active",
                 label: "Active",
                 checked: *is_active.read(),
@@ -5493,6 +5700,7 @@ struct PaymentTermRow {
 
 #[component]
 pub fn PaymentTermsSettingsPage() -> Element {
+    // SPEC-11.19.1: non-admins get the notice, so the body and its fetch never mount.
     use_page_title("Payment Terms");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Payment Terms" } };
@@ -5512,9 +5720,11 @@ fn PaymentTermsSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.19.2: page clamped to 1; SPEC-11.19.3: tenant and reachability refetch above.
         let path = format!("/payment-terms?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<PaymentTermRow>>(&path)
             .await
+            // SPEC-11.19.4: the cause is logged before the failure is mapped to None.
             .inspect_err(|e| tracing::error!("payment term settings load failed: {e}"))
             .ok()
     });
@@ -5535,6 +5745,7 @@ fn PaymentTermsSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.19.7: an outage is not an empty list.
             crate::components::ContentUnavailable { title: "Payment Terms".to_string() }
         };
     }
@@ -5544,8 +5755,10 @@ fn PaymentTermsSettingsBody() -> Element {
             title: "Payment Terms",
             subtitle: "Options for the invoice payment-terms dropdown",
             breadcrumbs: rsx! {
+                // SPEC-11.19.12
                 SettingsBreadcrumb { current: Route::SettingsPaymentTerms {} }
             },
+            // SPEC-11.21.1, SPEC-11.19.9: create button blocked while unreachable.
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
@@ -5560,10 +5773,12 @@ fn PaymentTermsSettingsBody() -> Element {
         }
 
         if fetch_failed {
+            // SPEC-11.19.6: a 4xx/5xx while reachable shows this banner, never the empty state.
             LoadError { what: "payment terms" }
         }
 
         DataTable {
+            // SPEC-11.19.5: skeleton while pending; SPEC-11.19.10: meta.total drives paging.
             loading: is_loading,
             total_items: total as usize,
             current_page,
@@ -5584,6 +5799,7 @@ fn PaymentTermsSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 4,
+                        // SPEC-11.19.8, SPEC-11.21.2
                         title: "No payment terms yet".to_string(),
                         description: "Payment terms fill the terms dropdown when you build an invoice.".to_string(),
                         actions: rsx! {
@@ -5603,6 +5819,7 @@ fn PaymentTermsSettingsBody() -> Element {
                         for row in rows.iter().cloned() {
                             {
                                 let key = row.id.to_string();
+                                // SPEC-11.19.11: row click and name cell open the editor.
                                 let edit_state = PaymentTermFormState::from_existing(&row);
                                 let name = row.name.clone();
                                 let default = row.is_default;
@@ -5624,6 +5841,7 @@ fn PaymentTermsSettingsBody() -> Element {
                                             if let Some(days) = net_days {
                                                 "{days}"
                                             } else {
+                                                // SPEC-11.21.3: null day count is shown as "-" with a reason.
                                                 span { class: "text-subtle", title: "No fixed count", "-" }
                                             }
                                         }
@@ -5643,6 +5861,7 @@ fn PaymentTermsSettingsBody() -> Element {
         }
 
         if let Some(state) = editing.read().clone() {
+            // SPEC-11.19.13: close and refetch on save or delete.
             PaymentTermFormModal {
                 state,
                 onclose: move |_| editing.set(None),
@@ -5668,6 +5887,7 @@ struct PaymentTermFormState {
 
 impl PaymentTermFormState {
     fn new() -> Self {
+        // SPEC-11.21.4: new term defaults.
         Self {
             id: None,
             name: String::new(),
@@ -5693,6 +5913,7 @@ impl PaymentTermFormState {
 /// MAPPS-662: the `net_days` value a term form sends. Blank is `null`, which
 /// the server keeps as "no fixed count"; anything else must be a whole
 /// number of days from 0 to 3650, the server's own cap.
+// SPEC-11.21.5: blank is null; 0..=3650 whole days; anything else is refused.
 fn net_days_json(raw: &str) -> Result<serde_json::Value, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -5742,9 +5963,11 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
             error.set("Name is required.".to_string());
             return;
         }
+        // SPEC-11.20.1, SPEC-11.20.2: in-flight and name checks precede this; SPEC-11.21.7: order is name, net days, sort order.
         let net_days_value = match net_days_json(&net_days.read()) {
             Ok(v) => v,
             Err(msg) => {
+                // SPEC-11.21.5: refused on the field, no request.
                 net_days_err.set(msg);
                 return;
             }
@@ -5763,14 +5986,17 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
             "is_default": *is_default.read(),
             "is_active": *is_active.read(),
             "sort_order": sort,
+            // SPEC-11.21.7
             "net_days": net_days_value,
         });
         let id = save_id.clone();
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.5: POST when new, PUT when editing; SPEC-11.20.6: failure keeps the editor open.
                 match save_lookup(id, crate::hooks::payment_terms::ENDPOINT, &body).await {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-11.20.7: the noun in the banner names the entity.
                     Err(err) => error.set(format!("Could not save payment term: {err}")),
                 }
             }
@@ -5789,6 +6015,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.8: runs only after the shared confirmation dialog.
                 match delete_lookup(&id, crate::hooks::payment_terms::ENDPOINT).await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
@@ -5801,6 +6028,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
+            // SPEC-11.20.9, SPEC-11.21.8
             title: if is_edit { "Edit Payment Term".to_string() } else { "New Payment Term".to_string() },
             is_edit,
             saving: *saving.read(),
@@ -5819,6 +6047,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
                 oninput: move |e: FormEvent| name.set(e.value()),
             }
             crate::components::Input {
+                // SPEC-11.21.5: bounds mirror net_days_json; SPEC-11.21.6: error clears on input.
                 name: "payment_term_net_days",
                 label: "Net days",
                 r#type: "number",
@@ -5835,6 +6064,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
                 },
             }
             crate::components::Input {
+                // SPEC-11.20.3: bounds mirror the i32 parse; SPEC-11.20.4: error clears on input.
                 name: "payment_term_sort_order",
                 label: "Sort order",
                 r#type: "number",
@@ -5886,6 +6116,7 @@ struct TicketStatusRow {
 
 #[component]
 pub fn TicketStatusesSettingsPage() -> Element {
+    // SPEC-11.19.1: non-admins get the notice, so the body and its fetch never mount.
     use_page_title("Ticket Statuses");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Ticket Statuses" } };
@@ -5905,9 +6136,11 @@ fn TicketStatusesSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.19.2: page clamped to 1; SPEC-11.19.3: tenant and reachability refetch above.
         let path = format!("/tickets/statuses?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketStatusRow>>(&path)
             .await
+            // SPEC-11.19.4: the cause is logged before the failure is mapped to None.
             .inspect_err(|e| tracing::error!("ticket status settings load failed: {e}"))
             .ok()
     });
@@ -5928,6 +6161,7 @@ fn TicketStatusesSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.19.7: an outage is not an empty list.
             crate::components::ContentUnavailable { title: "Ticket Statuses".to_string() }
         };
     }
@@ -5937,8 +6171,10 @@ fn TicketStatusesSettingsBody() -> Element {
             title: "Ticket Statuses",
             subtitle: "Workflow states a ticket can move through",
             breadcrumbs: rsx! {
+                // SPEC-11.19.12
                 SettingsBreadcrumb { current: Route::SettingsTicketStatuses {} }
             },
+            // SPEC-11.22.1, SPEC-11.19.9: create button blocked while unreachable.
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
@@ -5953,10 +6189,12 @@ fn TicketStatusesSettingsBody() -> Element {
         }
 
         if fetch_failed {
+            // SPEC-11.19.6: a 4xx/5xx while reachable shows this banner, never the empty state.
             LoadError { what: "ticket statuses" }
         }
 
         DataTable {
+            // SPEC-11.19.5: skeleton while pending; SPEC-11.19.10: meta.total drives paging.
             loading: is_loading,
             total_items: total as usize,
             current_page,
@@ -5977,6 +6215,7 @@ fn TicketStatusesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 4,
+                        // SPEC-11.19.8, SPEC-11.22.2
                         title: "No ticket statuses yet".to_string(),
                         description: "Ticket statuses are the workflow states a ticket moves through.".to_string(),
                         actions: rsx! {
@@ -5996,6 +6235,7 @@ fn TicketStatusesSettingsBody() -> Element {
                         for row in rows.iter().cloned() {
                             {
                                 let key = row.id.to_string();
+                                // SPEC-11.19.11: row click and name cell open the editor.
                                 let edit_state = TicketStatusFormState::from_existing(&row);
                                 let name = row.name.clone();
                                 let color = row.color.clone();
@@ -6016,6 +6256,7 @@ fn TicketStatusesSettingsBody() -> Element {
                                         TableCell { ColorSwatch { color } }
                                         TableCell {
                                             if closed {
+                                                // SPEC-11.22.3
                                                 Badge { variant: BadgeVariant::Gray, "Closed" }
                                             } else {
                                                 Badge { variant: BadgeVariant::Green, "Open" }
@@ -6036,6 +6277,7 @@ fn TicketStatusesSettingsBody() -> Element {
         }
 
         if let Some(state) = editing.read().clone() {
+            // SPEC-11.19.13: close and refetch on save or delete.
             TicketStatusFormModal {
                 state,
                 onclose: move |_| editing.set(None),
@@ -6063,6 +6305,7 @@ impl TicketStatusFormState {
         Self {
             id: None,
             name: String::new(),
+            // SPEC-11.22.4: gray default color.
             color: "#6b7280".to_string(),
             is_closed: false,
             is_default: false,
@@ -6074,6 +6317,7 @@ impl TicketStatusFormState {
         Self {
             id: Some(r.id.to_string()),
             name: r.name.clone(),
+            // SPEC-11.22.4: a blank stored color opens as gray.
             color: non_empty_color(&r.color),
             is_closed: r.is_closed,
             is_default: r.is_default,
@@ -6127,6 +6371,7 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
         };
         saving.set(true);
         error.set(String::new());
+        // SPEC-11.20.1, SPEC-11.20.2, SPEC-11.20.3: in-flight, name and sort order checks precede this; SPEC-11.22.5: body.
         let body = UpsertTicketStatusBody {
             name: name.read().trim().to_string(),
             color: color.read().trim().to_string(),
@@ -6138,6 +6383,7 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.5: POST when new, PUT when editing; SPEC-11.20.6: failure keeps the editor open.
                 let result = save_lookup(id, "/tickets/statuses", &body).await;
                 match result {
                     Ok(()) => onsaved.call(()),
@@ -6159,6 +6405,7 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.8: runs only after the shared confirmation dialog.
                 match delete_lookup(&id, "/tickets/statuses").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
@@ -6171,6 +6418,7 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
+            // SPEC-11.20.9, SPEC-11.22.6
             title: if is_edit { "Edit Ticket Status".to_string() } else { "New Ticket Status".to_string() },
             is_edit,
             saving: *saving.read(),
@@ -6196,6 +6444,7 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
                 oninput: move |e: FormEvent| color.set(e.value()),
             }
             crate::components::Input {
+                // SPEC-11.20.3: bounds mirror the i32 parse; SPEC-11.20.4: error clears on input.
                 name: "ticket_status_sort_order",
                 label: "Sort order",
                 r#type: "number",
@@ -6250,6 +6499,7 @@ struct TicketPriorityRow {
 
 #[component]
 pub fn TicketPrioritiesSettingsPage() -> Element {
+    // SPEC-11.19.1: non-admins get the notice, so the body and its fetch never mount.
     use_page_title("Ticket Priorities");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Ticket Priorities" } };
@@ -6269,9 +6519,11 @@ fn TicketPrioritiesSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.19.2: page clamped to 1; SPEC-11.19.3: tenant and reachability refetch above.
         let path = format!("/tickets/priorities?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketPriorityRow>>(&path)
             .await
+            // SPEC-11.19.4: the cause is logged before the failure is mapped to None.
             .inspect_err(|e| tracing::error!("ticket priority settings load failed: {e}"))
             .ok()
     });
@@ -6292,6 +6544,7 @@ fn TicketPrioritiesSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.19.7: an outage is not an empty list.
             crate::components::ContentUnavailable { title: "Ticket Priorities".to_string() }
         };
     }
@@ -6301,8 +6554,10 @@ fn TicketPrioritiesSettingsBody() -> Element {
             title: "Ticket Priorities",
             subtitle: "Priority levels and their SLA multipliers",
             breadcrumbs: rsx! {
+                // SPEC-11.19.12
                 SettingsBreadcrumb { current: Route::SettingsTicketPriorities {} }
             },
+            // SPEC-11.23.1, SPEC-11.19.9: create button blocked while unreachable.
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
@@ -6317,10 +6572,12 @@ fn TicketPrioritiesSettingsBody() -> Element {
         }
 
         if fetch_failed {
+            // SPEC-11.19.6: a 4xx/5xx while reachable shows this banner, never the empty state.
             LoadError { what: "ticket priorities" }
         }
 
         DataTable {
+            // SPEC-11.19.5: skeleton while pending; SPEC-11.19.10: meta.total drives paging.
             loading: is_loading,
             total_items: total as usize,
             current_page,
@@ -6341,6 +6598,7 @@ fn TicketPrioritiesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 4,
+                        // SPEC-11.19.8, SPEC-11.23.2
                         title: "No ticket priorities yet".to_string(),
                         description: "Priorities rank tickets and set the SLA multiplier applied to each one.".to_string(),
                         actions: rsx! {
@@ -6360,9 +6618,11 @@ fn TicketPrioritiesSettingsBody() -> Element {
                         for row in rows.iter().cloned() {
                             {
                                 let key = row.id.to_string();
+                                // SPEC-11.19.11: row click and name cell open the editor.
                                 let edit_state = TicketPriorityFormState::from_existing(&row);
                                 let name = row.name.clone();
                                 let color = row.color.clone();
+                                // SPEC-11.23.3: two decimals then "x".
                                 let sla = format!("{:.2}x", row.sla_multiplier);
                                 let default = row.is_default;
                                 rsx! {
@@ -6394,6 +6654,7 @@ fn TicketPrioritiesSettingsBody() -> Element {
         }
 
         if let Some(state) = editing.read().clone() {
+            // SPEC-11.19.13: close and refetch on save or delete.
             TicketPriorityFormModal {
                 state,
                 onclose: move |_| editing.set(None),
@@ -6424,6 +6685,7 @@ impl TicketPriorityFormState {
             name: String::new(),
             color: "#6b7280".to_string(),
             icon: String::new(),
+            // SPEC-11.23.4: new priority defaults.
             sla_multiplier: "1.0".to_string(),
             is_default: false,
             sort_order: "0".to_string(),
@@ -6483,6 +6745,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
         // Validate the multiplier client-side so an out-of-range or
         // non-numeric entry gets a clear message instead of a raw 400
         // (server accepts 0.0..=9.99).
+        // SPEC-11.23.5: 0..=9.99; NaN and infinities fall outside the range and are refused.
         let sla = match sla_multiplier.read().trim().parse::<f64>() {
             Ok(v) if (0.0..=9.99).contains(&v) => v,
             _ => {
@@ -6499,6 +6762,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
         };
         saving.set(true);
         error.set(String::new());
+        // SPEC-11.20.1, SPEC-11.20.2, SPEC-11.20.3: in-flight, name and sort order checks precede this; SPEC-11.23.6: body.
         let body = UpsertTicketPriorityBody {
             name: name.read().trim().to_string(),
             color: color.read().trim().to_string(),
@@ -6511,6 +6775,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.5: POST when new, PUT when editing; SPEC-11.20.6: failure keeps the editor open.
                 match save_lookup(id, "/tickets/priorities", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save priority: {err}")),
@@ -6531,6 +6796,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.8: runs only after the shared confirmation dialog.
                 match delete_lookup(&id, "/tickets/priorities").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
@@ -6543,6 +6809,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
+            // SPEC-11.20.9, SPEC-11.23.7
             title: if is_edit { "Edit Ticket Priority".to_string() } else { "New Ticket Priority".to_string() },
             is_edit,
             saving: *saving.read(),
@@ -6586,6 +6853,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
                 oninput: move |e: FormEvent| icon.set(e.value()),
             }
             crate::components::Input {
+                // SPEC-11.20.3: bounds mirror the i32 parse; SPEC-11.20.4: error clears on input.
                 name: "ticket_priority_sort_order",
                 label: "Sort order",
                 r#type: "number",
@@ -6630,6 +6898,7 @@ struct TicketTypeRow {
 
 #[component]
 pub fn TicketTypesSettingsPage() -> Element {
+    // SPEC-11.19.1: non-admins get the notice, so the body and its fetch never mount.
     use_page_title("Ticket Types");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Ticket Types" } };
@@ -6649,9 +6918,11 @@ fn TicketTypesSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.19.2: page clamped to 1; SPEC-11.19.3: tenant and reachability refetch above.
         let path = format!("/tickets/types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketTypeRow>>(&path)
             .await
+            // SPEC-11.19.4: the cause is logged before the failure is mapped to None.
             .inspect_err(|e| tracing::error!("ticket type settings load failed: {e}"))
             .ok()
     });
@@ -6672,6 +6943,7 @@ fn TicketTypesSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.19.7: an outage is not an empty list.
             crate::components::ContentUnavailable { title: "Ticket Types".to_string() }
         };
     }
@@ -6681,8 +6953,10 @@ fn TicketTypesSettingsBody() -> Element {
             title: "Ticket Types",
             subtitle: "Categories for the kind of work a ticket represents",
             breadcrumbs: rsx! {
+                // SPEC-11.19.12
                 SettingsBreadcrumb { current: Route::SettingsTicketTypes {} }
             },
+            // SPEC-11.24.1, SPEC-11.19.9: create button blocked while unreachable.
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
@@ -6697,10 +6971,12 @@ fn TicketTypesSettingsBody() -> Element {
         }
 
         if fetch_failed {
+            // SPEC-11.19.6: a 4xx/5xx while reachable shows this banner, never the empty state.
             LoadError { what: "ticket types" }
         }
 
         DataTable {
+            // SPEC-11.19.5: skeleton while pending; SPEC-11.19.10: meta.total drives paging.
             loading: is_loading,
             total_items: total as usize,
             current_page,
@@ -6720,6 +6996,7 @@ fn TicketTypesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
+                        // SPEC-11.19.8, SPEC-11.24.2
                         title: "No ticket types yet".to_string(),
                         description: "Ticket types describe the kind of work a ticket represents.".to_string(),
                         actions: rsx! {
@@ -6739,6 +7016,7 @@ fn TicketTypesSettingsBody() -> Element {
                         for row in rows.iter().cloned() {
                             {
                                 let key = row.id.to_string();
+                                // SPEC-11.19.11: row click and name cell open the editor.
                                 let edit_state = TicketTypeFormState::from_existing(&row);
                                 let name = row.name.clone();
                                 let desc = row.description.clone().unwrap_or_default();
@@ -6769,6 +7047,7 @@ fn TicketTypesSettingsBody() -> Element {
         }
 
         if let Some(state) = editing.read().clone() {
+            // SPEC-11.19.13: close and refetch on save or delete.
             TicketTypeFormModal {
                 state,
                 onclose: move |_| editing.set(None),
@@ -6798,6 +7077,7 @@ impl TicketTypeFormState {
             name: String::new(),
             description: String::new(),
             icon: String::new(),
+            // SPEC-11.24.3: new type defaults (active, sort order 0).
             is_active: true,
             sort_order: "0".to_string(),
         }
@@ -6860,6 +7140,7 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
         };
         saving.set(true);
         error.set(String::new());
+        // SPEC-11.20.1, SPEC-11.20.2, SPEC-11.20.3: in-flight, name and sort order checks precede this; SPEC-11.24.4: body.
         let body = UpsertTicketTypeBody {
             name: name.read().trim().to_string(),
             description: optional_text(&description.read()),
@@ -6871,6 +7152,7 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.5: POST when new, PUT when editing; SPEC-11.20.6: failure keeps the editor open.
                 match save_lookup(id, "/tickets/types", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save type: {err}")),
@@ -6891,6 +7173,7 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.8: runs only after the shared confirmation dialog.
                 match delete_lookup(&id, "/tickets/types").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
@@ -6903,6 +7186,7 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
+            // SPEC-11.20.9, SPEC-11.24.5
             title: if is_edit { "Edit Ticket Type".to_string() } else { "New Ticket Type".to_string() },
             is_edit,
             saving: *saving.read(),
@@ -6935,6 +7219,7 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
                 oninput: move |e: FormEvent| icon.set(e.value()),
             }
             crate::components::Input {
+                // SPEC-11.20.3: bounds mirror the i32 parse; SPEC-11.20.4: error clears on input.
                 name: "ticket_type_sort_order",
                 label: "Sort order",
                 r#type: "number",
@@ -6980,6 +7265,7 @@ struct TicketQueueRow {
 
 #[component]
 pub fn TicketQueuesSettingsPage() -> Element {
+    // SPEC-11.19.1: non-admins get the notice, so the body and its fetch never mount.
     use_page_title("Ticket Queues");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Ticket Queues" } };
@@ -6999,9 +7285,11 @@ fn TicketQueuesSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.19.2: page clamped to 1; SPEC-11.19.3: tenant and reachability refetch above.
         let path = format!("/tickets/queues?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketQueueRow>>(&path)
             .await
+            // SPEC-11.19.4: the cause is logged before the failure is mapped to None.
             .inspect_err(|e| tracing::error!("ticket queue settings load failed: {e}"))
             .ok()
     });
@@ -7022,6 +7310,7 @@ fn TicketQueuesSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.19.7: an outage is not an empty list.
             crate::components::ContentUnavailable { title: "Ticket Queues".to_string() }
         };
     }
@@ -7031,8 +7320,10 @@ fn TicketQueuesSettingsBody() -> Element {
             title: "Ticket Queues",
             subtitle: "Queues tickets are routed into",
             breadcrumbs: rsx! {
+                // SPEC-11.19.12
                 SettingsBreadcrumb { current: Route::SettingsTicketQueues {} }
             },
+            // SPEC-11.25.1, SPEC-11.19.9: create button blocked while unreachable.
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
@@ -7047,10 +7338,12 @@ fn TicketQueuesSettingsBody() -> Element {
         }
 
         if fetch_failed {
+            // SPEC-11.19.6: a 4xx/5xx while reachable shows this banner, never the empty state.
             LoadError { what: "ticket queues" }
         }
 
         DataTable {
+            // SPEC-11.19.5: skeleton while pending; SPEC-11.19.10: meta.total drives paging.
             loading: is_loading,
             total_items: total as usize,
             current_page,
@@ -7070,6 +7363,7 @@ fn TicketQueuesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
+                        // SPEC-11.19.8, SPEC-11.25.2
                         title: "No ticket queues yet".to_string(),
                         description: "Queues are where incoming tickets are routed for a team to pick up.".to_string(),
                         actions: rsx! {
@@ -7089,6 +7383,7 @@ fn TicketQueuesSettingsBody() -> Element {
                         for row in rows.iter().cloned() {
                             {
                                 let key = row.id.to_string();
+                                // SPEC-11.19.11: row click and name cell open the editor.
                                 let edit_state = TicketQueueFormState::from_existing(&row);
                                 let name = row.name.clone();
                                 let color = row.color.clone().unwrap_or_default();
@@ -7107,6 +7402,7 @@ fn TicketQueuesSettingsBody() -> Element {
                                         }
                                         TableCell {
                                             if color.is_empty() {
+                                                // SPEC-11.25.3
                                                 span { class: "text-subtle", "-" }
                                             } else {
                                                 ColorSwatch { color }
@@ -7127,6 +7423,7 @@ fn TicketQueuesSettingsBody() -> Element {
         }
 
         if let Some(state) = editing.read().clone() {
+            // SPEC-11.19.13: close and refetch on save or delete.
             TicketQueueFormModal {
                 state,
                 onclose: move |_| editing.set(None),
@@ -7156,6 +7453,7 @@ impl TicketQueueFormState {
             id: None,
             name: String::new(),
             description: String::new(),
+            // SPEC-11.25.4: gray default color.
             color: "#6b7280".to_string(),
             icon: String::new(),
             is_default: false,
@@ -7168,6 +7466,7 @@ impl TicketQueueFormState {
             id: Some(r.id.to_string()),
             name: r.name.clone(),
             description: r.description.clone().unwrap_or_default(),
+            // SPEC-11.25.4: a missing color opens as gray.
             color: non_empty_color(r.color.as_deref().unwrap_or_default()),
             icon: r.icon.clone().unwrap_or_default(),
             is_default: r.is_default,
@@ -7222,6 +7521,7 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
         };
         saving.set(true);
         error.set(String::new());
+        // SPEC-11.20.1, SPEC-11.20.2, SPEC-11.20.3: in-flight, name and sort order checks precede this; SPEC-11.25.5: body.
         let body = UpsertTicketQueueBody {
             name: name.read().trim().to_string(),
             description: optional_text(&description.read()),
@@ -7234,6 +7534,7 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.5: POST when new, PUT when editing; SPEC-11.20.6: failure keeps the editor open.
                 match save_lookup(id, "/tickets/queues", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save queue: {err}")),
@@ -7254,6 +7555,7 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.8: runs only after the shared confirmation dialog.
                 match delete_lookup(&id, "/tickets/queues").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
@@ -7266,6 +7568,7 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
+            // SPEC-11.20.9, SPEC-11.25.6
             title: if is_edit { "Edit Ticket Queue".to_string() } else { "New Ticket Queue".to_string() },
             is_edit,
             saving: *saving.read(),
@@ -7305,6 +7608,7 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
                 oninput: move |e: FormEvent| icon.set(e.value()),
             }
             crate::components::Input {
+                // SPEC-11.20.3: bounds mirror the i32 parse; SPEC-11.20.4: error clears on input.
                 name: "ticket_queue_sort_order",
                 label: "Sort order",
                 r#type: "number",
@@ -7359,6 +7663,7 @@ struct TicketCategoryRow {
 /// unresolved reference ("Unknown" with a tooltip and an INFO log through
 /// the MAPPS-1036 helper), never the empty cell the old join produced on a
 /// miss.
+// SPEC-11.26.3: not set, named, or unresolved with a tooltip and an info log.
 fn ticket_category_parent_label(
     parent_id: Option<Uuid>,
     parent_name: Option<&str>,
@@ -7382,6 +7687,7 @@ fn ticket_category_parent_label(
 
 #[component]
 pub fn TicketCategoriesSettingsPage() -> Element {
+    // SPEC-11.19.1: non-admins get the notice, so the body and its fetch never mount.
     use_page_title("Ticket Categories");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Ticket Categories" } };
@@ -7401,9 +7707,11 @@ fn TicketCategoriesSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.19.2: page clamped to 1; SPEC-11.19.3: tenant and reachability refetch above.
         let path = format!("/tickets/categories?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketCategoryRow>>(&path)
             .await
+            // SPEC-11.19.4: the cause is logged before the failure is mapped to None.
             .inspect_err(|e| tracing::error!("ticket category settings load failed: {e}"))
             .ok()
     });
@@ -7418,6 +7726,8 @@ fn TicketCategoriesSettingsBody() -> Element {
         // subscribe so it also repopulates on reconnect. It still degrades to
         // an empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.26.4: every page of the collection, not just the visible one.
+        // SPEC-11.26.5: logged at warn; the picker then lists only the top-level option.
         // MAPPS-1233: the failure is kept, so the editor can say its parent
         // list is incomplete instead of offering only "None (top level)".
         crate::hooks::fetch::api::get_all_authed::<TicketCategoryRow>("/tickets/categories")
@@ -7442,6 +7752,7 @@ fn TicketCategoriesSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.19.7: an outage is not an empty list.
             crate::components::ContentUnavailable { title: "Ticket Categories".to_string() }
         };
     }
@@ -7459,8 +7770,10 @@ fn TicketCategoriesSettingsBody() -> Element {
             title: "Ticket Categories",
             subtitle: "Hierarchical categories for classifying tickets",
             breadcrumbs: rsx! {
+                // SPEC-11.19.12
                 SettingsBreadcrumb { current: Route::SettingsTicketCategories {} }
             },
+            // SPEC-11.26.1, SPEC-11.19.9: create button blocked while unreachable.
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
@@ -7475,10 +7788,12 @@ fn TicketCategoriesSettingsBody() -> Element {
         }
 
         if fetch_failed {
+            // SPEC-11.19.6: a 4xx/5xx while reachable shows this banner, never the empty state.
             LoadError { what: "ticket categories" }
         }
 
         DataTable {
+            // SPEC-11.19.5: skeleton while pending; SPEC-11.19.10: meta.total drives paging.
             loading: is_loading,
             total_items: total as usize,
             current_page,
@@ -7498,6 +7813,7 @@ fn TicketCategoriesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
+                        // SPEC-11.19.8, SPEC-11.26.2
                         title: "No ticket categories yet".to_string(),
                         description: "Categories classify tickets into a hierarchy for routing and reporting.".to_string(),
                         actions: rsx! {
@@ -7517,6 +7833,7 @@ fn TicketCategoriesSettingsBody() -> Element {
                         for row in rows.iter().cloned() {
                             {
                                 let key = row.id.to_string();
+                                // SPEC-11.19.11: row click and name cell open the editor.
                                 let edit_state = TicketCategoryFormState::from_existing(&row);
                                 let name = row.name.clone();
                                 let (parent, parent_title) = ticket_category_parent_label(
@@ -7559,6 +7876,7 @@ fn TicketCategoriesSettingsBody() -> Element {
                 all: all_cats.clone(),
                 parents_failed,
                 onclose: move |_| editing.set(None),
+                // SPEC-11.19.13, SPEC-11.26.9: both the page and the full set are refetched.
                 onsaved: move |_| {
                     editing.set(None);
                     resource.restart();
@@ -7596,6 +7914,7 @@ impl TicketCategoryFormState {
             id: Some(r.id.to_string()),
             name: r.name.clone(),
             description: r.description.clone().unwrap_or_default(),
+            // SPEC-11.26.10: an existing parent is preselected.
             parent_id: r.parent_id.map(|p| p.to_string()).unwrap_or_default(),
             is_active: r.is_active,
             sort_order: r.sort_order.to_string(),
@@ -7636,6 +7955,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
 
     // Parent options: every category except the one being edited (the
     // server also rejects self-parenting and deeper cycles).
+    // SPEC-11.26.6: top-level option first, then every other category in load order.
     let self_id = initial.id.clone();
     let mut parent_options = vec![SelectOption {
         value: String::new(),
@@ -7665,6 +7985,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
             error.set("Name is required.".to_string());
             return;
         }
+        // SPEC-11.20.1, SPEC-11.20.2: in-flight and name checks precede this; SPEC-11.26.7, SPEC-11.26.8: parent, then sort order.
         let parent = match parse_parent_id(&parent_id.read()) {
             Ok(v) => v,
             Err(message) => {
@@ -7681,6 +8002,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
         };
         saving.set(true);
         error.set(String::new());
+        // SPEC-11.20.3: sort order checked above; SPEC-11.26.8: body.
         let body = UpsertTicketCategoryBody {
             name: name.read().trim().to_string(),
             description: optional_text(&description.read()),
@@ -7692,6 +8014,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.5: POST when new, PUT when editing; SPEC-11.20.6: failure keeps the editor open.
                 match save_lookup(id, "/tickets/categories", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save category: {err}")),
@@ -7712,6 +8035,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.8: runs only after the shared confirmation dialog.
                 match delete_lookup(&id, "/tickets/categories").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
@@ -7724,6 +8048,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
+            // SPEC-11.20.9, SPEC-11.26.11
             title: if is_edit { "Edit Ticket Category".to_string() } else { "New Ticket Category".to_string() },
             is_edit,
             saving: *saving.read(),
@@ -7752,6 +8077,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
                 ErrorBanner { "Could not load every category, so the parent list below may be incomplete." }
             }
             Select {
+                // SPEC-11.26.7: picker error clears when the selection changes.
                 name: "ticket_category_parent",
                 label: "Parent category",
                 options: parent_options,
@@ -7763,6 +8089,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
                 },
             }
             crate::components::Input {
+                // SPEC-11.20.3: bounds mirror the i32 parse; SPEC-11.20.4: error clears on input.
                 name: "ticket_category_sort_order",
                 label: "Sort order",
                 r#type: "number",
@@ -7811,6 +8138,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
 /// Supported `RmmProvider` variants, mirrored from the server allowlist in
 /// `mokosh-server src/modules/rmm/routes.rs::create_connection`. Tuple is
 /// `(wire value, human label)`.
+// SPEC-11.27.1: wire values and labels, first entry is the default for a new connection.
 const RMM_PROVIDERS: &[(&str, &str)] = &[
     ("tactical_rmm", "Tactical RMM"),
     ("mesh_central", "MeshCentral"),
@@ -7821,6 +8149,7 @@ const RMM_PROVIDERS: &[(&str, &str)] = &[
 
 /// Human label for a stored provider wire value, falling back to the raw
 /// value if the server ever returns one this client does not know about.
+// SPEC-11.27.2: an unknown provider value is shown raw.
 fn rmm_provider_label(value: &str) -> String {
     RMM_PROVIDERS
         .iter()
@@ -7836,6 +8165,7 @@ fn rmm_provider_label(value: &str) -> String {
 /// picker). `None` id is the explicit not-set state; a `Some` id with no name
 /// is an unresolved reference: "Unknown" with a tooltip and an INFO log,
 /// through the MAPPS-1036 helper.
+// SPEC-11.27.4: not set, named, or unresolved with a tooltip and an info log.
 fn rmm_connection_label(id: Option<Uuid>, name: Option<&str>) -> (String, Option<String>) {
     match id {
         None => ("Not set".to_string(), None),
@@ -7857,6 +8187,7 @@ fn rmm_connection_label(id: Option<Uuid>, name: Option<&str>) -> (String, Option
 /// A coloured badge for a connection's last sync/test status.
 #[component]
 fn RmmStatusBadge(status: String) -> Element {
+    // SPEC-11.27.3: badge color by status; blank shows "-".
     let variant = match status.as_str() {
         "success" => BadgeVariant::Green,
         "failed" | "error" => BadgeVariant::Red,
@@ -7874,6 +8205,7 @@ fn RmmStatusBadge(status: String) -> Element {
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-11.28.3: the row has no credential fields, so none can be displayed.
 struct RmmConnectionRow {
     id: Uuid,
     name: String,
@@ -7893,6 +8225,7 @@ struct RmmConnectionRow {
 
 #[component]
 pub fn RmmConnectionsSettingsPage() -> Element {
+    // SPEC-11.19.1: non-admins get the notice, so the body and its fetch never mount.
     use_page_title("RMM Connections");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "RMM Connections" } };
@@ -7912,9 +8245,11 @@ fn RmmConnectionsSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.19.2: page clamped to 1; SPEC-11.19.3: tenant and reachability refetch above.
         let path = format!("/rmm/connections?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(&path)
             .await
+            // SPEC-11.19.4: the cause is logged before the failure is mapped to None.
             .inspect_err(|e| tracing::error!("RMM connection settings load failed: {e}"))
             .ok()
     });
@@ -7935,6 +8270,7 @@ fn RmmConnectionsSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.19.7: an outage is not an empty list.
             crate::components::ContentUnavailable { title: "RMM Connections".to_string() }
         };
     }
@@ -7944,8 +8280,10 @@ fn RmmConnectionsSettingsBody() -> Element {
             title: "RMM Connections",
             subtitle: "Connect remote monitoring providers and test reachability",
             breadcrumbs: rsx! {
+                // SPEC-11.19.12
                 SettingsBreadcrumb { current: Route::SettingsRmmConnections {} }
             },
+            // SPEC-11.28.1, SPEC-11.19.9: create button blocked while unreachable.
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
@@ -7960,10 +8298,12 @@ fn RmmConnectionsSettingsBody() -> Element {
         }
 
         if fetch_failed {
+            // SPEC-11.19.6: a 4xx/5xx while reachable shows this banner, never the empty state.
             LoadError { what: "RMM connections" }
         }
 
         DataTable {
+            // SPEC-11.19.5: skeleton while pending; SPEC-11.19.10: meta.total drives paging.
             loading: is_loading,
             total_items: total as usize,
             current_page,
@@ -7985,6 +8325,7 @@ fn RmmConnectionsSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 5,
+                        // SPEC-11.19.8, SPEC-11.28.2
                         title: "No RMM connections yet".to_string(),
                         description: "Connect a remote monitoring provider to pull its devices and alerts into the workspace.".to_string(),
                         actions: rsx! {
@@ -8004,6 +8345,7 @@ fn RmmConnectionsSettingsBody() -> Element {
                         for row in rows.iter().cloned() {
                             {
                                 let key = row.id.to_string();
+                                // SPEC-11.19.11: row click and name cell open the editor.
                                 let edit_state = RmmConnectionFormState::from_existing(&row);
                                 let name = row.name.clone();
                                 let provider = rmm_provider_label(&row.provider);
@@ -8038,6 +8380,7 @@ fn RmmConnectionsSettingsBody() -> Element {
         }
 
         if let Some(state) = editing.read().clone() {
+            // SPEC-11.19.13: close and refetch on save or delete.
             RmmConnectionFormModal {
                 state,
                 onclose: move |_| editing.set(None),
@@ -8069,6 +8412,7 @@ impl RmmConnectionFormState {
         Self {
             id: None,
             name: String::new(),
+            // SPEC-11.29.1: new connection defaults (first provider, active, 60 minutes).
             provider: RMM_PROVIDERS[0].0.to_string(),
             api_url: String::new(),
             is_active: true,
@@ -8097,6 +8441,7 @@ const DEFAULT_RMM_SYNC_INTERVAL_MINUTES: i32 = 60;
 /// seeded with and what an untouched form has always sent. Anything else that
 /// is not an `i32` is reported on the field and logged: it used to become 60
 /// silently, so a typo changed the sync cadence and said nothing (MAPPS-700).
+// SPEC-11.29.4: blank is 60; non-i32 is refused on the field and logged.
 /// MAPPS-1233: what the delete dialog calls a device mapping: its name, or
 /// its device id when the name is blank.
 fn mapping_delete_label(device_name: Option<&str>, device_id: &str) -> String {
@@ -8157,6 +8502,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
     let mut name = use_signal(|| initial.name.clone());
     let mut provider = use_signal(|| initial.provider.clone());
     let mut api_url = use_signal(|| initial.api_url.clone());
+    // SPEC-11.29.1: credentials always open blank; the server never returns them.
     let mut api_key = use_signal(String::new);
     let mut api_secret = use_signal(String::new);
     let mut is_active = use_signal(|| initial.is_active);
@@ -8192,6 +8538,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
             error.set("Name is required.".to_string());
             return;
         }
+        // SPEC-11.29.3: validation order is name, API URL, API key (create only), sync interval.
         if api_url.read().trim().is_empty() {
             error.set("API URL is required.".to_string());
             return;
@@ -8204,6 +8551,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
             error.set("API key is required.".to_string());
             return;
         }
+        // SPEC-11.20.1, SPEC-11.20.2: in-flight and name checks precede this; SPEC-11.29.4: interval.
         let interval = match parse_sync_interval(&sync_interval.read()) {
             Ok(v) => v,
             Err(message) => {
@@ -8229,6 +8577,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                             "provider": provider_v,
                             "api_url": url_v,
                             "api_key": key,
+                            // SPEC-11.29.5: create sends every field; a blank secret is null.
                             "api_secret": opt_str(&secret),
                             "is_active": active_v,
                             "sync_interval_minutes": interval,
@@ -8249,6 +8598,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                             "is_active": active_v,
                             "sync_interval_minutes": interval,
                         });
+                        // SPEC-11.29.6: no provider, and a credential only when typed.
                         if !key.is_empty() {
                             body["api_key"] = serde_json::Value::String(key);
                         }
@@ -8265,6 +8615,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                 };
                 match result {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-11.20.6: failure keeps the editor open.
                     Err(err) => error.set(format!("Could not save connection: {err}")),
                 }
             }
@@ -8283,6 +8634,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-11.20.8: runs only after the shared confirmation dialog.
                 match delete_lookup(&id, "/rmm/connections").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
@@ -8293,9 +8645,11 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
         });
     };
 
+    // SPEC-11.30.1: tests the stored connection by id, so it exists only on edit.
     let test_id = initial.id.clone();
     let handle_test = move |_| {
         let Some(id) = test_id.clone() else { return };
+        // SPEC-11.30.2: one test at a time; the previous result is cleared.
         if *testing.read() {
             return;
         }
@@ -8311,6 +8665,8 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                 )
                 .await
                 {
+                    // SPEC-11.30.4: reachable and unreachable results.
+                    // SPEC-11.30.5
                     Ok(v) => match describe_test_result(&v) {
                         Ok(result) => test_result.set(Some(result)),
                         Err(missing) => {
@@ -8330,6 +8686,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
         });
     };
 
+    // SPEC-11.29.7: edit placeholders say a blank credential keeps the stored one.
     let key_placeholder = if is_edit {
         "Leave blank to keep the current key"
     } else {
@@ -8343,6 +8700,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
+            // SPEC-11.20.9, SPEC-11.29.8
             title: if is_edit { "Edit RMM Connection".to_string() } else { "New RMM Connection".to_string() },
             is_edit,
             saving: *saving.read(),
@@ -8364,6 +8722,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
             // `UpdateRmmConnectionRequest` has no `provider` field), so the
             // dropdown is disabled on edit and just shows the stored value.
             Select {
+                // SPEC-11.29.2: immutable after creation.
                 name: "rmm_conn_provider",
                 label: "Provider",
                 options: provider_options,
@@ -8399,6 +8758,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                 oninput: move |e: FormEvent| api_secret.set(e.value()),
             }
             crate::components::Input {
+                // SPEC-11.29.4: error clears on input.
                 name: "rmm_conn_sync_interval",
                 label: "Sync interval (minutes)",
                 r#type: "number",
@@ -8429,6 +8789,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                         variant: ButtonVariant::Secondary,
                         loading: *testing.read(),
                         disabled: !can_mutate,
+                        // SPEC-11.30.3
                         title: (!can_mutate).then(|| "Can't test while the server is unreachable".to_string()),
                         onclick: handle_test,
                         "Test connection"
@@ -8471,6 +8832,7 @@ struct RmmDeviceMappingRow {
 
 #[component]
 pub fn RmmDeviceMappingsSettingsPage() -> Element {
+    // SPEC-11.31.1: non-admins get the notice, so the body and its fetch never mount.
     use_page_title("RMM Device Mappings");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "RMM Device Mappings" } };
@@ -8502,11 +8864,13 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         {
             Ok(rows) => {
                 if rows.is_empty() {
+                    // SPEC-11.31.2
                     tracing::info!("device mapping connection load succeeded and this tenant has no connections");
                 }
                 Some(rows)
             }
             Err(e) => {
+                // SPEC-11.31.2: every page of connections feeds the create form.
                 tracing::error!(
                     "device mapping connection load failed, the dropdown will be empty: {e}"
                 );
@@ -8528,9 +8892,11 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.31.1: same paging and refetch rules as the lookup lists.
         let path = format!("/rmm/device-mappings?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<RmmDeviceMappingRow>>(&path)
             .await
+            // SPEC-11.31.1: the cause is logged before the failure is mapped to None.
             .inspect_err(|e| tracing::error!("RMM device mapping settings load failed: {e}"))
             .ok()
     });
@@ -8551,6 +8917,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.31.1: an outage is not an empty list.
             crate::components::ContentUnavailable { title: "RMM Device Mappings".to_string() }
         };
     }
@@ -8565,6 +8932,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
             breadcrumbs: rsx! {
                 SettingsBreadcrumb { current: Route::SettingsRmmDeviceMappings {} }
             },
+            // SPEC-11.31.3: disabled with no connections or when the server is unreachable.
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
@@ -8586,6 +8954,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         if no_connections {
             div {
                 class: "mb-3 text-sm text-content bg-surface-2 border border-line rounded-md px-3 py-2",
+                // SPEC-11.31.4
                 "Add an RMM connection first, then map its devices here."
             }
         }
@@ -8593,6 +8962,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
             ErrorBanner { class: "mb-3", "Could not load the RMM connections, so new items cannot be created here. Refresh the page to try again." }
         }
         if fetch_failed {
+            // SPEC-11.31.1: banner while reachable, never the empty state.
             LoadError { what: "RMM device mappings" }
         }
         if !row_error.read().is_empty() {
@@ -8610,6 +8980,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                 TableHead {
                     TableRow {
                         TableHeader { "Device" }
+                        // SPEC-11.31.5
                         TableHeader { "Device ID" }
                         TableHeader { "Connection" }
                         TableHeader { "Sync status" }
@@ -8621,6 +8992,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 5,
+                        // SPEC-11.31.6
                         title: "No device mappings yet".to_string(),
                         description: "Mappings tie a monitored RMM device to the asset and company it belongs to.".to_string(),
                         actions: rsx! {
@@ -8683,6 +9055,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                                                 disabled: !can_mutate,
                                                 title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                                                 onclick: {
+                                                    // SPEC-11.31.7: only opens the confirmation dialog.
                                                     let label = delete_label.clone();
                                                     move |_| {
                                                         if deleting_id.read().is_some() {
@@ -8705,6 +9078,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         }
 
         if *creating.read() {
+            // SPEC-11.31.11: close and refetch after a create.
             RmmDeviceMappingFormModal {
                 connections: connections.clone(),
                 onclose: move |_| creating.set(false),
@@ -8719,6 +9093,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         if let Some((pid, label)) = pending {
             crate::components::ConfirmDialog {
                 open: true,
+                // SPEC-11.31.8
                 title: "Delete device mapping".to_string(),
                 message: format!("Delete the device mapping for \"{label}\"?"),
                 confirm_text: "Delete".to_string(),
@@ -8734,6 +9109,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                     spawn(async move {
                         #[cfg(feature = "app")]
                         {
+                            // SPEC-11.31.9: one DELETE per confirm; the dialog closes on success or failure.
                             match delete_lookup(&pid.to_string(), "/rmm/device-mappings").await {
                                 Ok(true) => resource.restart(),
                                 Ok(false) => {}
@@ -8744,6 +9120,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                         pending_delete.set(None);
                     });
                 },
+                // SPEC-11.31.10: cancel is ignored while a delete is in flight.
                 oncancel: move |_| {
                     if deleting_id.read().is_none() {
                         pending_delete.set(None);
@@ -8805,6 +9182,7 @@ fn RmmDeviceMappingFormModal(props: RmmDeviceMappingFormModalProps) -> Element {
             return;
         }
         if device_id.read().trim().is_empty() {
+            // SPEC-11.32.2
             error.set("Device ID is required.".to_string());
             return;
         }
@@ -8821,6 +9199,7 @@ fn RmmDeviceMappingFormModal(props: RmmDeviceMappingFormModalProps) -> Element {
                 let body = serde_json::json!({
                     "rmm_connection_id": conn,
                     "rmm_device_id": dev,
+                    // SPEC-11.32.3: blank optional fields are sent as null.
                     "device_name": opt_str(&dev_name),
                     "asset_id": opt_str(&asset),
                     "company_id": opt_str(&company),
@@ -8832,6 +9211,7 @@ fn RmmDeviceMappingFormModal(props: RmmDeviceMappingFormModalProps) -> Element {
                 .await
                 {
                     Ok(_) => onsaved.call(()),
+                    // SPEC-11.32.4
                     Err(err) => error.set(format!("Could not save mapping: {err}")),
                 }
             }
@@ -8858,6 +9238,7 @@ fn RmmDeviceMappingFormModal(props: RmmDeviceMappingFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
+            // SPEC-11.32.1: create-only, so no Delete action.
             title: "New Device Mapping".to_string(),
             is_edit: false,
             saving: *saving.read(),
@@ -8898,6 +9279,7 @@ fn RmmDeviceMappingFormModal(props: RmmDeviceMappingFormModalProps) -> Element {
                     company_id.set(id);
                     company_name.set(name);
                 },
+                // SPEC-11.32.5: clearing resets the id so null is sent.
                 onclear: move |_| {
                     company_id.set(String::new());
                     company_name.set(String::new());
@@ -8942,6 +9324,7 @@ struct RmmAlertRuleRow {
 
 #[component]
 pub fn RmmAlertRulesSettingsPage() -> Element {
+    // SPEC-11.33.1: non-admins get the notice, so the body and its fetch never mount.
     use_page_title("RMM Alert Rules");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "RMM Alert Rules" } };
@@ -8971,6 +9354,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
         {
             Ok(rows) => {
                 if rows.is_empty() {
+                    // SPEC-11.33.2
                     tracing::info!(
                         "alert rule connection load succeeded and this tenant has no connections"
                     );
@@ -8978,6 +9362,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                 Some(rows)
             }
             Err(e) => {
+                // SPEC-11.33.2: every page of connections feeds the create form.
                 tracing::error!(
                     "alert rule connection load failed, the dropdown will be empty: {e}"
                 );
@@ -8999,9 +9384,11 @@ fn RmmAlertRulesSettingsBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-11.33.1: same paging and refetch rules as the lookup lists.
         let path = format!("/rmm/alert-rules?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<RmmAlertRuleRow>>(&path)
             .await
+            // SPEC-11.33.1: the cause is logged before the failure is mapped to None.
             .inspect_err(|e| tracing::error!("RMM alert rule settings load failed: {e}"))
             .ok()
     });
@@ -9022,6 +9409,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
+            // SPEC-11.33.1: an outage is not an empty list.
             crate::components::ContentUnavailable { title: "RMM Alert Rules".to_string() }
         };
     }
@@ -9036,6 +9424,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
             breadcrumbs: rsx! {
                 SettingsBreadcrumb { current: Route::SettingsRmmAlertRules {} }
             },
+            // SPEC-11.33.3: disabled with no connections or when the server is unreachable.
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
@@ -9057,6 +9446,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
         if no_connections {
             div {
                 class: "mb-3 text-sm text-content bg-surface-2 border border-line rounded-md px-3 py-2",
+                // SPEC-11.33.3
                 "Add an RMM connection first, then define alert rules for it."
             }
         }
@@ -9064,6 +9454,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
             ErrorBanner { class: "mb-3", "Could not load the RMM connections, so new items cannot be created here. Refresh the page to try again." }
         }
         if fetch_failed {
+            // SPEC-11.33.1: banner while reachable, never the empty state.
             LoadError { what: "RMM alert rules" }
         }
         if !row_error.read().is_empty() {
@@ -9083,6 +9474,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                         TableHeader { "Name" }
                         TableHeader { "Connection" }
                         TableHeader { "Alert type" }
+                        // SPEC-11.33.4
                         TableHeader { "Auto-create ticket" }
                         TableHeader { class: "text-right", "" }
                     }
@@ -9092,6 +9484,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 5,
+                        // SPEC-11.33.5
                         title: "No alert rules yet".to_string(),
                         description: "Alert rules turn incoming RMM alerts into tickets automatically.".to_string(),
                         actions: rsx! {
@@ -9124,6 +9517,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                                 );
                                 let alert_type = row.alert_type.clone().unwrap_or_default();
                                 let alert_type_display = if alert_type.trim().is_empty() {
+                                    // SPEC-11.33.4: a blank alert type means the rule matches any type.
                                     "Any".to_string()
                                 } else {
                                     alert_type
@@ -9155,6 +9549,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                                                 disabled: !can_mutate,
                                                 title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                                                 onclick: {
+                                                    // SPEC-11.33.6: only opens the confirmation dialog.
                                                     let label = name.clone();
                                                     move |_| {
                                                         if deleting_id.read().is_some() {
@@ -9177,6 +9572,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
         }
 
         if *creating.read() {
+            // SPEC-11.33.7: close and refetch after a create.
             RmmAlertRuleFormModal {
                 connections: connections.clone(),
                 onclose: move |_| creating.set(false),
@@ -9191,6 +9587,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
         if let Some((pid, label)) = pending {
             crate::components::ConfirmDialog {
                 open: true,
+                // SPEC-11.33.6
                 title: "Delete alert rule".to_string(),
                 message: format!("Delete the alert rule \"{label}\"?"),
                 confirm_text: "Delete".to_string(),
@@ -9206,6 +9603,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                     spawn(async move {
                         #[cfg(feature = "app")]
                         {
+                            // SPEC-11.33.6: one DELETE per confirm; the dialog closes on success or failure.
                             match delete_lookup(&pid.to_string(), "/rmm/alert-rules").await {
                                 Ok(true) => resource.restart(),
                                 Ok(false) => {}
@@ -9273,6 +9671,7 @@ fn RmmAlertRuleFormModal(props: RmmAlertRuleFormModalProps) -> Element {
             error.set("Select a connection.".to_string());
             return;
         }
+        // SPEC-11.34.2: both checks run before any request.
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
@@ -9290,6 +9689,7 @@ fn RmmAlertRuleFormModal(props: RmmAlertRuleFormModalProps) -> Element {
                 let body = serde_json::json!({
                     "rmm_connection_id": conn,
                     "name": name_v,
+                    // SPEC-11.34.3: a blank alert type is sent as null.
                     "alert_type": opt_str(&alert),
                     "auto_create_ticket": auto,
                     "is_active": active,
@@ -9301,6 +9701,7 @@ fn RmmAlertRuleFormModal(props: RmmAlertRuleFormModalProps) -> Element {
                 .await
                 {
                     Ok(_) => onsaved.call(()),
+                    // SPEC-11.34.4
                     Err(err) => error.set(format!("Could not save rule: {err}")),
                 }
             }
@@ -9310,6 +9711,7 @@ fn RmmAlertRuleFormModal(props: RmmAlertRuleFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
+            // SPEC-11.34.1: create-only, so no Delete action.
             title: "New Alert Rule".to_string(),
             is_edit: false,
             saving: *saving.read(),
@@ -9371,6 +9773,7 @@ fn RmmAlertRuleFormModal(props: RmmAlertRuleFormModalProps) -> Element {
 /// Inline error banner shown above a list when its fetch fails.
 #[component]
 fn LoadError(what: String) -> Element {
+    // SPEC-11.19.6: exact banner text.
     rsx! {
         ErrorBanner { class: "mb-3", "Could not load {what}. Refresh the page to retry." }
     }
@@ -9379,6 +9782,7 @@ fn LoadError(what: String) -> Element {
 /// A color dot plus its hex value, for the lookup tables that carry a color.
 #[component]
 fn ColorSwatch(color: String) -> Element {
+    // SPEC-11.35.1
     rsx! {
         div { class: "flex items-center gap-2",
             span {
@@ -9394,6 +9798,7 @@ fn ColorSwatch(color: String) -> Element {
 /// `is_active` flag.
 #[component]
 fn ActiveBadge(active: bool) -> Element {
+    // SPEC-11.35.2
     rsx! {
         if active {
             Badge { variant: BadgeVariant::Green, "Active" }
@@ -9406,6 +9811,7 @@ fn ActiveBadge(active: bool) -> Element {
 /// Map a free-text field to a JSON value: an empty/whitespace string
 /// becomes `null` (the server treats a missing optional as `None`),
 /// otherwise the trimmed string.
+// SPEC-11.35.3: blank becomes null, otherwise the trimmed string.
 fn opt_str(s: &str) -> serde_json::Value {
     let t = s.trim();
     if t.is_empty() {
@@ -9417,6 +9823,7 @@ fn opt_str(s: &str) -> serde_json::Value {
 
 /// Fall back to a neutral gray when a stored color is empty, so the
 /// `type="color"` input always has a valid hex to show.
+// SPEC-11.35.4: the stored value is returned untrimmed when not blank.
 fn non_empty_color(c: &str) -> String {
     if c.trim().is_empty() {
         "#6b7280".to_string()
@@ -9432,6 +9839,7 @@ fn non_empty_color(c: &str) -> String {
 /// can pass their `Serialize` body struct; the ones without keep passing a
 /// `serde_json::Value`.
 #[cfg(feature = "app")]
+// SPEC-11.35.5: POST to the collection without an id, PUT to the row with one.
 async fn save_lookup<B: serde::Serialize>(
     id: Option<String>,
     base: &str,
@@ -9454,6 +9862,7 @@ async fn save_lookup<B: serde::Serialize>(
 /// `Err` on failure. Confirmation is handled up-front by the styled
 /// `SettingFormModal` ConfirmDialog (MAPPS-189), so this no longer prompts.
 #[cfg(feature = "app")]
+// SPEC-11.35.5: Ok(true) only when the DELETE succeeded.
 async fn delete_lookup(id: &str, base: &str) -> Result<bool, String> {
     crate::hooks::fetch::api::delete_authed(&format!("{base}/{id}"))
         .await
@@ -9715,6 +10124,7 @@ mod tests {
         assert!(parse_parent_id("top-level").is_err());
     }
 
+    // SPEC-11.35.6: the compile-only checks below cover the ticket status, priority, type, queue and category structs.
     // ---- MAPPS-688: the shared-DTO contract ------------------------------
     //
     // `mokosh-types` derives `Deserialize` on the request DTOs and `Serialize`

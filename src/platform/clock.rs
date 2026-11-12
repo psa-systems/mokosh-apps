@@ -12,6 +12,7 @@
 /// an expiry, and a pre-1970 clock (a desktop machine with its RTC
 /// unset) would otherwise wrap to an enormous value and make every
 /// stored token look fresh forever.
+// SPEC-3.32.1
 pub fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
 }

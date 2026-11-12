@@ -26,6 +26,7 @@
 # straight through, which has nothing to put back.
 #
 # Usage: check-confirmed-toggle.sh [ROOT | --self-test]   (ROOT defaults to src)
+# SPEC-2.11.1: argument shape; SPEC-2.11.4: FAIL/OK output and exit codes.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -44,6 +45,7 @@ cannot_evaluate() {
   fi
 }
 
+# SPEC-2.11.2: block delimiting; SPEC-2.11.3: what counts as confirming and as intent.
 run_guard() {
   local root="$1"
   find "$root" -name '*.rs' -type f -print0 | while IFS= read -r -d '' file; do
@@ -81,6 +83,7 @@ run_guard() {
   done
 }
 
+# SPEC-2.11.5: --self-test fixtures and exit status.
 if [ "${1:-}" = "--self-test" ]; then
   status=0
   tmp="$(mktemp --directory)"

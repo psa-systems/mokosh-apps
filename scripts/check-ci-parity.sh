@@ -33,6 +33,7 @@
 # every command line the former's check: recipe depends on.
 # SPEC-2.8.2: this is the mechanical enforcement that check.yml runs every
 # command the check: recipe deps run.
+# SPEC-2.6.4: compares command text only, never the order checks run in.
 # Usage: check-ci-parity.sh [--self-test | --compare JUSTFILE WORKFLOW]
 #   No argument checks this repository's own pair.
 #   `--compare` is the pure comparison, split out so `--self-test` can prove

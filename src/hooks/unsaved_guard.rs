@@ -16,6 +16,8 @@
 //! Both read [`UNSAVED_CHANGES`], so the two hosts prompt off one flag rather
 //! than off two copies that can disagree.
 //!
+//! SPEC-4.46.7 bounds this scope.
+//!
 //! Scope. This hook covers the OS-level navigation triggers
 //! (`beforeunload`, the window close request). It does NOT yet intercept
 //! Dioxus router transitions (Link clicks, navigator.push) because Dioxus
@@ -52,6 +54,7 @@ use wasm_bindgen::JsCast;
 /// A `GlobalSignal` for the same reason [`crate::hooks::fetch::SESSION_ENDED`]
 /// is one: it is read from outside the component tree that raises it (a JS
 /// event listener, a `tao` event handler), which no context signal can reach.
+// SPEC-4.46.1: the single dirty flag both hosts read; default false.
 #[cfg(feature = "app")]
 pub static UNSAVED_CHANGES: GlobalSignal<bool> = Signal::global(|| false);
 
@@ -118,6 +121,8 @@ pub fn use_unsaved_guard(dirty: ReadSignal<bool>) {
     let id = use_hook(next_guard_id);
 
     use_effect(move || {
+        // SPEC-4.46.2: mirror the form's dirty signal, writing only on change.
+        // SPEC-4.46.3: unmount lowers the flag; a dropped store is logged, not a panic.
         let any_dirty = note_form_dirty(id, *dirty.read());
         if *shared.peek() != any_dirty {
             shared.set(any_dirty);
@@ -165,6 +170,7 @@ fn use_beforeunload(shared: Signal<bool>) {
                 // teardown. Read via `try_read` and treat a dropped
                 // signal as "not dirty" (no prompt), saying so in the log so
                 // a missing prompt is not silent.
+                // SPEC-4.46.5: a dropped flag reads as not dirty and is logged.
                 let is_dirty = match shared.try_read() {
                     Ok(flag) => *flag,
                     Err(err) => {
@@ -172,6 +178,7 @@ fn use_beforeunload(shared: Signal<bool>) {
                         false
                     }
                 };
+                // SPEC-4.46.4: setting returnValue is what triggers the prompt.
                 if is_dirty {
                     // Modern browsers ignore the message string but
                     // still show the prompt when `returnValue` is set
@@ -180,6 +187,7 @@ fn use_beforeunload(shared: Signal<bool>) {
                     e.set_return_value("You have unsaved changes.");
                 }
             }));
+        // SPEC-4.46.6: a refused listener is logged at warn level.
         if let Err(err) =
             win.add_event_listener_with_callback("beforeunload", cb.as_ref().unchecked_ref())
         {
@@ -194,6 +202,7 @@ fn use_beforeunload(shared: Signal<bool>) {
     });
 }
 
+// SPEC-4.46.8: a non-app build has no guard.
 /// Stub for a build with no app runtime (the dirty flag it would publish has
 /// no reader there). Every call site is unchanged.
 #[cfg(not(feature = "app"))]
