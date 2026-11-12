@@ -36,6 +36,7 @@ const INSTALLED_ATTR: &str = "data-paste-listener";
 /// Silently does nothing when the element is not in the document yet; the
 /// caller installs from an effect, which runs after the first render.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.31.1, SPEC-3.31.6: an EventHandler carries its scope; a bare closure panics.
 pub fn on_paste_image(id: &str, on_file: EventHandler<(String, String, Vec<u8>)>) {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
@@ -46,6 +47,7 @@ pub fn on_paste_image(id: &str, on_file: EventHandler<(String, String, Vec<u8>)>
     else {
         return;
     };
+    // SPEC-3.31.1: the listener cannot be removed, so a second install would upload twice.
     if el.has_attribute(INSTALLED_ATTR) {
         return;
     }
@@ -55,6 +57,7 @@ pub fn on_paste_image(id: &str, on_file: EventHandler<(String, String, Vec<u8>)>
         let Ok(evt) = evt.dyn_into::<web_sys::ClipboardEvent>() else {
             return;
         };
+        // SPEC-3.31.2
         let Some(file) = first_image(&evt) else {
             // Not an image. Leave the paste entirely alone.
             return;
@@ -65,6 +68,7 @@ pub fn on_paste_image(id: &str, on_file: EventHandler<(String, String, Vec<u8>)>
 
         let name = file.name();
         let mime = file.type_();
+        // SPEC-3.31.3, SPEC-3.31.4
         wasm_bindgen_futures::spawn_local(async move {
             match read_bytes(&file).await {
                 Some(bytes) => on_file.call((name, mime, bytes)),
@@ -76,6 +80,7 @@ pub fn on_paste_image(id: &str, on_file: EventHandler<(String, String, Vec<u8>)>
         });
     }) as Box<dyn FnMut(web_sys::Event)>);
 
+    // SPEC-3.31.5: clearing the marker lets a later call retry the install.
     if el
         .add_event_listener_with_callback("paste", cb.as_ref().unchecked_ref())
         .is_err()
@@ -97,6 +102,7 @@ pub fn on_paste_image(id: &str, on_file: EventHandler<(String, String, Vec<u8>)>
 /// (an image AND its HTML AND its plain text), so the list is scanned rather
 /// than only its first entry read.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.31.2
 fn first_image(evt: &web_sys::ClipboardEvent) -> Option<web_sys::File> {
     let items = evt.clipboard_data()?.items();
     for i in 0..items.length() {
@@ -114,6 +120,7 @@ fn first_image(evt: &web_sys::ClipboardEvent) -> Option<web_sys::File> {
 /// A `File` is a `Blob`, and `array_buffer()` is the way to its bytes without
 /// a second forgotten closure for a `FileReader`'s `load` event.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.31.4
 async fn read_bytes(file: &web_sys::File) -> Option<Vec<u8>> {
     let buffer = wasm_bindgen_futures::JsFuture::from(file.array_buffer())
         .await
@@ -168,6 +175,7 @@ enum PasteMessage {
 /// through `dataset` because the listener is created in the webview and cannot
 /// be removed from here either.
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.31.7, SPEC-3.31.10: a FileReader failure is only console-logged inside the webview.
 pub fn on_paste_image(id: &str, on_file: dioxus::prelude::EventHandler<(String, String, Vec<u8>)>) {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
@@ -200,6 +208,7 @@ pub fn on_paste_image(id: &str, on_file: dioxus::prelude::EventHandler<(String, 
     ));
     dioxus::prelude::spawn(async move {
         loop {
+            // SPEC-3.31.8
             match eval.recv::<PasteMessage>().await {
                 Ok(PasteMessage::Failed { error }) => {
                     tracing::error!("a pasted image could not be read in the webview: {error}");
@@ -223,6 +232,7 @@ pub fn on_paste_image(id: &str, on_file: dioxus::prelude::EventHandler<(String, 
                 Err(e) => {
                     // Pasting an image would silently do nothing again, which
                     // reads as the feature being broken rather than absent.
+                    // SPEC-3.31.9
                     tracing::error!("stopped listening for pasted images: {e}");
                     return;
                 }

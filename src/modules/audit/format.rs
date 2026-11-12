@@ -20,6 +20,7 @@
 /// middle, both ending mid-word. A pair that can be diffed is now shortened by
 /// eliding what did not change, and only a pair that cannot (a short field, a
 /// wholesale rewrite) is cut here.
+// SPEC-3.2.13: the cut length used by `shorten`.
 pub const VALUE_CHARS: usize = 160;
 
 /// Humanize an audit `action` code.
@@ -30,7 +31,9 @@ pub const VALUE_CHARS: usize = 160;
 /// falls back to sentence case, which is what the assets copy did and is
 /// strictly better than the projects copy's flat `"Changed"`: a new server
 /// action reads as itself instead of as nothing in particular.
+// SPEC-3.2.14: defined here only, never again in a page.
 pub fn action_label(action: &str) -> String {
+    // SPEC-3.2.1: both action code sets; SPEC-3.2.2: unknown codes read as sentence case.
     match action {
         "create" | "created" => "Created".to_string(),
         "update" | "updated" => "Updated".to_string(),
@@ -46,11 +49,13 @@ pub fn action_label(action: &str) -> String {
 /// trimming the suffix the pane reads "Project manager id". Stripping it
 /// keeps future FK fields readable with no per-column allow-list.
 pub fn title_field(f: &str) -> String {
+    // SPEC-3.2.3: strip one trailing `_id`.
     sentence_case(f.strip_suffix("_id").unwrap_or(f))
 }
 
 /// `"description, status"` to `"Description, Status"` for a change summary.
 pub fn fields_label(fields: &[String]) -> String {
+    // SPEC-3.2.5: titled fields joined by ", ".
     fields
         .iter()
         .map(|f| title_field(f))
@@ -60,6 +65,7 @@ pub fn fields_label(fields: &[String]) -> String {
 
 /// `snake_case` to `Sentence case`.
 fn sentence_case(s: &str) -> String {
+    // SPEC-3.2.4: only an ASCII first character is upper-cased; `get_mut` yields None otherwise.
     let mut out = s.replace('_', " ");
     if let Some(first) = out.get_mut(0..1) {
         first.make_ascii_uppercase();
@@ -69,6 +75,7 @@ fn sentence_case(s: &str) -> String {
 
 /// A 36-char hyphenated UUID, not worth showing as before/after text.
 pub fn looks_like_uuid(s: &str) -> bool {
+    // SPEC-3.2.7: 36 bytes, hyphens at 8/13/18/23, hex elsewhere.
     s.len() == 36
         && s.as_bytes().iter().enumerate().all(|(i, b)| {
             if matches!(i, 8 | 13 | 18 | 23) {
@@ -92,20 +99,25 @@ pub fn looks_like_uuid(s: &str) -> bool {
 /// audit log stores while a project's rendered as `Mar 1, 2026`. Sharing the
 /// function shares the branch.
 pub fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
+    // SPEC-3.2.12: never truncates here, so the word diff sees whole values.
     match v {
+        // SPEC-3.2.8: absent, null and blank all read "(empty)".
         None | Some(serde_json::Value::Null) => "(empty)".to_string(),
         Some(serde_json::Value::String(s)) => {
             let t = s.trim();
             if t.is_empty() {
                 "(empty)".to_string()
+            // SPEC-3.2.9: the date check runs before the UUID check.
             } else if let Ok(d) = chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d") {
                 d.format("%b %-d, %Y").to_string()
+            // SPEC-3.2.10: a UUID is a bare reference, other text is shown trimmed.
             } else if looks_like_uuid(t) {
                 "(reference)".to_string()
             } else {
                 t.to_string()
             }
         }
+        // SPEC-3.2.11: scalars verbatim, arrays and objects as "(updated)".
         Some(serde_json::Value::Bool(b)) => b.to_string(),
         Some(serde_json::Value::Number(n)) => n.to_string(),
         Some(_) => "(updated)".to_string(),
@@ -117,6 +129,7 @@ pub fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
 /// "Updated: Description". An entry with no named columns (a create, a delete,
 /// or an action the server records without a field list) is the action alone.
 pub fn headline(action: &str, changed_fields: &[String]) -> String {
+    // SPEC-3.2.6: action alone when no columns are named.
     let label = action_label(action);
     if changed_fields.is_empty() {
         label
@@ -130,6 +143,7 @@ pub fn headline(action: &str, changed_fields: &[String]) -> String {
 /// Only for the path where there is no diff to show: a short field, or two
 /// values with too little in common to be worth interleaving.
 pub fn shorten(s: &str) -> String {
+    // SPEC-3.2.13: counts characters, appends one ellipsis only when it cut.
     if s.chars().count() > VALUE_CHARS {
         format!("{}…", s.chars().take(VALUE_CHARS).collect::<String>())
     } else {
@@ -236,6 +250,7 @@ mod tests {
     /// is exactly how assets and tickets came to render a raw `yyyy-mm-dd`.
     #[test]
     fn single_definition() {
+        // SPEC-3.2.14: enforces that the pages never redefine these functions.
         // The three pages that each carried a copy. Read as source rather
         // than imported, so this fails on a copy that is never called.
         const PAGES: [(&str, &str); 3] = [

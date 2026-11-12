@@ -27,7 +27,8 @@
 # the one question it can answer mechanically: does this page refuse anybody
 # at all. A page that refuses nobody is the bug this file exists to catch.
 #
-# Usage: check-admin-gate.sh [--self-test]
+# Usage: check-admin-gate.sh [ROOT | --self-test]   (ROOT defaults to .)
+# SPEC-2.10.1: argument shape; SPEC-2.10.5: FAIL/OK output and exit codes.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
@@ -35,9 +36,10 @@ cd "$(dirname "$0")/.." || exit 2
 # the settings helper most pages call, `is_admin()` is the same question asked
 # straight off the auth signal (settings_branding.rs, sla.rs), and the two
 # component names are the finance plane's own refusals.
+# SPEC-2.10.4: the four accepted gate spellings.
 GATES='use_is_admin|is_admin\(\)|NoFinancePermission|PermissionRequired'
 
-# Every `Route::` variant registered with StaffAdmin visibility.
+# SPEC-2.10.2: every `Route::` variant registered with StaffAdmin visibility.
 staff_routes() {
   awk '
     /SettingsSurface \{/ { block = ""; collecting = 1 }
@@ -111,6 +113,7 @@ cannot_evaluate() {
   fi
 }
 
+# SPEC-2.10.3: resolve each route to its page component, then SPEC-2.10.4 and SPEC-2.10.5 per route.
 run_guard() {
   local root="$1" route body ref mod file comp target
   staff_routes "$root/src/pages/settings.rs" | while read -r route; do
@@ -146,6 +149,7 @@ run_guard() {
   done
 }
 
+# SPEC-2.10.6: --self-test fixtures and exit status.
 if [ "${1:-}" = "--self-test" ]; then
   status=0
   tmp="$(mktemp --directory)"

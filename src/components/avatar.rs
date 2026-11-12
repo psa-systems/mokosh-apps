@@ -12,9 +12,11 @@ use dioxus::prelude::*;
 /// a name with no letters, which is what "Unknown" would otherwise abbreviate
 /// to a misleading "U".
 pub fn initials_of(name: &str) -> String {
+    // SPEC-5.4.2
     if name.trim().eq_ignore_ascii_case("unknown") {
         return "?".to_string();
     }
+    // SPEC-5.4.1
     let letters: String = name
         .split_whitespace()
         .take(2)
@@ -36,6 +38,7 @@ pub enum AvatarSize {
 }
 
 impl AvatarSize {
+    // SPEC-5.4.5
     fn classes(self) -> &'static str {
         match self {
             AvatarSize::Small => "h-8 w-8 text-xs",
@@ -62,6 +65,7 @@ pub struct AvatarProps {
 pub fn Avatar(props: AvatarProps) -> Element {
     let size = props.size.classes();
     let initials = initials_of(&props.name);
+    // SPEC-5.4.3: a blank url counts as no picture.
     match props.url.as_deref().filter(|u| !u.trim().is_empty()) {
         Some(url) => rsx! {
             img {
@@ -71,6 +75,7 @@ pub fn Avatar(props: AvatarProps) -> Element {
                 title: "{props.name}",
             }
         },
+        // SPEC-5.4.4
         None => rsx! {
             span {
                 class: "{size} rounded-full bg-accent-100 dark:bg-accent-900 text-accent font-medium flex items-center justify-center shrink-0 select-none {props.class}",

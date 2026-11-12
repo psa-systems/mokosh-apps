@@ -18,6 +18,7 @@ pub struct SidebarState {
 /// Provide the sidebar-state signal at the App root. Mirrors the
 /// use_auth_provider / use_auth pattern.
 pub fn use_sidebar_provider() -> Signal<SidebarState> {
+    // SPEC-4.41.1: App-root signal so collapse state survives navigation re-mounts.
     let state = use_signal(SidebarState::default);
     use_context_provider(|| state);
     state
@@ -31,6 +32,7 @@ pub fn use_sidebar_state() -> Signal<SidebarState> {
 /// Returns true if the given section is currently collapsed.
 /// Default (no entry) is false (i.e. expanded).
 pub fn is_section_collapsed(state: &SidebarState, title: &str) -> bool {
+    // SPEC-4.41.2: a never-toggled section is open.
     *state.collapsed.get(title).unwrap_or(&false)
 }
 
@@ -48,6 +50,7 @@ pub fn is_section_collapsed(state: &SidebarState, title: &str) -> bool {
 /// A newtype rather than a bare `Signal<i32>` so the context lookup is
 /// unambiguous: a plain int signal could collide with any other int
 /// provided at the root.
+// SPEC-4.41.3: own newtype so the context lookup cannot collide with another int.
 #[derive(Clone, Copy, Default)]
 pub struct SidebarScroll(pub i32);
 
@@ -78,6 +81,7 @@ pub fn use_sidebar_scroll() -> Signal<SidebarScroll> {
 ///
 /// A newtype rather than a bare `Signal<bool>` so the context lookup cannot
 /// collide with any other bool signal provided at the root.
+// SPEC-4.41.4: default false (expanded); memory only, a reload resets it.
 #[derive(Clone, Copy, Default)]
 pub struct SidebarCollapsed(pub bool);
 

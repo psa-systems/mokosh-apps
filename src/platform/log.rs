@@ -11,11 +11,13 @@
 
 /// Record an error that the user is not being shown.
 #[cfg(target_arch = "wasm32")]
+// SPEC-3.32.2
 pub fn error(msg: &str) {
     web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(msg));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+// SPEC-3.32.2
 pub fn error(msg: &str) {
     tracing::error!("{msg}");
 }

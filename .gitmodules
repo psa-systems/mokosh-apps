@@ -1,3 +1,4 @@
+# SPEC-1.11.5: the single shared-recipes submodule that justfile imports.
 [submodule "common"]
 	path = common
 	url = https://dev.a8n.run/psa-systems/common.git

@@ -51,10 +51,12 @@ mod desktop {
 
     /// Raised while the confirmation modal is up. A `GlobalSignal` because the
     /// `tao` event handler that raises it has no component to hold it.
+    // SPEC-3.46.4
     static CLOSE_CONFIRM: GlobalSignal<bool> = Signal::global(|| false);
 
     /// Watch for a window close request and gate it on the unsaved-changes
     /// flag. Mount once, at the app root.
+    // SPEC-3.46.1: SPEC-3.46.2 (launch side), 3.49.8
     pub fn use_close_guard() {
         let window = use_window();
         // Raised when a close request has been refused, lowered by the re-show
@@ -72,8 +74,10 @@ mod desktop {
                 // subscribing the root component to either flag would
                 // re-render the whole tree on every keystroke in a guarded
                 // form.
+                // SPEC-3.46.7: SPEC-3.46.8 (the one app-wide flag the unload prompt also reads)
                 let dirty = *crate::hooks::unsaved_guard::UNSAVED_CHANGES.peek();
                 let asking = *CLOSE_CONFIRM.peek();
+                // SPEC-3.46.4: SPEC-3.46.5 when already asking
                 if dirty || asking {
                     // Refused. The window is on `WindowHides`, so the webview
                     // and its edits survive; ask (or keep asking), and undo
@@ -83,6 +87,7 @@ mod desktop {
                     }
                     reshow.set(true);
                 } else {
+                    // SPEC-3.46.3
                     window.set_close_behavior(WindowCloseBehaviour::WindowCloses);
                 }
                 return;
@@ -90,6 +95,7 @@ mod desktop {
 
             // Any later event, which is the first moment at which the hide
             // `dioxus-desktop` queued for the refused request has happened.
+            // SPEC-3.46.6
             if reshow.replace(false) {
                 window.set_visible(true);
             }
@@ -98,16 +104,19 @@ mod desktop {
 
     /// Is the desktop close confirmation up? Reactive: the component that
     /// renders the modal re-renders when this flips.
+    // SPEC-3.46.9
     pub fn close_confirm_open() -> bool {
         *CLOSE_CONFIRM.read()
     }
 
     /// Keep the window open and the edits intact.
+    // SPEC-3.46.10
     pub fn cancel_close() {
         *CLOSE_CONFIRM.write() = false;
     }
 
     /// Discard the unsaved edits and close the window for real.
+    // SPEC-3.46.11
     pub fn confirm_close() {
         *CLOSE_CONFIRM.write() = false;
         let win = window();
@@ -118,6 +127,7 @@ mod desktop {
 
 /// The browser prompts for itself, from `beforeunload`. Nothing intercepts a
 /// close here, so the modal never opens and these are inert.
+// SPEC-3.46.12
 #[cfg(not(feature = "desktop"))]
 pub fn use_close_guard() {}
 

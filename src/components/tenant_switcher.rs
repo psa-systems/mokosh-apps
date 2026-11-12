@@ -49,6 +49,7 @@ use crate::{CurrentUser, Route};
 /// on every one so a server that predates PMS-1499 (no `tenant_slug`)
 /// still decodes.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+// SPEC-5.68.1: every field defaults when absent.
 pub struct PendingInvite {
     #[serde(default)]
     pub id: String,
@@ -107,6 +108,7 @@ struct TenantResp {}
 /// Pure so both rules are testable without a browser, which is the only way the
 /// second one gets pinned at all: "the active row has no Leave button" is
 /// invisible to a unit test of anything else.
+// SPEC-5.67.7: no grant id and no active row both mean nothing to leave.
 pub fn leave_target(membership: &MembershipView, is_active: bool) -> Option<String> {
     if is_active {
         return None;
@@ -177,6 +179,7 @@ pub fn TenantSwitcher() -> Element {
 
     // Close on route change (mirrors UserMenu).
     let route: Route = use_route();
+    // SPEC-5.66.10: the panel closes whenever the route changes.
     use_effect(use_reactive!(|route| {
         let _ = &route;
         if *open.peek() {
@@ -197,6 +200,7 @@ pub fn TenantSwitcher() -> Element {
                                 refresh_token: Option<String>,
                                 expires_at: chrono::DateTime<chrono::Utc>,
                                 user: CurrentUser| {
+        // SPEC-5.66.8: the full session install after a successful switch.
         crate::hooks::fetch::api::set_access_token(Some(access_token.clone()));
         save_standalone(&StandaloneSession {
             access_token,
@@ -238,6 +242,7 @@ pub fn TenantSwitcher() -> Element {
         }
     };
 
+    // SPEC-5.66.7: one switch at a time.
     let mut switch_to = move |tenant_id: String| {
         if saving() {
             return;
@@ -262,6 +267,7 @@ pub fn TenantSwitcher() -> Element {
                         );
                         open.set(false);
                     }
+                    // SPEC-5.66.9: 404 gets its own wording, anything else the API message.
                     Err(ApiError::Status { code: 404, .. }) => {
                         error.set(
                             "You no longer have access to that workspace. Refresh and try again."
@@ -275,6 +281,7 @@ pub fn TenantSwitcher() -> Element {
         });
     };
 
+    // SPEC-5.67.2: ignored while saving, and a blank name sends nothing.
     let mut submit_create = move |_| {
         if saving() {
             return;
@@ -284,6 +291,7 @@ pub fn TenantSwitcher() -> Element {
             error.set("Enter a team name.".to_string());
             return;
         }
+        // SPEC-5.67.3: the slug is lowercased and omitted when blank.
         let raw_slug = new_org_slug.read().trim().to_ascii_lowercase();
         let slug = if raw_slug.is_empty() {
             None
@@ -306,6 +314,7 @@ pub fn TenantSwitcher() -> Element {
                 )
                 .await
                 {
+                    // SPEC-5.67.4: refetch the list, then reset and close; SPEC-5.67.11: the refetch outcome.
                     Ok(_created) => {
                         // Refetch memberships so the new tenant shows up in
                         // the dropdown. MAPPS-1246: a failed refetch keeps
@@ -322,6 +331,7 @@ pub fn TenantSwitcher() -> Element {
                             Err(_) => error.set(stale_teams_message("The team was created")),
                         }
                     }
+                    // SPEC-5.67.5: 409 and 400 show the server message verbatim.
                     Err(ApiError::Status {
                         code: 409, message, ..
                     }) => {
@@ -345,6 +355,7 @@ pub fn TenantSwitcher() -> Element {
     // with no name in it is the shape of prompt people click through.
     let mut leaving: Signal<Option<(String, String)>> = use_signal(|| None);
 
+    // SPEC-5.67.10: one leave at a time.
     let mut leave_grant = move |grant_id: String| {
         if saving() {
             return;
@@ -355,6 +366,7 @@ pub fn TenantSwitcher() -> Element {
             #[cfg(feature = "app")]
             {
                 use crate::hooks::fetch::api::ApiError;
+                // SPEC-5.67.9: success and 404 both end in a refetch and close.
                 let path = format!("/my-grants/{grant_id}");
                 let outcome = crate::hooks::fetch::api::delete_authed_typed(&path).await;
                 match outcome {
@@ -371,6 +383,7 @@ pub fn TenantSwitcher() -> Element {
                             Err(_) => error.set(stale_teams_message("You left the team")),
                         }
                     }
+                    // SPEC-5.67.10: other failures stay in the open confirmation.
                     Err(e) => error.set(e.user_message()),
                 }
             }
@@ -388,6 +401,7 @@ pub fn TenantSwitcher() -> Element {
     // just arrived appears without a reload.
     let open_now = *open.read();
     let gen_now = *crate::hooks::fetch::TENANT_GENERATION.read();
+    // SPEC-5.68.1: reloads on panel open state and tenant generation.
     // MAPPS-1246: the failure is kept, so the panel can say the
     // invitations could not be loaded instead of showing an empty inbox.
     let mut pending_invites: Resource<Result<Vec<PendingInvite>, String>> =
@@ -396,6 +410,7 @@ pub fn TenantSwitcher() -> Element {
             {
                 crate::hooks::fetch::api::get_authed::<Vec<PendingInvite>>("/my-grants/invitations")
                     .await
+                    // SPEC-5.68.2: the failure is logged here.
                     .inspect_err(|e| tracing::warn!("pending-invites load failed: {e}"))
             }
             #[cfg(not(feature = "app"))]
@@ -407,6 +422,7 @@ pub fn TenantSwitcher() -> Element {
     let mut invite_submitting: Signal<Option<String>> = use_signal(|| None);
     let mut invite_error = use_signal(String::new);
 
+    // SPEC-5.68.4: one invitation action at a time; SPEC-5.68.5: accept bumps the generation.
     let mut accept_invite = move |invite_id: String| {
         if invite_submitting.read().is_some() {
             return;
@@ -441,6 +457,7 @@ pub fn TenantSwitcher() -> Element {
                             invite_error.set(stale_teams_message("The invitation was accepted"));
                         }
                     }
+                    // SPEC-5.68.7: failures surface under the invitations.
                     Err(err) => invite_error.set(err.user_message()),
                 }
             }
@@ -452,6 +469,7 @@ pub fn TenantSwitcher() -> Element {
         });
     };
 
+    // SPEC-5.68.6: decline reloads the inbox only.
     let mut decline_invite = move |invite_id: String| {
         if invite_submitting.read().is_some() {
             return;
@@ -486,12 +504,14 @@ pub fn TenantSwitcher() -> Element {
     // there is nothing to show (unauthenticated / no memberships).
     let (memberships, active_name, active_id_str, loading_memberships) = {
         let a = auth.read();
+        // SPEC-5.66.5: listed in case-insensitive name order (sorted below).
         let mut list = a.memberships.clone();
         // PMS-1339: the app-root loader sets this once the list has arrived, so
         // the slot below can reserve its width while the answer is still unknown
         // instead of appearing later and pushing the profile icon sideways.
         let loading = !a.memberships_loaded;
         let active_id = a.active_tenant_id.map(|u| u.to_string());
+        // SPEC-5.66.4: org name first, then the matching membership, then empty.
         let derived_name = a.active_org_name().map(str::to_string);
         let active_name = derived_name.unwrap_or_else(|| {
             list.iter()
@@ -507,6 +527,7 @@ pub fn TenantSwitcher() -> Element {
         (list, active_name, active_id, loading)
     };
 
+    // SPEC-5.66.1: nothing is rendered for an unauthenticated user.
     if !auth.read().is_authenticated() {
         return rsx! { Fragment {} };
     }
@@ -519,6 +540,7 @@ pub fn TenantSwitcher() -> Element {
     // MAPPS-1084 AC (c): a pending grant invitation is also a reason
     // to open the switcher (the grantee has to Accept it from
     // somewhere), so pending invitations count into the gate.
+    // SPEC-5.66.2: the trigger gate counts invitations with memberships.
     let show_trigger = memberships.len() + invites.len() >= 2 || !invites.is_empty();
     // PMS-1339: the trigger's width arrives late. Memberships load after the
     // first paint, so the switcher was zero-wide and then suddenly a team name
@@ -528,6 +550,7 @@ pub fn TenantSwitcher() -> Element {
     // fixed width from the first render, matching the trigger's own
     // `max-w-[7rem] sm:max-w-[10rem]` ceiling, so the name lands inside space
     // that was already reserved and nothing moves.
+    // SPEC-5.66.3: fixed slot width while the trigger shows or the list loads.
     let reserved = if show_trigger || loading_memberships {
         "relative w-[8.5rem] sm:w-[11.5rem] shrink-0"
     } else {
@@ -539,6 +562,7 @@ pub fn TenantSwitcher() -> Element {
             if show_trigger {
                 Popover {
                     open: open(),
+                    // SPEC-5.66.4: popover label and panel width.
                     label: "Switch team",
                     trigger_class: "flex items-center gap-2 px-3 py-2 rounded-md text-sm text-subtle hover:text-content hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
                     trigger: rsx! {
@@ -558,6 +582,7 @@ pub fn TenantSwitcher() -> Element {
                         // than a second copy of the path.
                     },
                     width: "w-64",
+                    // SPEC-5.66.10: opening clears any earlier error.
                     ontoggle: move |_| {
                         let next = !*open.read();
                         open.set(next);
@@ -568,6 +593,7 @@ pub fn TenantSwitcher() -> Element {
                     // above the memberships list so a grantee who opens the
                     // switcher to accept a team sees the Accept control
                     // first, not a scroll-past of their existing teams.
+                    // SPEC-5.68.3: the invitations block appears above the teams.
                     if !invites.is_empty() || invites_failed || !invite_error().is_empty() {
                         div { class: "px-3 py-2 text-xs uppercase tracking-wide text-subtle",
                             "Pending invitations"
@@ -594,6 +620,7 @@ pub fn TenantSwitcher() -> Element {
                                         "Role: {role}"
                                     }
                                     div { class: "flex gap-2 pt-1",
+                                        // SPEC-5.68.4: both buttons lock while this invitation is busy.
                                         Button {
                                             variant: ButtonVariant::Primary,
                                             disabled: busy,
@@ -621,6 +648,7 @@ pub fn TenantSwitcher() -> Element {
                         }
                         div { class: "border-t border-line my-1" }
                     }
+                    // SPEC-5.66.5: heading and the empty-list text.
                     div { class: "px-3 py-2 text-xs uppercase tracking-wide text-subtle",
                         "Your teams"
                     }
@@ -648,6 +676,7 @@ pub fn TenantSwitcher() -> Element {
                                     button {
                                         r#type: "button",
                                         class: "flex-1 min-w-0 text-left rounded-md px-3 py-2 text-sm text-content",
+                                        // SPEC-5.66.6: the active row and busy state disable switching.
                                         disabled: is_active || saving(),
                                         onclick: {
                                             let tenant_id = tenant_id.clone();
@@ -658,6 +687,7 @@ pub fn TenantSwitcher() -> Element {
                                             if is_active { "Active" } else if grant_id.is_some() { "Shared with you" } else { "Member" }
                                         }
                                     }
+                                    // SPEC-5.67.7: Leave exists only for a leavable grant.
                                     if let Some(grant_id) = grant_id {
                                         button {
                                             r#type: "button",
@@ -681,6 +711,7 @@ pub fn TenantSwitcher() -> Element {
                     button {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         r#type: "button",
+                        // SPEC-5.66.11: opens the create modal through the shared signal.
                         onclick: move |_| {
                             *SHOW_CREATE_ORG.write() = true;
                             open.set(false);
@@ -693,6 +724,7 @@ pub fn TenantSwitcher() -> Element {
                     }
                 }
             }
+            // SPEC-5.67.1: create-team modal and its fields.
             Modal {
                 open: SHOW_CREATE_ORG(),
                 title: "Create new team".to_string(),
@@ -735,6 +767,7 @@ pub fn TenantSwitcher() -> Element {
                         p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
                     }
                     div { class: "flex gap-2 justify-end pt-2",
+                        // SPEC-5.67.6: Cancel resets the form and closes the modal.
                         Button {
                             variant: ButtonVariant::Secondary,
                             r#type: "button".to_string(),
@@ -761,6 +794,7 @@ pub fn TenantSwitcher() -> Element {
             // first, like every other destructive action in this app. The
             // message says what leaving does NOT do as well, because "leave"
             // next to a team name reads like it might delete the team.
+            // SPEC-5.67.8: the leave confirmation names the team and shows the error.
             if let Some((grant_id, tenant_name)) = leaving() {
                 ConfirmDialog {
                     open: true,

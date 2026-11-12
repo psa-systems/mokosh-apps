@@ -14,6 +14,7 @@ pub fn OverflowActions(children: Element) -> Element {
     // mode - Escape closes, Up/Down move the internal highlight, Tab and
     // Enter fall through to the browser (Tab walks the menu buttons,
     // Enter fires the focused one).
+    // SPEC-5.52.7: menu mode, so Tab and Enter stay with the browser.
     let mut nav = use_dropdown_nav("overflow-actions").menu();
     // The overflow menu wraps a caller-supplied `children` Element, so
     // the exact row count is not visible here. use_dropdown_nav's
@@ -22,14 +23,17 @@ pub fn OverflowActions(children: Element) -> Element {
     // bound is enough for the state machine to answer "some highlight",
     // and per the ticket the visual mark on a row is call-site work the
     // wrapper cannot do without knowing its rows.
+    // SPEC-5.52.8: fixed upper bound, the real row count is unknown here.
     let row_count: usize = 8;
     rsx! {
+        // SPEC-5.52.5: the children render once inline and once collapsed.
         // Inline on >= sm.
         div { class: "hidden sm:flex items-center gap-2", {children.clone()} }
         // Collapsed menu on < sm.
         div { class: "sm:hidden",
             Popover {
                 open: nav.is_open(),
+                // SPEC-5.52.6: trigger label, tooltip and glyph.
                 label: "More actions",
                 title: "More",
                 trigger_class: "px-2 py-1 text-muted hover:text-content",
@@ -46,6 +50,7 @@ pub fn OverflowActions(children: Element) -> Element {
                 onkeydown: move |e: KeyboardEvent| {
                     nav.keydown_menu(&e, row_count);
                 },
+                // SPEC-5.52.9: neutral wrapper so the children stay the menu's own rows.
                 div { class: "flex flex-col gap-2", role: "none", {children} }
             }
         }

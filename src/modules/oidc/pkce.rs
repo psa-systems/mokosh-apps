@@ -14,6 +14,7 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 
 /// 32 random bytes, base64url-encoded with no padding.
+// SPEC-3.8.2: 32 random bytes, base64url without padding (43 characters).
 pub fn generate_code_verifier() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
@@ -21,6 +22,7 @@ pub fn generate_code_verifier() -> String {
 }
 
 /// `code_challenge = base64url(SHA-256(code_verifier))`.
+// SPEC-3.8.2: base64url, unpadded, SHA-256 of the verifier.
 pub fn s256_challenge(verifier: &str) -> String {
     let mut h = Sha256::new();
     h.update(verifier.as_bytes());
@@ -33,6 +35,7 @@ pub fn s256_challenge(verifier: &str) -> String {
 /// §5.3.5 floors `state` at 128 bits; 256 bits gives ample headroom and
 /// matches the entropy budget of the PKCE verifier so the weakest link
 /// in the flow is no longer the nonce.
+// SPEC-3.8.3: fresh 32 bytes per call, used separately for state and nonce.
 pub fn random_opaque() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);

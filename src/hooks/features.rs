@@ -25,6 +25,7 @@ use serde::Deserialize;
 
 /// Shape of `GET /api/v1/public/config`.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+// SPEC-4.13.1: features map defaults to empty.
 pub struct PublicConfig {
     #[serde(default)]
     pub features: HashMap<String, bool>,
@@ -33,10 +34,12 @@ pub struct PublicConfig {
 /// What the server currently has turned on. `None` while the first read is
 /// in flight or has failed; readers resolve this to "off" per the ticket's
 /// negative-case AC.
+// SPEC-4.13.2: None until the first successful read.
 pub static FEATURE_MAP: GlobalSignal<Option<HashMap<String, bool>>> = Signal::global(|| None);
 
 /// Monotonic counter the admin page bumps on a successful flip so other
 /// panels on the page re-read without waiting for the 60s tick.
+// SPEC-4.13.2: starts at 0; bumped by the admin page after a flip.
 pub static FEATURES_GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
 
 const REFRESH_INTERVAL_SECS: u32 = 60;
@@ -47,12 +50,14 @@ const REFRESH_INTERVAL_SECS: u32 = 60;
 /// which gates read as off, which is the right fail-closed posture.
 #[cfg(feature = "app")]
 pub async fn refresh_feature_map() {
+    // SPEC-4.13.3: success replaces the map.
     let result = crate::hooks::fetch::api::get_authed::<PublicConfig>("/public/config").await;
     match result {
         Ok(cfg) => {
             *FEATURE_MAP.write() = Some(cfg.features);
         }
         Err(err) => {
+            // SPEC-4.13.4: keep the previous map and log the cause.
             tracing::warn!("feature-map refresh failed: {err}");
         }
     }
@@ -98,6 +103,7 @@ pub fn use_feature_map_refresh() {
                 return;
             };
             dioxus::prelude::spawn(async move {
+                // SPEC-4.13.5: prime read at mount, then every 60 s.
                 // Held for the task's lifetime; dropping it frees the slot.
                 let _claim = claim;
                 // One prime read so the first render has data instead of
@@ -115,6 +121,7 @@ pub fn use_feature_map_refresh() {
 /// Is `key` on? A missing key, an unloaded map, or a failed read all
 /// resolve to false, the ticket's "negative case" AC.
 pub fn feature_enabled(map: &Option<HashMap<String, bool>>, key: &str) -> bool {
+    // SPEC-4.13.6: missing key or unloaded map reads as off.
     map.as_ref()
         .and_then(|m| m.get(key).copied())
         .unwrap_or(false)
@@ -124,6 +131,7 @@ pub fn feature_enabled(map: &Option<HashMap<String, bool>>, key: &str) -> bool {
 /// generation bump the admin page emits, so a flipped feature on this
 /// user's own session reflects the next render.
 pub fn use_feature_enabled(key: &str) -> bool {
+    // SPEC-4.13.7: tracked reads of both signals.
     let _generation = *FEATURES_GENERATION.read();
     let map = FEATURE_MAP.read();
     feature_enabled(&map, key)

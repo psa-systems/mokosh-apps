@@ -43,7 +43,9 @@ pub fn SettingsBrandingPage() -> Element {
     // MAPPS-602: every hook fires BEFORE the not-admin early return.
     // Otherwise the render that takes the exit leaves the component a
     // hook short and the next render panics dioxus-core.
+    // SPEC-11.36.2: hooks stay above the admin early return.
     let auth = crate::hooks::auth::use_auth();
+    // SPEC-11.36.3: tenant load; SPEC-11.36.4: failure is logged.
     let mut resource = use_resource(|| async {
         let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<TenantSnippet>("/tenants/current")
@@ -58,6 +60,7 @@ pub fn SettingsBrandingPage() -> Element {
     let mut toggle_saving = use_signal(|| false);
     let mut toggle_error: Signal<String> = use_signal(String::new);
     let is_admin = auth.read().is_admin();
+    // SPEC-11.36.1: admin-only gate.
     if !is_admin {
         return rsx! {
             ContentUnavailable {
@@ -88,6 +91,7 @@ pub fn SettingsBrandingPage() -> Element {
     // reflected authoritatively). `toggle_saving` + `toggle_error`
     // hooks are declared above the not-admin early return; the closure
     // below just captures them.
+    // SPEC-11.38.2: body carries only the flag; SPEC-11.38.3: in-flight guard.
     let mut on_toggle_module = move |next: bool| {
         if toggle_saving() {
             return;
@@ -103,6 +107,7 @@ pub fn SettingsBrandingPage() -> Element {
             .await
             {
                 Ok(_) => {
+                    // SPEC-11.38.4: toast text names the session-eviction side effect.
                     crate::hooks::toast::push_toast(
                         crate::components::AlertType::Success,
                         if next {
@@ -115,6 +120,7 @@ pub fn SettingsBrandingPage() -> Element {
                     resource.restart();
                 }
                 Err(e) => {
+                    // SPEC-11.38.5
                     toggle_error.set(format!("Save failed: {e}"));
                 }
             }
@@ -122,6 +128,7 @@ pub fn SettingsBrandingPage() -> Element {
         });
     };
 
+    // SPEC-11.37.1, SPEC-11.37.2: branding-only body, in-flight guard.
     let on_save = move |block: CompanyBranding| {
         if saving() {
             return;
@@ -142,6 +149,7 @@ pub fn SettingsBrandingPage() -> Element {
             .await
             {
                 Ok(_) => {
+                    // SPEC-11.37.3
                     // MAPPS-635 G: use the shared toast infra so the
                     // "saved" confirmation lands above the fold, not
                     // as inline text below the card that could scroll
@@ -153,6 +161,7 @@ pub fn SettingsBrandingPage() -> Element {
                     resource.restart();
                 }
                 Err(e) => {
+                    // SPEC-11.37.4
                     error.set(format!("Save failed: {e}"));
                 }
             }
@@ -161,6 +170,7 @@ pub fn SettingsBrandingPage() -> Element {
     };
 
     rsx! {
+        // SPEC-11.36.6
         div { class: "max-w-5xl mx-auto space-y-6 p-6",
             // PMS-1338: the way out. Appearance, the TV view and every other
             // settings leaf carry this; this page did not, so the only exit was
@@ -172,6 +182,7 @@ pub fn SettingsBrandingPage() -> Element {
                     "Set the defaults every client portal in your MSP inherits. A Company can still override any field from its own Branding card on the Company detail page."
                 }
             }
+            // SPEC-11.36.5: loading text replaces the card and editor.
             if loading {
                 p { class: "text-sm text-muted", "Loading branding…" }
             } else if load_failed {
@@ -184,6 +195,7 @@ pub fn SettingsBrandingPage() -> Element {
                 // MAPPS-557 tenant-suspend semantic one tier down);
                 // the toast message names that side-effect so the
                 // operator is not surprised.
+                // SPEC-11.38.1
                 Card {
                     title: "Portal module".to_string(),
                     subtitle: "The portal module gates whether any client Company under this tenant can offer a portal. Off = the whole surface is unreachable; on = Company Admins can enable the portal for individual Companies from each Company's detail page.".to_string(),
@@ -201,6 +213,7 @@ pub fn SettingsBrandingPage() -> Element {
                         }
                     }
                 }
+                // SPEC-11.36.7, SPEC-11.37.5
                 BrandingEditor {
                     current,
                     tenant_defaults: TenantBranding::default(),

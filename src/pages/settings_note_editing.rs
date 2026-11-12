@@ -40,12 +40,14 @@ struct TenantSetting {
 const CATEGORY: &str = "tickets";
 const KEY: &str = "note_editing";
 
+// SPEC-11.40.2: the row this page reads and writes.
 /// The server's default when no row exists (`NoteEditPolicy::default`).
 const DEFAULT_POLICY: &str = "author_or_admin";
 
 /// The closed set `validate_setting_value` accepts, with what each one means.
 /// Written out because the server refuses anything else: a value invented here
 /// would be a 422 the admin cannot act on.
+// SPEC-11.40.4
 const POLICIES: &[(&str, &str, &str)] = &[
     (
         "off",
@@ -67,6 +69,7 @@ const POLICIES: &[(&str, &str, &str)] = &[
 /// The policy in force in `settings`, or the server's default when no row is
 /// set. A stored value this build does not know reads as the default too,
 /// which is what the server does with one.
+// SPEC-11.40.5
 fn policy_in(settings: &[TenantSetting]) -> &'static str {
     settings
         .iter()
@@ -80,6 +83,7 @@ fn policy_in(settings: &[TenantSetting]) -> &'static str {
 #[component]
 pub fn NoteEditingSettingsPage() -> Element {
     use_page_title("Note Editing");
+    // SPEC-11.40.1
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Note Editing" } };
     }
@@ -88,6 +92,7 @@ pub fn NoteEditingSettingsPage() -> Element {
 
 #[component]
 fn NoteEditingSettingsBody() -> Element {
+    // SPEC-11.40.2, SPEC-11.40.3
     let mut settings = use_resource(|| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
@@ -116,6 +121,7 @@ fn NoteEditingSettingsBody() -> Element {
             }
             match snap {
                 None => rsx! { crate::components::DetailSkeleton {} },
+                // SPEC-11.40.3
                 Some(None) => rsx! {
                     Card {
                         ErrorBanner { "Could not load the note editing policy." }
@@ -135,6 +141,7 @@ fn NoteEditingSettingsBody() -> Element {
                                     name: "note_editing",
                                     label: "Who may edit a note",
                                     value: current.to_string(),
+                                    // SPEC-11.40.8
                                     disabled: saving() || !can_mutate,
                                     options: POLICIES
                                         .iter()
@@ -147,12 +154,14 @@ fn NoteEditingSettingsBody() -> Element {
                                         spawn(async move {
                                             #[cfg(feature = "app")]
                                             {
+                                                // SPEC-11.40.7
                                                 let body = serde_json::json!({
                                                     "category": CATEGORY,
                                                     "key": KEY,
                                                     "value": next,
                                                 });
                                                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>("/settings", &body).await {
+                                                    // SPEC-11.40.9, SPEC-11.40.10
                                                     Ok(_) => settings.restart(),
                                                     Err(e) => error.set(format!("Could not change the policy: {e}")),
                                                 }
@@ -163,6 +172,7 @@ fn NoteEditingSettingsBody() -> Element {
                                         });
                                     },
                                 }
+                                // SPEC-11.40.6
                                 p { class: "text-sm text-muted", "{described}" }
                                 p { class: "text-sm text-subtle",
                                     "Two kinds of note refuse the edit whatever this says: one the customer wrote through the portal, and a public note that was already emailed, because the customer holds the original. A note logged against a time entry is edited through that entry."

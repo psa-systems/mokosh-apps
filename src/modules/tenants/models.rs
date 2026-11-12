@@ -9,6 +9,7 @@
 //! `mokosh-types` additionally owns a `TenantUsage` DTO the SPA does not use;
 //! it is intentionally not re-exported here (YAGNI).
 
+// SPEC-3.21.1: re-exported, never redeclared, so drift fails the build.
 pub use mokosh_types::tenants::{
     CreateTenantRequest, Tenant, TenantBranding, TenantResponse, TenantStatus, UpdateTenantRequest,
 };

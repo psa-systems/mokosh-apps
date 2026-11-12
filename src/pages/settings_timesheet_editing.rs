@@ -40,6 +40,7 @@ pub(crate) struct TenantSetting {
     value: serde_json::Value,
 }
 
+// SPEC-11.41.2, SPEC-11.41.6: shared with the Work day page.
 /// The setting this page owns.
 pub(crate) const CATEGORY: &str = "timesheets";
 pub(crate) const KEY: &str = "segment_editing";
@@ -50,6 +51,7 @@ pub(crate) const DEFAULT_POLICY: &str = "owner_or_admin";
 /// The closed set `validate_setting_value` accepts, with what each one means.
 /// Written out because the server refuses anything else: a value invented here
 /// would be a 422 the admin cannot act on.
+// SPEC-11.41.4
 pub(crate) const POLICIES: &[(&str, &str, &str)] = &[
     (
         "off",
@@ -71,6 +73,7 @@ pub(crate) const POLICIES: &[(&str, &str, &str)] = &[
 /// The policy in force in `settings`, or the server's default when no row is
 /// set. A stored value this build does not know reads as the default too,
 /// which is what the server does with one.
+// SPEC-11.41.5
 pub(crate) fn policy_in(settings: &[TenantSetting]) -> &'static str {
     settings
         .iter()
@@ -84,6 +87,7 @@ pub(crate) fn policy_in(settings: &[TenantSetting]) -> &'static str {
 #[component]
 pub fn SegmentEditingSettingsPage() -> Element {
     use_page_title("Segment Editing");
+    // SPEC-11.41.1
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Segment Editing" } };
     }
@@ -92,6 +96,7 @@ pub fn SegmentEditingSettingsPage() -> Element {
 
 #[component]
 fn SegmentEditingSettingsBody() -> Element {
+    // SPEC-11.41.2, SPEC-11.41.3
     let mut settings = use_resource(|| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
@@ -120,6 +125,7 @@ fn SegmentEditingSettingsBody() -> Element {
             }
             match snap {
                 None => rsx! { crate::components::DetailSkeleton {} },
+                // SPEC-11.41.3
                 Some(None) => rsx! {
                     Card {
                         ErrorBanner { "Could not load the segment editing policy." }
@@ -139,6 +145,7 @@ fn SegmentEditingSettingsBody() -> Element {
                                     name: "segment_editing",
                                     label: "Who may correct a clock entry",
                                     value: current.to_string(),
+                                    // SPEC-11.41.9
                                     disabled: saving() || !can_mutate,
                                     options: POLICIES
                                         .iter()
@@ -151,12 +158,14 @@ fn SegmentEditingSettingsBody() -> Element {
                                         spawn(async move {
                                             #[cfg(feature = "app")]
                                             {
+                                                // SPEC-11.41.8
                                                 let body = serde_json::json!({
                                                     "category": CATEGORY,
                                                     "key": KEY,
                                                     "value": next,
                                                 });
                                                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>("/settings", &body).await {
+                                                    // SPEC-11.41.10, SPEC-11.41.11
                                                     Ok(_) => settings.restart(),
                                                     Err(e) => error.set(format!("Could not change the policy: {e}")),
                                                 }
@@ -167,6 +176,7 @@ fn SegmentEditingSettingsBody() -> Element {
                                         });
                                     },
                                 }
+                                // SPEC-11.41.7
                                 p { class: "text-sm text-muted", "{described}" }
                                 // Said here because an admin arriving from Note
                                 // Editing will expect a second half to the rule,

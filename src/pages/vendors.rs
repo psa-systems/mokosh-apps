@@ -49,6 +49,7 @@ struct RemoteVendor {
 /// No search box, and no `q`: `GET /vendors` takes pagination and nothing
 /// else. A field that posted a filter the server ignores would look like a
 /// search that finds nothing, which is worse than no search.
+// SPEC-10.52.2
 pub(crate) fn list_path(page: usize) -> String {
     format!("/vendors?page={page}&per_page={PER_PAGE}")
 }
@@ -58,6 +59,7 @@ pub(crate) fn list_path(page: usize) -> String {
 /// The server caps `account_number` and validates `default_currency` as
 /// exactly three characters, so an empty string is a value that fails
 /// validation where absence is what the admin meant.
+// SPEC-10.53.2
 fn optional_json(raw: &str) -> serde_json::Value {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -79,6 +81,7 @@ pub fn VendorsSettingsPage() -> Element {
         .unwrap_or(false);
 
     use_page_title("Vendors");
+    // SPEC-10.52.1: gate before the body so no list request is made.
     if !has_finance {
         return rsx! { crate::pages::billing::NoFinancePermission { title: "Vendors" } };
     }
@@ -116,6 +119,7 @@ fn VendorsSettingsBody() -> Element {
 
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // SPEC-10.52.3: an outage replaces the page; otherwise the banner below shows.
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Vendors".to_string() }
@@ -132,6 +136,7 @@ fn VendorsSettingsBody() -> Element {
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
+                    // SPEC-10.52.7
                     disabled: !can_mutate,
                     title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                     onclick: move |_| editing.set(Some(VendorFormState::new())),
@@ -145,6 +150,7 @@ fn VendorsSettingsBody() -> Element {
             "A vendor is the other side of a client: somebody who bills you. A bill names one, and so does the mapping that lets a bill be raised in Xero or QuickBooks."
         }
 
+        // SPEC-10.52.3
         if fetch_failed {
             ErrorBanner { class: "mb-3", "Could not load vendors. Refresh the page to retry." }
         }
@@ -165,6 +171,7 @@ fn VendorsSettingsBody() -> Element {
                         TableHeader { "Notes" }
                     }
                 }
+                // SPEC-10.52.4, SPEC-10.52.5: empty state only when the load succeeded.
                 if is_loading {
                     TableLoading { columns: 4, rows: 4 }
                 } else if rows.is_empty() && !fetch_failed {
@@ -201,10 +208,11 @@ fn VendorsSettingsBody() -> Element {
                                         },
                                         TableCell {
                                             // MAPPS-569: the row opens a modal, so this cell is
-                                            // the keyboard path.
+                                            // the keyboard path. SPEC-10.52.8
                                             onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
+                                        // SPEC-10.52.6
                                         TableCell {
                                             if account.is_empty() {
                                                 span { class: "text-subtle", "-" }
@@ -234,6 +242,7 @@ fn VendorsSettingsBody() -> Element {
                 state,
                 onclose: move |_| editing.set(None),
                 onsaved: move |_| {
+                    // SPEC-10.52.8
                     editing.set(None);
                     resource.restart();
                 },
@@ -312,11 +321,13 @@ fn VendorFormModal(props: VendorFormModalProps) -> Element {
 
     let save_id = initial.id.clone();
     let handle_save = move |_| {
+        // SPEC-10.53.3
         if *saving.read() || *deleting.read() {
             return;
         }
         error.set(String::new());
 
+        // SPEC-10.53.1
         // PMS-518: every field reported at once, first invalid focused. The
         // caps mirror `UpsertVendorRequest`.
         let mut guard = FormGuard::new();
@@ -362,6 +373,7 @@ fn VendorFormModal(props: VendorFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "app")]
             {
+                // SPEC-10.53.3
                 let result = match id {
                     None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                         "/vendors", &body,
@@ -377,6 +389,7 @@ fn VendorFormModal(props: VendorFormModalProps) -> Element {
                 };
                 match result {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-10.53.4
                     Err(err) => error.set(format!("Could not save vendor: {err}")),
                 }
             }
@@ -400,6 +413,7 @@ fn VendorFormModal(props: VendorFormModalProps) -> Element {
             {
                 match crate::hooks::fetch::api::delete_authed(&format!("/vendors/{id}")).await {
                     Ok(()) => onsaved.call(()),
+                    // SPEC-10.53.5
                     Err(err) => error.set(format!("Could not delete vendor: {err}")),
                 }
             }
@@ -417,6 +431,7 @@ fn VendorFormModal(props: VendorFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
+            // SPEC-10.53.5
             deletable: is_edit,
             create_label: "Create Vendor".to_string(),
             delete_title: "Delete vendor".to_string(),
@@ -454,6 +469,7 @@ fn VendorFormModal(props: VendorFormModalProps) -> Element {
                     name: "vendor_default_currency",
                     label: "Bills in",
                     placeholder: "USD",
+                    // SPEC-10.53.6
                     maxlength: 3,
                     help: "The currency they bill you in, if it is not yours.",
                     error: currency_err(),

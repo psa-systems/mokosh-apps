@@ -24,6 +24,7 @@ use crate::hooks::use_dropdown_nav;
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
+// SPEC-5.54.3: required and optional fields of a listed product.
 struct PickerProduct {
     id: uuid::Uuid,
     name: String,
@@ -68,6 +69,7 @@ pub struct PickedProduct {
 }
 
 impl PickedProduct {
+    // SPEC-5.54.13: blank sku/description become None; the price is copied as sent.
     fn from_row(row: &PickerProduct) -> Self {
         Self {
             id: row.id.to_string(),
@@ -83,6 +85,7 @@ impl PickedProduct {
 
 /// The text a result row shows beside the name: the SKU when there is one,
 /// then the price per unit. Pure so the tests can pin the shape.
+// SPEC-5.54.8: detail text shape.
 pub fn product_row_detail(sku: Option<&str>, unit_price: &str, unit: &str) -> String {
     let price = crate::utils::money::format_money_str(unit_price);
     let per_unit = if unit.trim().is_empty() {
@@ -103,6 +106,7 @@ pub struct ProductPickerProps {
     /// When `Some`, the picker renders as a selected chip with Change and
     /// Clear rather than the search input.
     pub selected_id: Option<String>,
+    // SPEC-5.54.16: prop defaults are label, placeholder, required and clear_on_select.
     #[props(default = String::from("Product"))]
     pub label: String,
     #[props(default)]
@@ -127,6 +131,7 @@ pub fn ProductPicker(props: ProductPickerProps) -> Element {
     // MAPPS-503: open / highlight state and the shared keyboard contract.
     // MAPPS-653: the field has to end up holding a product, so Enter takes the
     // first match when the user has not arrowed onto one.
+    // SPEC-5.54.10: Enter takes the first row when none is highlighted.
     let mut nav = use_dropdown_nav("product-picker").enter_takes_first_match();
     let mut editing = use_signal(|| false);
     // PMS-371: read the query INSIDE the resource closure so the fetch
@@ -136,8 +141,10 @@ pub fn ProductPicker(props: ProductPickerProps) -> Element {
     // fires one request per pause in typing rather than one per keystroke.
     let query_debounced = crate::hooks::use_debounced_signal(query, 300);
     let results = use_resource(move || async move {
+        // SPEC-5.54.2: refetch on tenant change and on the debounced query.
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let q = query_debounced.read().trim().to_string();
+        // SPEC-5.54.1: active products only, 20 per request, q only when non-empty.
         let path = if q.is_empty() {
             "/products?is_active=true&per_page=20".to_string()
         } else {
@@ -146,6 +153,7 @@ pub fn ProductPicker(props: ProductPickerProps) -> Element {
                 urlencoding_minimal(&q)
             )
         };
+        // SPEC-5.54.4: the failure is logged here and shown as its own panel state.
         // MAPPS-503: keep the failure, so a failed search is its own state.
         crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
             .await
@@ -155,6 +163,7 @@ pub fn ProductPicker(props: ProductPickerProps) -> Element {
 
     let clear_on_select = props.clear_on_select;
 
+    // SPEC-5.54.14: a selected product shows as a chip unless the user is changing it.
     if let Some(_id) = &props.selected_id {
         if !editing() {
             let name = props.value.clone();
@@ -176,6 +185,7 @@ pub fn ProductPicker(props: ProductPickerProps) -> Element {
                             p { class: "text-sm font-medium text-content truncate", "{name}" }
                         }
                         div { class: "flex items-center gap-1 shrink-0 ml-2",
+                            // SPEC-5.54.15: Change re-enters search; Clear reports onclear.
                             Button {
                                 variant: ButtonVariant::Link,
                                 size: ButtonSize::Small,
@@ -210,6 +220,7 @@ pub fn ProductPicker(props: ProductPickerProps) -> Element {
     };
     let nav_len = rows.len();
     let rows_for_keys = rows.clone();
+    // SPEC-5.54.12: one commit path for click and keyboard picks.
     let mut commit = move |row: &PickerProduct| {
         let picked = PickedProduct::from_row(row);
         let name = picked.name.clone();
@@ -221,6 +232,7 @@ pub fn ProductPicker(props: ProductPickerProps) -> Element {
     rsx! {
         div { class: "relative space-y-1",
             div {
+                // SPEC-5.54.9: combobox wrapper opening on focus, click and input.
                 role: "combobox",
                 aria_expanded: nav.expanded(),
                 aria_controls: nav.panel_id(),
@@ -235,6 +247,7 @@ pub fn ProductPicker(props: ProductPickerProps) -> Element {
                         }
                     });
                 },
+                // SPEC-5.54.16: fixed input name.
                 Input {
                     name: "product_search",
                     label: props.label,
@@ -248,6 +261,7 @@ pub fn ProductPicker(props: ProductPickerProps) -> Element {
                 }
             }
             if nav.is_open() {
+                // SPEC-5.54.11: the backdrop closes the panel and ends edit mode.
                 div {
                     class: "fixed inset-0 z-10",
                     onclick: move |_| {
@@ -260,12 +274,14 @@ pub fn ProductPicker(props: ProductPickerProps) -> Element {
                     role: "listbox",
                     class: "dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto",
                     match &*snap {
+                        // SPEC-5.54.5: pending state text.
                         None => rsx! {
                             div { class: "px-3 py-2 text-sm text-muted", "Searching…" }
                         },
                         Some(Err(_)) => rsx! {
                             ErrorBanner { class: "m-1", "Could not search. Try again." }
                         },
+                        // SPEC-5.54.6: empty-result text depends on whether a query was typed.
                         Some(Ok(_)) if rows.is_empty() => rsx! {
                             div { class: "px-3 py-2 text-sm text-muted",
                                 if query_text.is_empty() {
@@ -284,6 +300,7 @@ pub fn ProductPicker(props: ProductPickerProps) -> Element {
                                         let detail = product_row_detail(row.sku.as_deref(), &row.unit_price, &row.unit);
                                         let row_for_click = row.clone();
                                         rsx! {
+                                            // SPEC-5.54.7: option row with a non-tabbable button.
                                             li {
                                                 key: "{key}",
                                                 id: nav.row_id(index),

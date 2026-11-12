@@ -2,6 +2,7 @@
 //!
 //! This module contains reusable Dioxus components used throughout the application.
 
+// SPEC-5.70.1: every component file is a private submodule re-exported below.
 mod access_required;
 mod account_deleted_overlay;
 mod asset_picker;
@@ -83,6 +84,7 @@ pub use inline_field_editor::*;
 pub use kb_template_vars::*;
 pub use layout::*;
 pub use markdown::*;
+// SPEC-5.70.2: crate-visible alias for the preview-box id helper.
 /// MAPPS-745: the id of a `MarkdownEditor`'s preview box, for the KB editor's inline highlights.
 pub(crate) use markdown_editor::preview_id as markdown_editor_preview_id;
 pub use markdown_editor::*;

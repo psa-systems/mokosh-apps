@@ -6,6 +6,7 @@
 //! the pages in `crate::pages::knowledge_base` and the portal KB reader
 //! in `crate::pages::portal` fetch against those endpoints.
 
+// SPEC-3.17.3: KB DTOs are re-exported from the module path.
 mod models;
 
 pub use models::*;

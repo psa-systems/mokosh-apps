@@ -17,12 +17,14 @@ use dioxus::prelude::*;
 
 /// `GET /asset-types` and its admin-table create/update/delete calls all
 /// target this path.
+// SPEC-4.14.1: single literal for the asset-types path.
 pub const ENDPOINT: &str = "/asset-types";
 
 /// An asset-type row as returned by `GET /asset-types`. Covers the two
 /// former per-site structs (`contacts::AssetTypeOption`,
 /// `assets::AssetTypeOpt`), which both read only these two fields.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+// SPEC-4.14.2: id required, name defaults to "".
 pub struct AssetTypeRow {
     pub id: uuid::Uuid,
     #[serde(default)]
@@ -31,6 +33,7 @@ pub struct AssetTypeRow {
 
 /// Provide the shared asset-types list at the App root (MAPPS-1001: see
 /// [`crate::hooks::shared_list`]).
+// SPEC-4.14.3: one shared list registered at the app root.
 pub fn use_asset_types_provider() {
     crate::hooks::shared_list::use_shared_list_provider::<AssetTypeRow>("asset types", ENDPOINT);
 }
@@ -38,6 +41,7 @@ pub fn use_asset_types_provider() {
 /// Ask for the cached asset-types list. `enabled` is each caller's own gate;
 /// passing `true` from any single mount is enough to trigger (and
 /// thereafter share) the one underlying fetch.
+// SPEC-4.14.3: any caller passing true triggers the shared fetch.
 pub fn use_asset_types(enabled: bool) -> Resource<Vec<AssetTypeRow>> {
     crate::hooks::shared_list::use_shared_list::<AssetTypeRow>(enabled)
 }

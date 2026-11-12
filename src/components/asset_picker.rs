@@ -62,6 +62,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
     // MAPPS-503: open / highlight state and the shared keyboard contract.
     // MAPPS-653: the field has to end up holding an asset, so Enter takes the
     // first match when the user has not arrowed onto one.
+    // SPEC-5.3.8
     let mut nav = use_dropdown_nav("asset-picker").enter_takes_first_match();
     // PMS-344 follow-up: when the picker has a selected_id from the
     // parent (e.g. the inline ticket-detail editor showing the currently
@@ -84,10 +85,12 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
     let query_text = query.read().trim().to_string();
     // MAPPS-855: debounce the resource's dependency so a burst of keystrokes
     // fires one request per pause in typing rather than one per keystroke.
+    // SPEC-5.3.2
     let query_debounced = crate::hooks::use_debounced_signal(query, 300);
     let results = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let q = query_debounced.read().trim().to_string();
+        // SPEC-5.3.1
         let path = if q.is_empty() {
             "/assets?per_page=20".to_string()
         } else {
@@ -99,6 +102,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
         crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
             .await
             .map(|p| p.data)
+            // SPEC-5.3.3
             .inspect_err(|e| tracing::warn!("asset search failed: {e}"))
     });
 
@@ -117,6 +121,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
             // duplicated "Asset" inside the value column. Same convention
             // the inline Status/Priority/Assigned-To `Select` editors
             // already follow (they pass `label: ""`).
+            // SPEC-5.3.10
             let show_label = !props.label.trim().is_empty();
             return rsx! {
                 div { class: "space-y-1 w-full",
@@ -142,6 +147,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                             Button {
                                 variant: ButtonVariant::Link,
                                 size: ButtonSize::Small,
+                                // SPEC-5.3.11: switches locally; never fires onclear.
                                 onclick: move |_| {
                                     query.set(String::new());
                                     editing.set(true);
@@ -157,6 +163,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                             button {
                                 r#type: "button",
                                 class: "text-xs text-muted hover:text-red-600 dark:hover:text-red-400 px-2 py-1",
+                                // SPEC-5.3.12
                                 onclick: move |_| {
                                     onclear.call(());
                                     query.set(String::new());
@@ -186,6 +193,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
             // rather than on the shared `Input` (MAPPS-347), where keydown
             // from the focused input bubbles up to them.
             div {
+                // SPEC-5.3.7
                 role: "combobox",
                 aria_expanded: nav.expanded(),
                 aria_controls: nav.panel_id(),
@@ -195,6 +203,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                 onkeydown: move |e: KeyboardEvent| {
                     let rows = rows_for_keys.clone();
                     nav.keydown(&e, nav_len, move |index| {
+                        // SPEC-5.3.6
                         if let Some(row) = rows.get(index) {
                             let name = row.name.clone();
                             onselect.call((row.id.to_string(), name.clone()));
@@ -204,6 +213,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                     });
                 },
                 Input {
+                    // SPEC-5.3.13
                     name: "asset_search",
                     label: props.label,
                     placeholder: "Search assets…",
@@ -222,6 +232,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                 // the user cancels by clicking outside without picking.
                 div {
                     class: "fixed inset-0 z-10",
+                    // SPEC-5.3.7
                     onclick: move |_| {
                         nav.close();
                         editing.set(false);
@@ -240,9 +251,11 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                         // MAPPS-444: it takes the shared banner (paired hues,
                         // role="alert"); `m-1` keeps its border off the
                         // dropdown's own edge.
+                        // SPEC-5.3.3
                         Some(Err(_)) => rsx! {
                             ErrorBanner { class: "m-1", "Could not search. Try again." }
                         },
+                        // SPEC-5.3.4
                         Some(Ok(_)) if rows.is_empty() => rsx! {
                             div { class: "px-3 py-2 text-sm text-muted",
                                 if query_text.is_empty() {
@@ -261,6 +274,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                                         let id_str = row.id.to_string();
                                         let key = id_str.clone();
                                         let name = row.name.clone();
+                                        // SPEC-5.3.5
                                         let tag = row
                                             .asset_tag
                                             .clone()
@@ -278,6 +292,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                                                     // MAPPS-503: out of the tab order, so Tab
                                                     // commits and moves to the next field
                                                     // instead of walking into the list.
+                                                    // SPEC-5.3.9
                                                     tabindex: "-1",
                                                     class: nav.row_class(index, "w-full text-left px-3 py-2 text-sm hover:bg-surface-2"),
                                                     onclick: move |_| {

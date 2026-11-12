@@ -57,6 +57,7 @@ pub struct LineDiff {
 
 impl LineDiff {
     /// True when nothing changed.
+    // SPEC-4.60.7
     pub fn is_empty(&self) -> bool {
         self.added == 0 && self.removed == 0
     }
@@ -67,10 +68,12 @@ impl LineDiff {
 /// wholesale replacement. A real edit of a long article trims to a handful
 /// of lines; what survives to this cap is two bodies with almost nothing in
 /// common.
+// SPEC-4.60.6
 const MAX_LINES: usize = 1200;
 
 /// Split into lines that keep their `\n`, so concatenating the tokens gives
 /// the input back and a run boundary is always a line boundary.
+// SPEC-4.60.1, SPEC-4.60.3
 fn lines_of(s: &str) -> Vec<&str> {
     s.split_inclusive('\n').collect()
 }
@@ -78,6 +81,7 @@ fn lines_of(s: &str) -> Vec<&str> {
 /// Diff `old` against `new` line by line, refining each rewritten line pair
 /// with the word diff.
 pub fn diff_lines(old: &str, new: &str) -> LineDiff {
+    // SPEC-4.60.2
     if old == new {
         let lines = lines_of(old)
             .into_iter()
@@ -97,6 +101,7 @@ pub fn diff_lines(old: &str, new: &str) -> LineDiff {
     let a = lines_of(old);
     let b = lines_of(new);
 
+    // SPEC-4.60.4
     let mut head = 0;
     while head < a.len() && head < b.len() && a[head] == b[head] {
         head += 1;
@@ -115,6 +120,7 @@ pub fn diff_lines(old: &str, new: &str) -> LineDiff {
     if !a[..head].is_empty() {
         runs.push(Piece::Same(a[..head].concat()));
     }
+    // SPEC-4.60.6: over the cap, no table; wholesale replacement.
     if mid_a.len() > MAX_LINES || mid_b.len() > MAX_LINES {
         if !mid_a.is_empty() {
             runs.push(Piece::Removed(mid_a.concat()));
@@ -123,6 +129,7 @@ pub fn diff_lines(old: &str, new: &str) -> LineDiff {
             runs.push(Piece::Added(mid_b.concat()));
         }
     } else {
+        // SPEC-4.60.5
         lcs_into(mid_a, mid_b, &mut runs);
     }
     if tail > 0 {
@@ -149,6 +156,7 @@ pub fn diff_lines(old: &str, new: &str) -> LineDiff {
 
     refine_pairs(&mut lines);
 
+    // SPEC-4.60.7
     let added = lines.iter().filter(|l| l.kind == LineKind::Added).count();
     let removed = lines.iter().filter(|l| l.kind == LineKind::Removed).count();
     LineDiff {
@@ -181,9 +189,11 @@ fn refine_pairs(lines: &mut [DiffLine]) {
         while i < lines.len() && lines[i].kind == LineKind::Added {
             i += 1;
         }
+        // SPEC-4.60.8, SPEC-4.60.10
         let pairs = (added_start - removed_start).min(i - added_start);
         for k in 0..pairs {
             let (r, a) = (removed_start + k, added_start + k);
+            // SPEC-4.60.9
             let Some(pieces) = diff_words(&lines[r].text, &lines[a].text) else {
                 continue;
             };
@@ -217,9 +227,11 @@ pub enum Row {
 /// A diff with no changes is returned whole: there is nothing to fold
 /// around, and "everything folded" would read as an empty diff.
 pub fn fold(diff: &LineDiff, context: usize) -> Vec<Row> {
+    // SPEC-4.60.11
     if diff.is_empty() {
         return diff.lines.iter().cloned().map(Row::Line).collect();
     }
+    // SPEC-4.60.12
     let n = diff.lines.len();
     let mut keep = vec![false; n];
     for (idx, line) in diff.lines.iter().enumerate() {

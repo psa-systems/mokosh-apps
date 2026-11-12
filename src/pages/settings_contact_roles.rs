@@ -166,6 +166,7 @@ fn truncate_capability_list(caps: &[String]) -> String {
 #[component]
 pub fn ContactRolesListPage() -> Element {
     use_page_title("Contact Roles");
+    // SPEC-8.4.1: gate before the body so a non-admin makes no request.
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Contact Roles" } };
     }
@@ -488,6 +489,7 @@ pub fn ContactRoleEditPage(id: String) -> Element {
         "Edit Portal Role"
     };
     use_page_title(title.to_string());
+    // SPEC-8.4.1: gate before the body so a non-admin makes no request.
     if !crate::pages::settings::use_is_admin() {
         return rsx! { AdminOnlyNotice { title: title.to_string() } };
     }

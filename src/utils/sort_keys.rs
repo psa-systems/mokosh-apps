@@ -12,6 +12,7 @@
 //! server answer 422 for a key it does not accept, so a drift that survives
 //! this file now fails a request rather than quietly reordering a page.
 
+// SPEC-4.81.1: re-exports of the server's lists, never a local copy.
 /// `GET /api/v1/contacts/companies`.
 pub use mokosh_types::sort::COMPANIES as COMPANY_SORT_KEYS;
 
@@ -29,14 +30,17 @@ pub use mokosh_types::sort::TICKETS as TICKET_SORT_KEYS;
 /// The old `sort=-updated_at` was not allow-listed, so the server discarded it
 /// and returned `created_at DESC` instead (MAPPS-527). Since MAPPS-533 it would
 /// be a 422.
+// SPEC-4.81.2, SPEC-4.81.3
 pub const TICKETS_RECENT_SORT: &str = "sort=updated_at&sort_dir=desc";
 
 /// Query fragment for the alphabetical company pickers.
+// SPEC-4.81.2
 pub const COMPANIES_BY_NAME_SORT: &str = "sort=name&sort_dir=asc";
 
 /// The `sort=` value of a query fragment, for asserting a literal against an
 /// allow-list.
 pub fn sort_field_of(query: &str) -> Option<&str> {
+    // SPEC-4.81.4
     query.split('&').find_map(|pair| pair.strip_prefix("sort="))
 }
 

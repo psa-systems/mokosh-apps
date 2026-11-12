@@ -45,6 +45,7 @@ fn value_label(value: f64, one_decimal: bool, unit_suffix: &str) -> String {
 
 #[component]
 pub fn BarChart(props: BarChartProps) -> Element {
+    // SPEC-5.5.1
     if props.data.is_empty() {
         return rsx! {
             p { class: "text-sm text-subtle italic", "No data to chart." }
@@ -57,6 +58,7 @@ pub fn BarChart(props: BarChartProps) -> Element {
         .fold(0.0_f64, f64::max)
         .max(1.0);
 
+    // SPEC-5.5.3
     let bar_height = 18;
     let row_gap = 10;
     let label_col = 160;
@@ -85,12 +87,15 @@ pub fn BarChart(props: BarChartProps) -> Element {
                 for (i, d) in props.data.iter().enumerate() {
                     {
                         let value = d.value;
+                        // SPEC-5.5.2
                         let pct = (value / max).clamp(0.0, 1.0);
                         let bar_width = (pct * bar_track_width as f64) as i32;
                         let y = i as i32 * row_height + 5;
                         let label_y = y + bar_height - 4;
                         let bar_x = label_col;
                         let value_x = label_col + bar_track_width + 8;
+                        // SPEC-5.5.5
+                        // SPEC-5.5.4
                         let value_label = value_label(value, props.one_decimal, &props.unit_suffix);
                         rsx! {
                             text {

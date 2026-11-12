@@ -41,6 +41,7 @@ pub fn save_to_account() {
     #[cfg(feature = "app")]
     {
         use dioxus::prelude::spawn;
+        // SPEC-4.43.1: a theme-only PUT body leaves other user fields untouched.
         let body = ThemeAccountUpdate {
             theme_base_mode: Some(theme::current().as_str().to_string()),
             theme_accent_id: Some(theme::current_accent().id.to_string()),
@@ -50,6 +51,7 @@ pub fn save_to_account() {
                 crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(ME_PATH, &body)
                     .await
             {
+                // SPEC-4.43.2: logged only; local storage already holds the value.
                 tracing::warn!("theme account sync failed: {}", e.user_message());
             }
         });
@@ -70,11 +72,13 @@ pub fn use_theme_sync() {
 
     use_effect(move || {
         let state = auth.read();
+        // SPEC-4.43.3: pull once, after auth settles; flagged before the request.
         if state.is_loading || !state.is_authenticated() || synced() {
             return;
         }
         synced.set(true);
         spawn(async move {
+            // SPEC-4.43.4 / SPEC-4.43.6: reads /auth/me and must log a failure.
             // MAPPS-1240: a failed pull keeps the local theme, as before, but
             // says why; `synced` is already set, so it is not retried this
             // session and the log is the only trace.
@@ -87,6 +91,7 @@ pub fn use_theme_sync() {
                     return;
                 }
             };
+            // SPEC-4.43.5: local setters, not save_to_account, so no push-back loop.
             let mut changed = false;
             if let Some(mode) = prefs.theme_base_mode.as_deref() {
                 theme::set(theme::Theme::parse(mode));
@@ -103,6 +108,7 @@ pub fn use_theme_sync() {
     });
 }
 
+// SPEC-4.43.7: a non-app build has no sync.
 #[cfg(not(feature = "app"))]
 pub fn use_theme_sync() {}
 

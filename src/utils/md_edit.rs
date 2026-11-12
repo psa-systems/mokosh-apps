@@ -74,6 +74,7 @@ pub enum Action {
 /// become a byte offset before any Rust string work touches it. PMS-949's
 /// caret-to-block lookup needs the same conversion; a third private copy of it
 /// is a third place for the accent bug this function's callers document.
+// SPEC-4.72.2: an offset inside a surrogate pair resolves past that character.
 pub(crate) fn utf16_to_byte(s: &str, target: u32) -> usize {
     let mut units = 0u32;
     for (byte, ch) in s.char_indices() {
@@ -93,6 +94,7 @@ fn byte_to_utf16(s: &str, target: usize) -> u32 {
 
 /// Apply `action` to `src` over the selection `(start, end)` in UTF-16 units.
 pub fn apply(src: &str, start: u32, end: u32, action: &Action) -> EditResult {
+    // SPEC-4.72.1
     let (lo, hi) = if start <= end {
         (start, end)
     } else {
@@ -101,16 +103,19 @@ pub fn apply(src: &str, start: u32, end: u32, action: &Action) -> EditResult {
     let a = utf16_to_byte(src, lo);
     let b = utf16_to_byte(src, hi);
     match action {
+        // SPEC-4.72.3
         Action::Bold => wrap(src, a, b, "**", "bold text"),
         Action::Italic => wrap(src, a, b, "*", "italic text"),
         Action::Strikethrough => wrap(src, a, b, "~~", "struck text"),
         Action::InlineCode => wrap(src, a, b, "`", "code"),
+        // SPEC-4.73.1
         Action::Quote => line_prefix(src, a, b, "> "),
         Action::BulletList => line_prefix(src, a, b, "- "),
         Action::Checklist => line_prefix(src, a, b, "- [ ] "),
         Action::NumberedList => numbered(src, a, b),
         Action::Heading(level) => heading(src, a, b, *level),
         Action::Link { text, url } => {
+            // SPEC-4.72.9
             let label = pick_label(src, a, b, text, "link text");
             insert(
                 src,
@@ -138,11 +143,13 @@ pub fn apply(src: &str, start: u32, end: u32, action: &Action) -> EditResult {
 /// into a different column of a wider table. Finding which cell it was in and
 /// putting it back at the end of that cell's text keeps the author's place.
 fn format_table(src: &str, a: usize, b: usize) -> EditResult {
+    // SPEC-4.74.1
     let Some(range) = table_range(src, a) else {
         return unchanged(src, a, b);
     };
     let original = &src[range.clone()];
     let rows: Vec<Vec<String>> = original.lines().map(split_row).collect();
+    // SPEC-4.74.3
     if rows.len() < 2 || !is_delimiter_row(&rows[1]) {
         return unchanged(src, a, b);
     }
@@ -151,6 +158,7 @@ fn format_table(src: &str, a: usize, b: usize) -> EditResult {
     // widths change underneath it.
     let caret = caret_cell(original, a.saturating_sub(range.start), &rows);
 
+    // SPEC-4.74.5, SPEC-4.74.7: widths over all rows but the delimiter row.
     let alignments: Vec<Alignment> = rows[1].iter().map(|c| alignment_of(c)).collect();
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
     let mut widths = vec![0usize; columns];
@@ -175,6 +183,7 @@ fn format_table(src: &str, a: usize, b: usize) -> EditResult {
         *width = (*width).max(floor);
     }
 
+    // SPEC-4.74.7
     let mut out = String::with_capacity(original.len() + 32);
     for (i, row) in rows.iter().enumerate() {
         if i > 0 {
@@ -197,6 +206,7 @@ fn format_table(src: &str, a: usize, b: usize) -> EditResult {
         }
     }
 
+    // SPEC-4.74.8, SPEC-4.74.9
     let caret_at = caret
         .map(|(row, col)| range.start + cell_end_offset(&out, row, col))
         .unwrap_or(range.start + out.len());
@@ -231,6 +241,7 @@ fn alignment_of(cell: &str) -> Alignment {
     }
 }
 
+// SPEC-4.74.6
 fn delimiter_cell(alignment: Alignment, width: usize) -> String {
     match alignment {
         Alignment::None => "-".repeat(width),
@@ -247,6 +258,7 @@ fn delimiter_cell(alignment: Alignment, width: usize) -> String {
 /// are hyphens and optionally a leading or trailing colon"), and a table an
 /// author wrote as `| - |` is still a table they want aligned. The three-dash
 /// floor applies to what is written back out, not to what is recognised.
+// SPEC-4.74.3
 fn is_delimiter_row(cells: &[String]) -> bool {
     !cells.is_empty()
         && cells.iter().all(|c| {
@@ -260,6 +272,7 @@ fn is_delimiter_row(cells: &[String]) -> bool {
 ///
 /// A pipe escaped as `\|` is cell content, not a separator, which is the only
 /// way to put a literal pipe in a GFM cell.
+// SPEC-4.74.4
 fn split_row(line: &str) -> Vec<String> {
     let trimmed = line.trim();
     let inner = trimmed
@@ -296,6 +309,7 @@ fn split_row(line: &str) -> Vec<String> {
 /// A table is a run of consecutive lines that all contain an unescaped pipe;
 /// the caller checks that the second one is a delimiter row before treating it
 /// as a table.
+// SPEC-4.74.2
 fn table_range(src: &str, at: usize) -> Option<std::ops::Range<usize>> {
     let mut starts = Vec::new();
     let mut offset = 0usize;
@@ -338,6 +352,7 @@ fn has_unescaped_pipe(line: &str) -> bool {
 }
 
 /// Which (row, column) the caret was in, given an offset into the table block.
+// SPEC-4.74.9
 fn caret_cell(block: &str, at: usize, rows: &[Vec<String>]) -> Option<(usize, usize)> {
     let mut offset = 0usize;
     for (r, line) in block.split_inclusive('\n').enumerate() {
@@ -373,6 +388,7 @@ fn count_unescaped_pipes(s: &str) -> usize {
 
 /// Byte offset just past the text of cell `col` on row `row` of a formatted
 /// table, so the caret lands where the author was typing.
+// SPEC-4.74.9
 fn cell_end_offset(formatted: &str, row: usize, col: usize) -> usize {
     let mut offset = 0usize;
     for (r, line) in formatted.split_inclusive('\n').enumerate() {
@@ -402,6 +418,7 @@ fn cell_end_offset(formatted: &str, row: usize, col: usize) -> usize {
 }
 
 /// An edit that changes nothing, keeping the caller's selection.
+// SPEC-4.74.1
 fn unchanged(src: &str, a: usize, b: usize) -> EditResult {
     EditResult {
         text: src.to_string(),
@@ -459,6 +476,7 @@ fn wrap(src: &str, a: usize, b: usize, marker: &str, placeholder: &str) -> EditR
     let selected = &src[a..b];
     let mc = marker.chars().next().expect("markers are non-empty");
 
+    // SPEC-4.72.5, SPEC-4.72.7
     // Already wrapped, markers inside the selection. `run_len` guards the case
     // that italic's `*` is a prefix of bold's `**`: without it, italic on
     // `**bold**` sees a `*` at each end, removes one from each, and leaves
@@ -484,6 +502,7 @@ fn wrap(src: &str, a: usize, b: usize, marker: &str, placeholder: &str) -> EditR
         };
     }
 
+    // SPEC-4.72.6, SPEC-4.72.8
     // Already wrapped, markers outside the selection. Same run guard.
     //
     // `a - m` and `b + m` are byte arithmetic on an ASCII-length marker; if a
@@ -514,6 +533,7 @@ fn wrap(src: &str, a: usize, b: usize, marker: &str, placeholder: &str) -> EditR
 
     // Not wrapped. An empty selection gets a placeholder, selected, so the
     // author types over it instead of hunting for the caret between markers.
+    // SPEC-4.72.3, SPEC-4.72.4
     let body = if a == b { placeholder } else { selected };
     let wrapped = format!("{marker}{body}{marker}");
     insert(
@@ -550,6 +570,7 @@ fn line_span(src: &str, a: usize, b: usize) -> (usize, usize) {
 /// Add `prefix` to every line the selection touches, or remove it from all of
 /// them if all of them already have it.
 fn line_prefix(src: &str, a: usize, b: usize, prefix: &str) -> EditResult {
+    // SPEC-4.73.1, SPEC-4.73.2
     let (ls, le) = line_span(src, a, b);
     let block = &src[ls..le];
     let lines: Vec<&str> = block.split('\n').collect();
@@ -571,6 +592,7 @@ fn line_prefix(src: &str, a: usize, b: usize, prefix: &str) -> EditResult {
     text.push_str(&src[..ls]);
     text.push_str(&body);
     text.push_str(&src[le..]);
+    // SPEC-4.73.3
     // Select the whole affected block, so a second click toggles what the
     // first one changed rather than a drifting subset of it.
     EditResult {
@@ -585,6 +607,7 @@ fn numbered(src: &str, a: usize, b: usize) -> EditResult {
     let (ls, le) = line_span(src, a, b);
     let block = &src[ls..le];
     let lines: Vec<&str> = block.split('\n').collect();
+    // SPEC-4.73.4
     let numbered_already = lines.iter().all(|l| is_numbered(l));
 
     let rebuilt: Vec<String> = lines
@@ -630,6 +653,7 @@ fn strip_number(line: &str) -> &str {
 fn heading(src: &str, a: usize, b: usize, level: u8) -> EditResult {
     let (ls, le) = line_span(src, a, b);
     let block = &src[ls..le];
+    // SPEC-4.73.5
     // MAPPS-1241: clamped once and used for both the write and the toggle
     // test; a level above 6 wrote six hashes but only toggled off a line
     // with the unclamped count, so `Heading(7)` could never remove one.
@@ -676,6 +700,7 @@ fn heading(src: &str, a: usize, b: usize, level: u8) -> EditResult {
 ///
 /// The caret still lands on the alt text, which is the part worth typing over.
 fn image(src: &str, a: usize, b: usize, alt: &str, url: &str) -> EditResult {
+    // SPEC-4.72.10, SPEC-4.72.11
     let label = if alt.trim().is_empty() { "image" } else { alt };
     let lead = if a == 0 || src[..a].ends_with('\n') {
         ""
@@ -698,6 +723,7 @@ fn image(src: &str, a: usize, b: usize, alt: &str, url: &str) -> EditResult {
     )
 }
 
+// SPEC-4.72.12
 /// Fence the selection, on its own lines. An empty selection leaves the caret
 /// inside the fence, which is where the author is about to type.
 fn code_block(src: &str, a: usize, b: usize, lang: &str) -> EditResult {
@@ -720,9 +746,11 @@ fn code_block(src: &str, a: usize, b: usize, lang: &str) -> EditResult {
 
 /// Insert a table skeleton with a header row and `rows` body rows.
 fn table(src: &str, a: usize, b: usize, rows: usize, cols: usize) -> EditResult {
+    // SPEC-4.72.13
     let cols = cols.clamp(1, 12);
     let rows = rows.clamp(1, 50);
     let header: Vec<String> = (1..=cols).map(|i| format!("Column {i}")).collect();
+    // SPEC-4.72.14
     let mut out = String::new();
     if !(a == 0 || src[..a].ends_with('\n')) {
         out.push('\n');

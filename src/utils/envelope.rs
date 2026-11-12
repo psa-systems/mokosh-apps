@@ -18,6 +18,8 @@ use serde::Deserialize;
 /// Server paginated list envelope.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Paginated<T> {
+    // SPEC-4.54.1: a missing data array decodes to an empty list.
+    // SPEC-4.54.1: a missing meta decodes to a zero total.
     /// The page of decoded rows. Required (MAPPS-1240).
     pub data: Vec<T>,
     /// Pagination totals. Required; a partial `meta` decodes its missing
@@ -32,6 +34,7 @@ pub struct Paginated<T> {
 /// serde side. An empty page is empty whatever its row type is, and without
 /// this a paged page cannot use `use_remote_resource`, which requires
 /// `T: Default` to render a loading state.
+// SPEC-4.54.3: an empty page for any T, with no T: Default bound.
 impl<T> Default for Paginated<T> {
     fn default() -> Self {
         Self {
@@ -45,6 +48,7 @@ impl<T> Default for Paginated<T> {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct PaginatedMeta {
     /// Total number of items across all pages.
+    // SPEC-4.54.2: u64, default 0; other meta fields are ignored.
     #[serde(default)]
     pub total: u64,
 }

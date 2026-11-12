@@ -28,11 +28,13 @@ use dioxus::prelude::*;
 /// How often to re-probe `/ready` while the server is marked unreachable.
 /// Assumed 10s per MAPPS-333; revise if it proves too chatty or too slow.
 #[cfg(feature = "app")]
+// SPEC-4.25.5
 const RECOVERY_POLL_SECS: u32 = 10;
 
 /// Read the live server-reachable flag reactively. Call from a component
 /// (e.g. the banner) so it re-renders when the flag transitions.
 #[cfg(feature = "app")]
+// SPEC-4.25.1
 pub fn use_server_reachable() -> bool {
     *crate::hooks::fetch::SERVER_REACHABLE.read()
 }
@@ -49,6 +51,7 @@ pub fn use_server_reachable() -> bool {
 /// above: [`crate::components::UpdateAvailableBanner`] calls it and
 /// re-renders when [`crate::hooks::update_check::UPDATE_PENDING`] flips.
 #[cfg(feature = "app")]
+// SPEC-4.25.2
 pub fn use_update_pending() -> bool {
     *crate::hooks::update_check::UPDATE_PENDING.read()
 }
@@ -71,6 +74,7 @@ pub fn use_update_pending() -> bool {
 /// When the local-first epic lands, the guard flips from "block" to
 /// "enqueue" (see [`crate::hooks::edit_queue`]).
 #[cfg(feature = "app")]
+// SPEC-4.25.3
 pub fn use_can_mutate() -> bool {
     use_server_reachable()
 }
@@ -91,6 +95,7 @@ pub fn use_can_mutate() -> bool {
 /// meantime) flips the flag back to `true`, which re-runs the resource
 /// and drops it back to the idle branch.
 #[cfg(feature = "app")]
+// SPEC-4.25.4
 pub fn use_server_status_monitor() {
     let _server_monitor = use_resource(move || async move {
         // Subscribe to the flag: a transition to `false` re-runs this
@@ -99,6 +104,7 @@ pub fn use_server_status_monitor() {
         if *crate::hooks::fetch::SERVER_REACHABLE.read() {
             return;
         }
+        // SPEC-4.25.5: the wait comes before the first probe.
         // MAPPS-1239: the first failed probe of an outage is logged with its
         // cause; the rest would repeat it every poll.
         let mut failure_logged = false;
@@ -106,6 +112,7 @@ pub fn use_server_status_monitor() {
             crate::platform::timer::sleep_ms(RECOVERY_POLL_SECS * 1000).await;
             // `probe` classifies its own result, so a recovered server
             // flips `SERVER_REACHABLE` back to `true` here.
+            // SPEC-4.25.7
             if let Err(e) = crate::hooks::fetch::api::probe("/ready").await {
                 if !failure_logged {
                     tracing::warn!("server recovery probe of /ready failed: {e}");
@@ -115,6 +122,7 @@ pub fn use_server_status_monitor() {
             // `peek` (non-subscribing): the subscription above already
             // schedules the re-run; this just exits the loop promptly once
             // the server is back.
+            // SPEC-4.25.6
             if *crate::hooks::fetch::SERVER_REACHABLE.peek() {
                 // RECONNECT TRANSITION (MAPPS-351). The server just came
                 // back. Pages auto-refetch on their own because their
@@ -133,6 +141,7 @@ pub fn use_server_status_monitor() {
 /// Non-web stub so `App` compiles under `cargo check`/`cargo test`
 /// without the `app` feature.
 #[cfg(not(feature = "app"))]
+// SPEC-4.25.8
 pub fn use_server_status_monitor() {}
 
 /// MAPPS-1239: the recovery loop's probe failure is logged, once per outage.

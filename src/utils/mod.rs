@@ -9,6 +9,7 @@ pub mod error;
 pub mod form_guard;
 // MAPPS-573: fenced-code syntax highlighting for the markdown renderer.
 pub mod highlight;
+// SPEC-4.57.4: the modules of this slice are public.
 pub mod image_upload;
 pub mod line_diff;
 pub mod markdown;
@@ -31,6 +32,7 @@ pub mod version;
 pub mod word_diff;
 
 // Re-exports
+// SPEC-4.57.3: the root re-export set.
 pub use envelope::{Paginated, PaginatedMeta};
 pub use error::{AppError, AppResult};
 pub use form_guard::FormGuard;
@@ -44,6 +46,7 @@ pub use version::{BUILD_DATE, GIT_HASH, VERSION};
 /// `true`. The single canonical copy; model structs reference it as
 /// `#[serde(default = "crate::utils::default_true")]` instead of each
 /// re-declaring a private `default_true`.
+// SPEC-4.57.1, SPEC-4.57.2
 pub fn default_true() -> bool {
     true
 }

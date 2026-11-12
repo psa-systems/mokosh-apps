@@ -35,11 +35,13 @@
 /// Values that mean yes. Anything else, including nothing at all, means no,
 /// because the default has to be off for an unfinished feature and a typo must
 /// not be the thing that ships it.
+// SPEC-3.7.6: the only spellings that enable a flag.
 const TRUTHY: [&str; 3] = ["1", "true", "yes"];
 
 /// Whether the organizations surface (the tenant switcher and the create-team
 /// action beside it) is offered at all.
 pub fn organizations_enabled() -> bool {
+    // SPEC-3.7.6: absent or unparseable means off, so an unfinished feature fails closed.
     crate::modules::runtime_config::get("organizations_enabled")
         .map(|raw| is_truthy(&raw))
         .unwrap_or(false)
@@ -66,6 +68,7 @@ mod tests {
     /// and each of those lines is inside an `organizations_enabled()` check.
     #[test]
     fn both_entry_points_sit_behind_the_flag() {
+        // SPEC-3.7.7: enforces one gated render site per organizations entry point.
         let layout = include_str!("../components/layout.rs");
         for needle in ["TenantSwitcher {}", "SHOW_CREATE_ORG.write() = true"] {
             let at = layout
@@ -96,6 +99,7 @@ mod tests {
     /// it, so an operator could set it and get nothing.
     #[test]
     fn the_retired_team_flag_is_gone_from_the_operator_surface() {
+        // SPEC-3.7.8: enforces that the retired key is neither written nor documented.
         let entrypoint = include_str!("../../oci-build/entrypoint.sh");
         assert!(
             !entrypoint.contains("printf 'team_enabled"),

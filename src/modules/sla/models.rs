@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 /// Mirror of the server `SlaPolicyResponse`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.18.1, SPEC-3.18.10: PartialEq because the DTO flows through component props.
 pub struct SlaPolicy {
     pub id: Uuid,
     #[serde(default)]
@@ -36,6 +37,7 @@ pub struct SlaPolicy {
 
 /// Mirror of the server `UpsertSlaPolicyRequest`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+// SPEC-3.18.2, SPEC-3.18.10
 pub struct UpsertSlaPolicyRequest {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -53,6 +55,7 @@ pub struct UpsertSlaPolicyRequest {
 /// keep `Decimal` with the same feature enabled so the string decodes
 /// losslessly (MAPPS-138).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.18.3: Decimal arrives as a JSON string and must decode losslessly.
 pub struct SlaTarget {
     pub id: Uuid,
     pub sla_policy_id: Uuid,
@@ -68,6 +71,7 @@ pub struct SlaTarget {
 
 /// Mirror of the server `UpsertSlaTargetRequest`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+// SPEC-3.18.4
 pub struct UpsertSlaTargetRequest {
     pub priority_id: Uuid,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,6 +87,7 @@ pub struct UpsertSlaTargetRequest {
 /// Mirror of the server `BusinessHoursResponse`. `schedule` is an opaque
 /// per-day-windows JSON blob; the client edits it as raw JSON text.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.18.5
 pub struct BusinessHours {
     pub id: Uuid,
     #[serde(default)]
@@ -97,6 +102,7 @@ pub struct BusinessHours {
 
 /// Mirror of the server `UpsertBusinessHoursRequest`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+// SPEC-3.18.6
 pub struct UpsertBusinessHoursRequest {
     pub name: String,
     pub timezone: String,
@@ -109,6 +115,7 @@ pub struct UpsertBusinessHoursRequest {
 /// Mirror of the server `HolidayCalendarResponse`. `holidays` is an opaque
 /// list of `{date, name}` entries; edited as raw JSON text on the client.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.18.7
 pub struct HolidayCalendar {
     pub id: Uuid,
     #[serde(default)]
@@ -119,6 +126,7 @@ pub struct HolidayCalendar {
 
 /// Mirror of the server `UpsertHolidayCalendarRequest`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+// SPEC-3.18.8
 pub struct UpsertHolidayCalendarRequest {
     pub name: String,
     pub holidays: serde_json::Value,
@@ -132,6 +140,7 @@ pub struct UpsertHolidayCalendarRequest {
 
 /// Subset of the server `TicketPriority` used to label SLA targets.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
+// SPEC-3.18.9
 pub struct TicketPriorityOption {
     pub id: Uuid,
     #[serde(default)]

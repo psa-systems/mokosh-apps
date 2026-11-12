@@ -69,6 +69,7 @@ pub struct MarkdownToolbarProps {
 }
 
 /// Length of `value` in UTF-16 code units, which is what the DOM counts.
+// SPEC-5.35.7: the DOM counts UTF-16 units
 fn utf16_len(value: &str) -> u32 {
     value.chars().map(|c| c.len_utf16() as u32).sum()
 }
@@ -78,12 +79,14 @@ pub fn run_action(target_id: &str, value: &str, action: &Action, onchange: &Even
     let (start, end) = crate::platform::dom::textarea_selection(target_id, utf16_len(value));
     let result = md_edit::apply(value, start, end, action);
     let (sel_start, sel_end) = (result.sel_start, result.sel_end);
+    // SPEC-5.35.7, SPEC-5.35.9
     onchange.call(result.text);
 
     // Deferred a frame: the caller's signal rerenders the textarea with the new
     // value, and a selection set before that lands is overwritten by it.
     let id = target_id.to_string();
     spawn(async move {
+        // SPEC-5.35.8
         crate::platform::timer::sleep_ms(0).await;
         crate::platform::dom::set_textarea_selection(&id, sel_start, sel_end);
     });
@@ -103,6 +106,7 @@ fn ToolButton(
     onclick: EventHandler<()>,
     children: Element,
 ) -> Element {
+    // SPEC-5.35.3
     let described = match &shortcut {
         Some(k) => format!("{label} ({k})"),
         None => label.clone(),
@@ -111,9 +115,11 @@ fn ToolButton(
         button {
             r#type: "button",
             class: "inline-flex items-center justify-center rounded p-1.5 text-muted hover:bg-surface-2 hover:text-content focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-40 disabled:cursor-not-allowed",
+            // SPEC-5.35.5
             disabled,
             title: "{described}",
             aria_label: "{described}",
+            // SPEC-5.35.3
             onclick: move |e: MouseEvent| {
                 // The button sits inside the article <form>; without this a
                 // click submits it and the author loses the page.
@@ -141,6 +147,7 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
     let mut dialog = use_signal(|| None::<Dialog>);
     // Consume the host's Ctrl+K request. Cleared as it is taken, so the dialog
     // does not reopen on every later render.
+    // SPEC-5.36.10
     if let Some(mut requested) = props.open_link {
         if requested() {
             requested.set(false);
@@ -148,11 +155,13 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
         }
     }
     // Dialog fields, kept across opens so a mistyped URL is not retyped.
+    // SPEC-5.36.9
     let mut link_text = use_signal(String::new);
     let mut link_url = use_signal(String::new);
     let mut image_alt = use_signal(String::new);
     let mut image_url = use_signal(String::new);
     let mut code_lang = use_signal(String::new);
+    // SPEC-5.36.7
     let mut table_rows = use_signal(|| "3".to_string());
     let mut table_cols = use_signal(|| "3".to_string());
     // MAPPS-1245: why the typed table size was refused, shown in the dialog.
@@ -177,9 +186,11 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
             // discover. Chosen over an overflow menu because there are only
             // fourteen actions and they are all one tap.
             class: "flex flex-wrap items-center gap-0.5 rounded-t border border-line border-b-0 bg-surface px-1.5 py-1",
+            // SPEC-5.35.1
             role: "toolbar",
             aria_label: "Formatting",
 
+            // SPEC-5.35.2, SPEC-5.35.6: button order and immediate transforms
             ToolButton {
                 label: "Heading".to_string(), shortcut: None, disabled,
                 onclick: fire(Action::Heading(2)),
@@ -187,6 +198,7 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
             }
             ToolSep {}
             ToolButton {
+                // SPEC-5.35.4: shortcut text on Bold, Italic and Link only
                 label: "Bold".to_string(), shortcut: Some("Ctrl+B".to_string()), disabled,
                 onclick: fire(Action::Bold),
                 BoldIcon { size: IconSize::Small }
@@ -268,6 +280,7 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
             let open = dialog.read().clone();
             let target = props.target_id.clone();
             let value = props.value.clone();
+            // SPEC-5.36.1
             let title = match &open {
                 Some(Dialog::Link) => "Insert link",
                 Some(Dialog::Image) => "Insert image",
@@ -280,28 +293,35 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
                     open: open.is_some(),
                     title: title.to_string(),
                     size: super::modal::ModalSize::Small,
+                    // SPEC-5.36.2
                     onclose: move |_| dialog.set(None),
                     footer: rsx! {
                         Button {
+                            // SPEC-5.36.2
                             variant: ButtonVariant::Secondary,
                             onclick: move |_| dialog.set(None),
                             "Cancel"
                         }
                         Button {
+                            // SPEC-5.36.3
                             variant: ButtonVariant::Primary,
                             onclick: move |_| {
                                 let action = match dialog.read().clone() {
+                                    // SPEC-5.36.4
                                     Some(Dialog::Link) => Some(Action::Link {
                                         text: link_text.read().clone(),
                                         url: link_url.read().clone(),
                                     }),
+                                    // SPEC-5.36.5
                                     Some(Dialog::Image) => Some(Action::Image {
                                         alt: image_alt.read().clone(),
                                         url: image_url.read().clone(),
                                     }),
                                     Some(Dialog::CodeBlock) => Some(Action::CodeBlock {
+                                        // SPEC-5.36.6
                                         lang: code_lang.read().trim().to_string(),
                                     }),
+                                        // SPEC-5.36.8: invalid count becomes 3
                                     // MAPPS-1245: an empty, unparseable or
                                     // out-of-range count is refused here, with
                                     // the dialog left open, instead of quietly
@@ -353,13 +373,16 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
                                 // is what most people came here to do; the URL
                                 // stays for an image that already lives
                                 // somewhere.
+                                // SPEC-5.37.1
                                 if let Some(on_file) = props.on_file {
                                     crate::components::FileField {
                                         name: "md_image_file",
                                         label: "Upload an image",
+                                        // SPEC-5.37.2
                                         accept: crate::utils::image_upload::accept_attribute(),
                                         help: props.upload_help.clone().unwrap_or_else(|| format!("PNG, JPEG, WebP or GIF, up to {}. It is stored with this article.", crate::utils::image_upload::human_size(crate::utils::image_upload::max_bytes()))),
                                         onchange: move |evt: FormEvent| {
+                                            // SPEC-5.37.4
                                             let Some(file) = evt.files().into_iter().next() else {
                                                 return;
                                             };
@@ -373,6 +396,7 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
                                                 let mime = file
                                                     .content_type()
                                                     .unwrap_or_default();
+                                                // SPEC-5.37.3
                                                 match file.read_bytes().await {
                                                     Ok(bytes) => on_file.call((name, mime, bytes.to_vec())),
                                                     // MAPPS-1245: nothing was
@@ -469,6 +493,7 @@ pub(crate) fn report_unreadable_file(name: &str, cause: &str) {
 /// `Ctrl` or `Meta`, so the same shortcuts work on macOS and elsewhere without
 /// the component asking which platform it is on. Returns `None` for anything
 /// else, so the keystroke falls through to the textarea untouched.
+// SPEC-5.37.5
 pub fn shortcut_action(ctrl_or_meta: bool, key: &str) -> Option<Action> {
     if !ctrl_or_meta {
         return None;

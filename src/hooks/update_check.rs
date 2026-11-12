@@ -56,12 +56,14 @@
 use dioxus::prelude::*;
 
 /// How long to wait between background polls.
+// SPEC-4.47.7: poll every 300 s.
 const POLL_INTERVAL_SECS: u64 = 5 * 60;
 
 /// Hard cap on how long we defer a reload after detecting a new build.
 /// The intended path is "user switches tabs, we reload while hidden, no
 /// disruption." This cap covers the always-on dashboard case so users
 /// who never leave the tab still eventually pick up the new build.
+// SPEC-4.47.9: the deferred-reload cap is 1800 s.
 const MAX_DEFERRED_SECS: u64 = 30 * 60;
 
 // Not wasm-gated: `build_sha_from_config` reads them and is tested natively.
@@ -77,6 +79,7 @@ const CONFIG_JSON_PATH: &str = "/_mokosh_config.json";
 /// plain async fns that cannot reach a context-provided signal, and read
 /// by [`crate::components::UpdateAvailableBanner`] mounted in `AppShell`,
 /// so no props are threaded through the layout.
+// SPEC-4.47.2: one-way flag, set on a confirmed mismatch and never cleared.
 #[cfg(feature = "app")]
 pub static UPDATE_PENDING: GlobalSignal<bool> = Signal::global(|| false);
 
@@ -89,6 +92,7 @@ pub static UPDATE_PENDING: GlobalSignal<bool> = Signal::global(|| false);
 /// one check is in flight the flag is already `true`, so a burst of
 /// failing requests writes nothing and fans out into exactly one
 /// `_mokosh_config.json` fetch.
+// SPEC-4.47.14: a flag, not a counter, so a burst of failures yields one probe.
 #[cfg(feature = "app")]
 static SKEW_PROBE_REQUESTED: GlobalSignal<bool> = Signal::global(|| false);
 
@@ -111,6 +115,7 @@ thread_local! {
 /// job and already has its own banner. Probing a host we cannot reach
 /// would only fail again.
 pub(crate) fn is_version_skew_status(status: u16) -> bool {
+    // SPEC-4.47.13: only 404 and 5xx look like a skewed bundle.
     status == 404 || (500..600).contains(&status)
 }
 
@@ -118,6 +123,7 @@ pub(crate) fn is_version_skew_status(status: u16) -> bool {
 /// build has nothing meaningful to compare against, so the whole
 /// machinery (auto-reload AND the MAPPS-428 banner) stays off.
 fn is_dev_sha(sha: &str) -> bool {
+    // SPEC-4.47.1: empty or "unknown" marks a dev build.
     let sha = sha.trim();
     sha.is_empty() || sha == "unknown"
 }
@@ -126,6 +132,7 @@ fn is_dev_sha(sha: &str) -> bool {
 /// build as a dev build and disable the auto-reload behaviour.
 #[cfg(feature = "app")]
 fn baseline_sha() -> Option<String> {
+    // SPEC-4.47.1: a dev build has no baseline.
     let sha = crate::utils::version::GIT_HASH.trim();
     if is_dev_sha(sha) {
         None
@@ -150,6 +157,7 @@ fn baseline_sha() -> Option<String> {
 async fn fetch_live_build_sha() -> Option<String> {
     use crate::platform::http::Request;
 
+    // SPEC-4.47.3 / SPEC-4.47.4: fresh read of build_sha; each failure warns.
     // Best-effort, and it runs every POLL_INTERVAL_SECS: a `None` only means
     // this round found no newer build, which is also what a broken poll looks
     // like, so each failure names itself rather than going quiet.
@@ -170,6 +178,7 @@ async fn fetch_live_build_sha() -> Option<String> {
         .await
         .inspect_err(|e| tracing::warn!("update check could not parse {CONFIG_JSON_PATH}: {e}"))
         .ok()?;
+    // SPEC-4.47.3: a missing, non-string or empty field is "no live id" for the round.
     build_sha_from_config(&cfg)
 }
 
@@ -228,6 +237,7 @@ fn on_visibility_change(pending: bool, hidden: bool, cap_elapsed: bool) -> Visib
 /// underneath it, and it updates through its installer.
 #[cfg(any(not(feature = "app"), not(target_arch = "wasm32")))]
 async fn fetch_live_build_sha() -> Option<String> {
+    // SPEC-4.47.5: the desktop host never reports a live id.
     None
 }
 
@@ -244,6 +254,7 @@ pub(crate) fn reload_now() {
     // MAPPS-504: unreachable on the desktop, where nothing ever flips
     // `UPDATE_PENDING`. Logged rather than ignored so that if it ever
     // does get called there, it does not fail in silence.
+    // SPEC-4.47.16: a host that cannot reload is logged at warn level.
     if !crate::platform::location::reload() {
         tracing::warn!("asked to reload for a new build, but this host cannot reload");
     }
@@ -257,6 +268,7 @@ pub(crate) fn reload_now() {}
 /// re-logs nor moves the deferred-reload deadline.
 #[cfg(feature = "app")]
 fn note_new_build_detected(baseline: &str, live: &str) {
+    // SPEC-4.47.8: idempotent; a repeat neither re-logs nor moves the deadline.
     if *UPDATE_PENDING.peek() {
         return;
     }
@@ -275,6 +287,7 @@ fn deferred_cap_elapsed() -> bool {
     let Some(detected_at) = DETECTED_AT_SECS.with(|cell| cell.get()) else {
         return false;
     };
+    // SPEC-4.47.9: the cap is inclusive, 1800 s since detection.
     performance_now_secs().unwrap_or(0.0) - detected_at >= MAX_DEFERRED_SECS as f64
 }
 
@@ -288,12 +301,14 @@ fn deferred_cap_elapsed() -> bool {
 /// probe is in flight.
 #[cfg(feature = "app")]
 pub(crate) fn note_possible_version_skew() {
+    // SPEC-4.47.14: no probe when pending, already requested, or on a dev build.
     if *UPDATE_PENDING.peek() || *SKEW_PROBE_REQUESTED.peek() || baseline_sha().is_none() {
         return;
     }
     *SKEW_PROBE_REQUESTED.write() = true;
 }
 
+// SPEC-4.47.17: a non-app build has no skew probe.
 #[cfg(not(feature = "app"))]
 pub(crate) fn note_possible_version_skew() {}
 
@@ -312,12 +327,14 @@ pub fn use_update_check() {
     use_future(move || {
         let baseline = baseline_for_future.clone();
         async move {
+            // SPEC-4.47.1: a dev build never polls.
             // Dev build (no baseline): nothing to poll for.
             let Some(baseline) = baseline else {
                 return;
             };
             loop {
                 crate::platform::timer::sleep_ms(POLL_INTERVAL_SECS as u32 * 1000).await;
+                // SPEC-4.47.7: pending rounds only check the cap; SPEC-4.47.10: cap checked here.
                 if *UPDATE_PENDING.peek() {
                     // Already flagged; the visibilitychange listener
                     // fires the reload at the next hidden boundary.
@@ -337,6 +354,7 @@ pub fn use_update_check() {
                     continue;
                 }
                 if let Some(live) = fetch_live_build_sha().await {
+                    // SPEC-4.47.6: equality needs the entrypoint's 12-char sha to match the baked baseline.
                     if live != baseline {
                         note_new_build_detected(&baseline, &live);
                     }
@@ -370,6 +388,7 @@ pub fn use_update_check() {
                     }
                 }
             }
+            // SPEC-4.47.15: cleared whether or not the probe found a newer build.
             *SKEW_PROBE_REQUESTED.write() = false;
         }
     });
@@ -406,6 +425,8 @@ fn subscribe_to_visibility_change() {
         let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
             return;
         };
+        // SPEC-4.47.11: not enforced here, see the tracked defect (no immediate probe on becoming visible with nothing pending).
+        // SPEC-4.47.9: hidden reloads at once; visible reloads only past the cap.
         let pending = *UPDATE_PENDING.peek();
         // Hidden with a pending update: reload while the user is not
         // looking. Foregrounded with one: stay polite unless the reload has
@@ -422,6 +443,7 @@ fn subscribe_to_visibility_change() {
         .add_event_listener_with_callback("visibilitychange", cb.as_ref().unchecked_ref())
         .is_err()
     {
+        // SPEC-4.47.12: a refused listener is logged at error level.
         // Without this listener a detected update never reaches its
         // reload boundary, so the tab stays on the old bundle forever.
         tracing::error!("could not subscribe to visibilitychange; auto-update will not reload");
@@ -431,6 +453,7 @@ fn subscribe_to_visibility_change() {
     cb.forget();
 }
 
+// SPEC-4.47.17: a non-app build has no update check.
 #[cfg(not(feature = "app"))]
 pub fn use_update_check() {}
 

@@ -22,6 +22,7 @@
 /// give the Platform nav section its own identity, distinct from Admin's
 /// Violet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+// SPEC-3.24.1
 pub enum SectionColor {
     /// Service Desk (the existing active-nav accent hue).
     Blue,
@@ -48,6 +49,7 @@ pub enum SectionColor {
 
 impl SectionColor {
     /// Heading / icon tint, with a lighter dark-mode variant for contrast.
+    // SPEC-3.24.2, SPEC-3.24.4: complete literals so Tailwind sees every class.
     pub fn heading_class(self) -> &'static str {
         match self {
             SectionColor::Blue => "text-blue-600 dark:text-blue-400",
@@ -66,6 +68,7 @@ impl SectionColor {
     /// Colored left-accent border: base + same-family hover, each with a
     /// lighter dark-mode variant. Used for a card's or an active nav row's
     /// left edge.
+    // SPEC-3.24.3, SPEC-3.24.4
     pub fn card_border_class(self) -> &'static str {
         match self {
             SectionColor::Blue => "border-l-blue-500 hover:border-l-blue-400 dark:border-l-blue-400 dark:hover:border-l-blue-300",
@@ -133,6 +136,7 @@ mod tests {
         }
     }
 
+    // SPEC-3.24.4
     #[test]
     fn hues_are_distinct() {
         // Distinct hue per variant, so two categories never collide.

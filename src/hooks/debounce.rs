@@ -22,11 +22,13 @@ use crate::platform::timer::sleep_ms;
 /// and skip its write, so only the last keystroke in a burst ever lands on
 /// the returned signal.
 pub fn use_debounced_signal(source: Signal<String>, ms: u32) -> Signal<String> {
+    // SPEC-4.15.1: initial value is the source's current value.
     let mut debounced = use_signal(move || source.peek().clone());
     let mut generation = use_signal(|| 0u64);
 
     use_effect(move || {
         let value = source.read().clone();
+        // SPEC-4.15.2: a newer change bumps the generation and voids this write.
         let this_gen = {
             let mut g = generation.write();
             *g += 1;
@@ -57,6 +59,7 @@ mod mapps855_debounce_tests {
     use std::time::Duration;
 
     #[tokio::test]
+    // SPEC-4.15.3: settles on the last keystroke without a write per keystroke.
     async fn a_burst_of_keystrokes_settles_on_the_last_value_once() {
         let history: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
 
