@@ -516,6 +516,10 @@ fn role_display_name(role: crate::modules::auth::UserRole) -> &'static str {
         UserRole::Dispatcher => "Dispatcher",
         UserRole::Sales => "Sales",
         UserRole::Finance => "Finance",
+        // MAPPS-877 / MAPPS-1217: the server's view-only tier, new in the
+        // mokosh-types pin. Labelled here so the build stays exhaustive; the
+        // rest of the read-only client work is MAPPS-1217.
+        UserRole::ReadOnly => "Read only",
     }
 }
 
@@ -1394,6 +1398,7 @@ mod profile_layout_tests {
         assert_eq!(role_display_name(UserRole::Admin), "Owner");
         assert_eq!(role_display_name(UserRole::SuperAdmin), "Super admin");
         assert_eq!(role_display_name(UserRole::Technician), "Technician");
+        assert_eq!(role_display_name(UserRole::ReadOnly), "Read only");
     }
 
     /// The badge lost its "<brand> Role" label, so the tooltip carries MAPPS-329.

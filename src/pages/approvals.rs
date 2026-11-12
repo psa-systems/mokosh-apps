@@ -28,6 +28,7 @@ use crate::Route;
 /// so an older server that pre-dates the polymorphic columns still
 /// decodes - `target` defaults to `"ticket"` and `entity_id` falls
 /// back to `ticket_id` when the wider columns are absent.
+// SPEC-9.2.8: every field but id defaults, including the target-kind default below.
 #[derive(Clone, Debug, Deserialize)]
 struct PendingApproval {
     id: Uuid,
@@ -125,6 +126,7 @@ pub(crate) fn decided_by_label(user: Option<&str>, contact: Option<&str>) -> Opt
     }
 }
 
+// SPEC-9.2.8: target kind defaults to "ticket" when absent.
 fn default_target() -> String {
     "ticket".to_string()
 }
@@ -162,6 +164,7 @@ impl PendingApproval {
     /// leave the whole value to the tooltip. An approval with no
     /// entity id at all cannot happen against a current server, but it
     /// is what the payload's `Option` says, so it renders as a dash.
+    // SPEC-9.2.9: prefer reference/label, else an 8-char id prefix, else a dash.
     fn fallback(&self) -> String {
         if !self.reference().is_empty() || !self.label().is_empty() {
             return String::new();
@@ -191,20 +194,26 @@ pub fn ApprovalsPage() -> Element {
     // MAPPS-737: the server's contact arm (PMS-1084) requires
     // `approvals:decide`; staff bypass the cap check as everywhere. Read
     // before any early return, because it is a hook.
+    // SPEC-9.4.19: read unconditionally before any early return.
     let can_decide = crate::hooks::capabilities::use_capability("approvals:decide");
 
     let mut pending_resource = use_resource(move || async move {
+        // SPEC-9.6.7: refetch on tenant switch.
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // MAPPS-351: subscribe to reachability so the queue auto-refetches
         // the instant the server comes back (paired with the recovery poll).
+        // SPEC-9.6.7: refetch on a server-reachability transition.
         let _reachable = crate::hooks::use_server_reachable();
+        // SPEC-9.6.7: refetch on an explicit version bump after a decision.
         let _v = version.read();
+        // SPEC-9.4.19: skip the network call when the session lacks the capability.
         if !can_decide {
             return Some(Vec::new());
         }
         // MAPPS-737: `get_authed_any` prefers the contact bearer, so a
         // contact holding the cap reads the approvals addressed to it on
         // the contact plane; staff keep the staff bearer as before.
+        // SPEC-9.7.7: dual-plane bearer path, never the staff-only path.
         crate::hooks::fetch::api::get_authed_any::<Vec<PendingApproval>>("/approvals/pending")
             .await
             .inspect_err(|e| tracing::error!("approval queue load failed: {e}"))
@@ -256,6 +265,7 @@ pub fn ApprovalsPage() -> Element {
     // blocked while down; `can_mutate` disables the decision buttons.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // SPEC-9.5.6: unreachable-content state when the server itself is down.
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "My Approvals".to_string() }
@@ -264,6 +274,7 @@ pub fn ApprovalsPage() -> Element {
     // MAPPS-737: a contact without the grant gets a plain sentence, not a
     // 403 banner; the badge and the sidebar entry are gated the same way,
     // so this is only reachable by typing the URL.
+    // SPEC-9.4.19: plain permission sentence, not a 403-styled banner.
     if !can_decide {
         return rsx! {
             PageHeader { title: "My Approvals", subtitle: "Decisions waiting on you" }
@@ -277,12 +288,17 @@ pub fn ApprovalsPage() -> Element {
 
     let decide = move |id: Uuid, decision: &'static str| {
         spawn(async move {
+            // MAPPS-1250: a new attempt clears the last failure, so it cannot
+            // outlive later decisions and retries.
+            decision_error.set(String::new());
+            // SPEC-9.8.1: this whole decision POST compiles to a no-op without the app feature.
             #[cfg(feature = "app")]
             {
                 let body = serde_json::json!({ "decision": decision });
                 // MAPPS-737: the same contact-first bearer as the read, so a
                 // contact decides on the contact plane (the server 404s any
                 // approval not addressed to it).
+                // SPEC-9.7.7: dual-plane bearer path, never the staff-only path.
                 match crate::hooks::fetch::api::post_authed_any_typed::<serde_json::Value, _>(
                     &format!("/approvals/{id}/decision"),
                     &body,
@@ -295,12 +311,19 @@ pub fn ApprovalsPage() -> Element {
                         } else {
                             "Rejected"
                         };
+                        // SPEC-9.5.7: success shows a toast and refreshes the list.
                         crate::hooks::toast::push_toast(AlertType::Success, label);
+                        // SPEC-9.6.7: version bump and resource restart both refetch; redundant but harmless.
                         version += 1;
                         pending_resource.restart();
                     }
-                    Err(e) => decision_error
-                        .set(format!("Could not record decision: {}", e.user_message())),
+                    // SPEC-9.5.7: single page-level error, row stays in the list.
+                    // MAPPS-1250: cleared when the next decision starts.
+                    Err(e) => {
+                        tracing::warn!("approval {id} {decision} failed: {e}");
+                        decision_error
+                            .set(format!("Could not record decision: {}", e.user_message()));
+                    }
                 }
             }
         });
@@ -360,9 +383,12 @@ pub fn ApprovalsPage() -> Element {
             }
         }
 
+        // SPEC-9.1.15: exactly one of loading, fetch-failed, filtered-to-nothing,
+        // empty-queue, or the row list renders at a time.
         if loading {
             Card { p { class: "text-sm text-muted py-6 text-center", "Loading…" } }
         } else if fetch_failed {
+            // SPEC-9.5.6: inline error banner while the server is reachable.
             Card {
                 div { class: "py-6 text-center", ErrorBanner { "Could not load pending approvals." } }
             }
@@ -450,6 +476,7 @@ pub fn ApprovalsPage() -> Element {
                         // client routes for them.
                         // MAPPS-632: routed `Link`, not a raw `<a href>` - the
                         // desktop webview refuses an internal navigation.
+                        // SPEC-9.1.16: linked only for a ticket target with an id, else plain text.
                         let entity_chip = match (target.as_str(), entity) {
                             ("ticket", Some(t)) => rsx! {
                                 Link {
@@ -468,6 +495,8 @@ pub fn ApprovalsPage() -> Element {
                         rsx! {
                             Card { key: "{key}",
                                 div { class: "flex items-start justify-between gap-4 flex-wrap",
+                                    // SPEC-9.1.16: target-kind badge, entity reference, requester
+                                    // line, approver line, and Approve/Reject actions per row.
                                     div { class: "min-w-0 flex-1",
                                         div { class: "flex items-center gap-2 mb-2 flex-wrap",
                                             Badge { variant: BadgeVariant::Yellow, "Pending" }
@@ -501,6 +530,7 @@ pub fn ApprovalsPage() -> Element {
                                             span { class: "text-xs text-muted self-center mr-1",
                                                 "Server unreachable" }
                                         }
+                                        // SPEC-9.4.20: Approve/Reject disabled whenever the session cannot mutate.
                                         Button {
                                             variant: ButtonVariant::Secondary,
                                             disabled: !can_mutate,
@@ -527,6 +557,27 @@ pub fn ApprovalsPage() -> Element {
 }
 
 /// MAPPS-737: the queue serves a contact on the contact plane.
+/// MAPPS-1250: a decision failure does not outlive the next attempt.
+#[cfg(test)]
+mod decision_error_tests {
+    #[test]
+    fn a_new_decision_clears_the_last_failure() {
+        let src = include_str!("approvals.rs");
+        let code = &src[..src.find("mod decision_error_tests").unwrap()];
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        let decide = flat
+            .find("let decide = move |id: Uuid, decision: &'static str| {")
+            .unwrap();
+        let rest = &flat[decide..];
+        let clear = rest
+            .find("decision_error.set(String::new());")
+            .expect("cleared");
+        let post = rest.find("post_authed_any_typed").expect("the request");
+        assert!(clear < post, "cleared before the request");
+        assert!(rest.contains("tracing::warn!(\"approval {id} {decision} failed: {e}\");"));
+    }
+}
+
 #[cfg(test)]
 mod mapps737_contact_plane_tests {
     /// `use_capability` and the fetch helpers read session state the test

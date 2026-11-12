@@ -111,12 +111,52 @@ fn auth_cache_set(value: Option<Option<StoredTokens>>) {
     *auth_cache().lock().unwrap_or_else(|e| e.into_inner()) = value;
 }
 
-pub fn save_auth(t: &StoredTokens) {
-    if let Ok(storage) = session_storage() {
-        if let Ok(json) = serde_json::to_string(t) {
-            let _ = storage.set_item(AUTH_KEY, &json);
+/// MAPPS-1235: write a session entry, logging any failure with its key. The
+/// callers still set the in-memory cache, because that is what keeps this tab
+/// signed in; what a failure loses is surviving a reload, and the log is
+/// where that is said instead of the next reload signing the person out
+/// with no trace.
+fn persist<T: serde::Serialize>(key: &str, value: &T) {
+    let storage = match session_storage() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("session store unavailable, {key} will not survive a reload: {e}");
+            return;
         }
+    };
+    let json = match serde_json::to_string(value) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!("{key} could not be serialized, it will not survive a reload: {e}");
+            return;
+        }
+    };
+    if let Err(e) = storage.set_item(key, &json) {
+        tracing::error!(
+            "writing {key} to the session store failed, it will not survive a reload: {e}"
+        );
     }
+}
+
+/// MAPPS-1235: read a session entry. Absent is `None` quietly; an unreadable
+/// store or an entry that does not parse is logged, with the key and the
+/// cause, before it also reads as signed out.
+fn restore<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {
+    let storage = session_storage()
+        .inspect_err(|e| tracing::warn!("session store unavailable reading {key}: {e}"))
+        .ok()?;
+    let raw = storage
+        .get_item(key)
+        .inspect_err(|e| tracing::warn!("reading {key} from the session store failed: {e}"))
+        .ok()
+        .flatten()?;
+    serde_json::from_str(&raw)
+        .inspect_err(|e| tracing::warn!("stored {key} is corrupt, reading it as signed out: {e}"))
+        .ok()
+}
+
+pub fn save_auth(t: &StoredTokens) {
+    persist(AUTH_KEY, t);
     auth_cache_set(Some(Some(t.clone())));
 }
 
@@ -126,10 +166,7 @@ pub fn load_auth() -> Option<StoredTokens> {
     }
     #[cfg(test)]
     AUTH_PARSE_CALLS.with(|c| c.set(c.get() + 1));
-    let parsed = session_storage().ok().and_then(|storage| {
-        let raw = storage.get_item(AUTH_KEY).ok().flatten()?;
-        serde_json::from_str(&raw).ok()
-    });
+    let parsed: Option<StoredTokens> = restore(AUTH_KEY);
     auth_cache_set(Some(parsed.clone()));
     parsed
 }
@@ -203,11 +240,7 @@ fn standalone_cache_set(value: Option<Option<StandaloneSession>>) {
 }
 
 pub fn save_standalone(s: &StandaloneSession) {
-    if let Ok(storage) = session_storage() {
-        if let Ok(json) = serde_json::to_string(s) {
-            let _ = storage.set_item(STANDALONE_KEY, &json);
-        }
-    }
+    persist(STANDALONE_KEY, s);
     standalone_cache_set(Some(Some(s.clone())));
 }
 
@@ -215,10 +248,7 @@ pub fn load_standalone() -> Option<StandaloneSession> {
     if let Some(cached) = standalone_cache_get() {
         return cached;
     }
-    let parsed = session_storage().ok().and_then(|storage| {
-        let raw = storage.get_item(STANDALONE_KEY).ok().flatten()?;
-        serde_json::from_str(&raw).ok()
-    });
+    let parsed: Option<StandaloneSession> = restore(STANDALONE_KEY);
     standalone_cache_set(Some(parsed.clone()));
     parsed
 }
@@ -316,7 +346,10 @@ pub fn take_pending() -> Result<PendingFlow, String> {
         .get_item(STATE_KEY)
         .map_err(|_| "sessionStorage read failed".to_string())?
         .ok_or_else(|| "no pending OIDC flow".to_string())?;
-    let _ = storage.remove_item(STATE_KEY);
+    // MAPPS-1235: a flow left behind could be replayed; say so if it was.
+    if let Err(e) = storage.remove_item(STATE_KEY) {
+        tracing::warn!("removing the spent OIDC flow state failed, it may be replayable: {e}");
+    }
     let flow: PendingFlow =
         serde_json::from_str(&raw).map_err(|e| format!("corrupt flow state: {e}"))?;
     // MAPPS-338: reject stale flows. A week-old tab should not authenticate.
@@ -417,5 +450,46 @@ mod token_bundle_cache_tests {
             "a clear_auth on one OS thread must invalidate the cache another thread reads, \
              not leave it serving the cleared bundle"
         );
+    }
+}
+
+/// MAPPS-1235: session writes and reads say when they fail.
+#[cfg(test)]
+mod mapps1235_storage_tests {
+    use super::{persist, restore, session_storage};
+
+    const KEY: &str = "mapps1235_storage_test_v1";
+
+    #[test]
+    fn a_written_entry_reads_back() {
+        persist(KEY, &vec![1u32, 2, 3]);
+        assert_eq!(restore::<Vec<u32>>(KEY), Some(vec![1, 2, 3]));
+    }
+
+    /// A corrupt entry is still "signed out", but no longer silently.
+    #[test]
+    fn a_corrupt_entry_reads_as_none() {
+        let key = "mapps1235_storage_test_corrupt_v1";
+        session_storage()
+            .expect("store")
+            .set_item(key, "{not json")
+            .expect("write");
+        assert_eq!(restore::<Vec<u32>>(key), None);
+        let src = include_str!("storage.rs");
+        let head = &src[..src
+            .find("mod mapps1235_storage_tests")
+            .expect("this module")];
+        assert!(head.contains("stored {key} is corrupt, reading it as signed out"));
+    }
+
+    #[test]
+    fn no_session_write_or_removal_is_dropped_silently() {
+        let src = include_str!("storage.rs");
+        let head = &src[..src
+            .find("mod mapps1235_storage_tests")
+            .expect("this module")];
+        assert!(!head.contains("let _ = storage.set_item("));
+        assert!(!head.contains("let _ = storage.remove_item(STATE_KEY);"));
+        assert!(head.contains("removing the spent OIDC flow state failed"));
     }
 }

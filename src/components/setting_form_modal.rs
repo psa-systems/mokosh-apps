@@ -41,6 +41,12 @@ pub fn SettingFormModal(props: SettingFormModalProps) -> Element {
     let is_edit = props.is_edit;
     let deletable = props.deletable;
     let deleting = props.deleting;
+    // MAPPS-1233: Save and Delete are blocked while the server is
+    // unreachable, as the list pages' create buttons are (MAPPS-357); they
+    // used to stay live and fail with a banner.
+    let can_mutate = crate::hooks::use_can_mutate();
+    let unreachable =
+        (!can_mutate).then(|| "Can't save while the server is unreachable".to_string());
 
     // MAPPS-189: destructive deletes confirm through the styled, themed,
     // focus-trapped ConfirmDialog instead of the native window.confirm().
@@ -53,6 +59,8 @@ pub fn SettingFormModal(props: SettingFormModalProps) -> Element {
             Button {
                 variant: ButtonVariant::Danger,
                 loading: props.deleting,
+                disabled: !can_mutate,
+                title: unreachable.clone(),
                 onclick: move |_| confirming.set(true),
                 "Delete"
             }
@@ -66,6 +74,8 @@ pub fn SettingFormModal(props: SettingFormModalProps) -> Element {
         Button {
             variant: ButtonVariant::Primary,
             loading: props.saving,
+            disabled: !can_mutate,
+            title: unreachable.clone(),
             onclick: move |e| onsave.call(e),
             if is_edit { "Save Changes" } else { "{props.create_label}" }
         }
