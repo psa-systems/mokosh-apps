@@ -49,6 +49,12 @@ def is-version [v: any] {
 # SPEC-2.7.5: integrates this repo's git tags with variables.toml/entrypoint
 # facts to decide unreleased-vs-tagged releases and to form release-notes' links.
 def release-tags [] {
+    # Best-effort: a clone with no `origin`, or one that's offline, keeps
+    # whatever tags it already has rather than failing the whole run. Without
+    # this fetch, a `just config-docs` run on a stale clone would mislabel an
+    # already-tagged release as "Unreleased" in docs/configuration.md and the
+    # drift would then land in the next commit.
+    do -i { ^git fetch --tags --quiet }
     ^git tag --list "v*" | lines | where {|t| is-version $t }
 }
 
