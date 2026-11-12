@@ -173,7 +173,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
     // create closure captures nothing but Copy state and both the Create button
     // and the modal's Enter key can hold one. A filter that is not a UUID says
     // so rather than silently creating an unattached contact.
-                // SPEC-5.16.13
+    // SPEC-5.16.13
     //
     // MAPPS-1243: only the log said so. The search still sent the bad id and
     // the create dropped it, making an unattached contact with nothing on

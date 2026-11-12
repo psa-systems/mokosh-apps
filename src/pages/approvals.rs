@@ -205,7 +205,7 @@ pub fn ApprovalsPage() -> Element {
     // `approvals:decide`; staff bypass the cap check as everywhere. Read
     // before any early return, because it is a hook.
     // SPEC-9.33.2: capability gate, read before any early return
-        // SPEC-9.33.4: tenant, reachability and version reads re-run the load
+    // SPEC-9.33.4: tenant, reachability and version reads re-run the load
     // SPEC-9.4.19: read unconditionally before any early return.
     let can_decide = crate::hooks::capabilities::use_capability("approvals:decide");
 

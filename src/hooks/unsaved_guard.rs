@@ -122,7 +122,7 @@ pub fn use_unsaved_guard(dirty: ReadSignal<bool>) {
 
     use_effect(move || {
         // SPEC-4.46.2: mirror the form's dirty signal, writing only on change.
-    // SPEC-4.46.3: unmount lowers the flag; a dropped store is logged, not a panic.
+        // SPEC-4.46.3: unmount lowers the flag; a dropped store is logged, not a panic.
         let any_dirty = note_form_dirty(id, *dirty.read());
         if *shared.peek() != any_dirty {
             shared.set(any_dirty);

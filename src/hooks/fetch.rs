@@ -3098,7 +3098,7 @@ pub mod api {
         // message, and the status-class fallback is used in its place.
         let body = response.text().await.unwrap_or_default();
         // SPEC-4.33.3
-                    // SPEC-4.27.5
+        // SPEC-4.27.5
         let err = api_error_from_body(status, &body);
         // MAPPS-348: mirror `status_error`'s terminal-state detection on the
         // typed path so a fetch on either helper flips the global

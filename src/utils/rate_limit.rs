@@ -40,7 +40,7 @@ pub fn retry_after_seconds(body: &str) -> Option<u64> {
 pub fn retry_after_phrase(body: &str) -> Option<String> {
     // SPEC-4.79.5
     let seconds = retry_after_seconds(body)?;
-        // SPEC-4.79.6
+    // SPEC-4.79.6
     Some(if seconds == 1 {
         // MAPPS-1242: not "in 1 seconds".
         "in 1 second".to_string()

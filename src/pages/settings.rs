@@ -3686,7 +3686,7 @@ fn MaxHoursPerDaySettingsBody() -> Element {
                         &value,
                         MAX_HOURS_PER_DAY_SETTING_PATH,
                         u64::from(DEFAULT_MAX_HOURS_PER_DAY),
-                    // SPEC-11.12.2: seeded value is held to 1..=24.
+                        // SPEC-11.12.2: seeded value is held to 1..=24.
                     ),
                     MAX_HOURS_PER_DAY_SETTING_PATH,
                     1,
@@ -7727,7 +7727,7 @@ fn TicketCategoriesSettingsBody() -> Element {
         // an empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
         // SPEC-11.26.4: every page of the collection, not just the visible one.
-                // SPEC-11.26.5: logged at warn; the picker then lists only the top-level option.
+        // SPEC-11.26.5: logged at warn; the picker then lists only the top-level option.
         // MAPPS-1233: the failure is kept, so the editor can say its parent
         // list is incomplete instead of offering only "None (top level)".
         crate::hooks::fetch::api::get_all_authed::<TicketCategoryRow>("/tickets/categories")
@@ -8665,7 +8665,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                 )
                 .await
                 {
-                        // SPEC-11.30.4: reachable and unreachable results.
+                    // SPEC-11.30.4: reachable and unreachable results.
                     // SPEC-11.30.5
                     Ok(v) => match describe_test_result(&v) {
                         Ok(result) => test_result.set(Some(result)),

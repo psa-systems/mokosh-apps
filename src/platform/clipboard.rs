@@ -208,7 +208,7 @@ pub fn on_paste_image(id: &str, on_file: dioxus::prelude::EventHandler<(String, 
     ));
     dioxus::prelude::spawn(async move {
         loop {
-                // SPEC-3.31.8
+            // SPEC-3.31.8
             match eval.recv::<PasteMessage>().await {
                 Ok(PasteMessage::Failed { error }) => {
                     tracing::error!("a pasted image could not be read in the webview: {error}");

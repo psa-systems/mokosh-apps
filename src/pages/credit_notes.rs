@@ -126,7 +126,7 @@ struct RemoteInvoiceBalance {
     balance_due: String,
 }
 
-    // SPEC-10.36.6
+// SPEC-10.36.6
 /// Fetch the credit notes raised against one invoice, or `None` when the read
 /// failed. MAPPS-1230: an empty list on error let the invoice page say "No
 /// credit notes" about an invoice whose notes it never read; the caller now

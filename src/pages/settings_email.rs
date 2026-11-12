@@ -155,8 +155,8 @@ fn EmailSettingsForm() -> Element {
         error.set(String::new());
         port_error.set(String::new());
 
-            // SPEC-11.42.7: blank port is null.
-                // SPEC-11.42.6
+        // SPEC-11.42.7: blank port is null.
+        // SPEC-11.42.6
         let parsed_port = match parse_port(&port.read()) {
             Ok(p) => p,
             Err(e) => {

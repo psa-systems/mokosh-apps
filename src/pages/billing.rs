@@ -433,7 +433,7 @@ pub fn InvoiceListPage() -> Element {
     let gate = use_invoice_gate();
     use_page_title("Invoices");
     // SPEC-10.3.2
-        // SPEC-10.3.3: customers and staff are refused with different wording.
+    // SPEC-10.3.3: customers and staff are refused with different wording.
     // MAPPS-775: a customer and a technician are refused for different
     // reasons and need different words. `NoFinancePermission` says
     // "restricted to administrator and finance roles. Ask an
