@@ -127,6 +127,9 @@ fn ContactPaymentMethodsBody() -> Element {
     // double-fire.
     let mut pending_remove = use_signal::<Option<(String, String)>>(|| None);
     let mut removing = use_signal(|| false);
+    // MAPPS-1231: the card whose Set default is in flight, so a repeat click
+    // is ignored like Add and Remove ignore theirs.
+    let default_saving = use_signal(|| None::<String>);
 
     let snap = methods_resource.read_unchecked();
     // SPEC-10.48.5
@@ -173,7 +176,6 @@ fn ContactPaymentMethodsBody() -> Element {
                                 spawn(async move {
                                     #[cfg(feature = "app")]
                                     {
-                                        let origin = crate::platform::location::origin().unwrap_or_default();
                                         // MAPPS-674: return to this same page after
                                         // Stripe finishes or the customer cancels. The
                                         // page's own resource re-fetches on mount, so
@@ -181,9 +183,23 @@ fn ContactPaymentMethodsBody() -> Element {
                                         // landed.
                                         let base = Route::ContactPaymentMethods {}.to_string();
                                         // SPEC-10.49.1
+                                        // MAPPS-1231: without an origin the URLs were
+                                        // relative, which Stripe refuses.
+                                        let (success_url, cancel_url) = match return_urls(
+                                            crate::platform::location::origin(),
+                                            &base,
+                                        ) {
+                                            Ok(urls) => urls,
+                                            Err(e) => {
+                                                tracing::error!("add card: {e}");
+                                                action_error.set(e);
+                                                add_saving.set(false);
+                                                return;
+                                            }
+                                        };
                                         let body = StartAddPaymentMethodBody {
-                                            success_url: format!("{origin}{base}?added=1"),
-                                            cancel_url: format!("{origin}{base}"),
+                                            success_url,
+                                            cancel_url,
                                         };
                                         match crate::hooks::fetch::api::post_contact_authed_typed::<
                                             StartAddPaymentMethodResponse,
@@ -196,8 +212,19 @@ fn ContactPaymentMethodsBody() -> Element {
                                                 #[cfg(target_arch = "wasm32")]
                                                 {
                                                     if let Some(win) = web_sys::window() {
-                                                        let _ = win.location().replace(&resp.checkout_url);
-                                                        return;
+                                                        // MAPPS-1231: a refused redirect used to
+                                                        // return silently; say it instead.
+                                                        match win.location().replace(&resp.checkout_url) {
+                                                            Ok(()) => return,
+                                                            Err(e) => {
+                                                                tracing::error!("add card: redirect to the payment provider failed: {e:?}");
+                                                                action_error.set(
+                                                                    "Could not open the payment provider's page. Try again.".to_string(),
+                                                                );
+                                                                add_saving.set(false);
+                                                                return;
+                                                            }
+                                                        }
                                                     }
                                                 }
                                                 #[cfg(not(target_arch = "wasm32"))]
@@ -247,7 +274,7 @@ fn ContactPaymentMethodsBody() -> Element {
                     Some(Ok(v)) => rsx! {
                         ul { class: "divide-y divide-line",
                             for method in v.iter() {
-                                {render_method_row(method.clone(), reload_tick, action_error, pending_remove)}
+                                {render_method_row(method.clone(), reload_tick, action_error, default_saving, pending_remove)}
                             }
                         }
                     },
@@ -323,12 +350,21 @@ fn ContactPaymentMethodsBody() -> Element {
     }
 }
 
+/// MAPPS-1231: Stripe's return URLs, absolute, or why they cannot be built.
+fn return_urls(origin: Option<String>, base: &str) -> Result<(String, String), String> {
+    match origin.map(|o| o.trim().trim_end_matches('/').to_string()).filter(|o| !o.is_empty()) {
+        Some(origin) => Ok((format!("{origin}{base}?added=1"), format!("{origin}{base}"))),
+        None => Err("Could not work out this page's address to return to after adding a card. Reload the page and try again.".to_string()),
+    }
+}
+
 /// One card row. Split out so the closures do not fight for `move`
 /// captures at the callsite in the `for` above.
 fn render_method_row(
     method: RemotePaymentMethod,
     mut reload_tick: Signal<u64>,
     mut action_error: Signal<String>,
+    mut default_saving: Signal<Option<String>>,
     mut pending_remove: Signal<Option<(String, String)>>,
 ) -> Element {
     let id_for_default = method.id.clone();
@@ -355,8 +391,14 @@ fn render_method_row(
                     Button {
                         variant: ButtonVariant::Secondary,
                         r#type: "button".to_string(),
+                        disabled: default_saving.read().is_some(),
+                        loading: default_saving.read().as_deref() == Some(id_for_default.as_str()),
                         onclick: move |_| {
+                            if default_saving.read().is_some() {
+                                return;
+                            }
                             let id = id_for_default.clone();
+                            default_saving.set(Some(id.clone()));
                             action_error.set(String::new());
                             spawn(async move {
                                 #[cfg(feature = "app")]
@@ -378,6 +420,7 @@ fn render_method_row(
                                         }
                                     }
                                 }
+                                default_saving.set(None);
                             });
                         },
                         "Set default"
@@ -418,3 +461,51 @@ fn humanise_brand(raw: &str) -> String {
 }
 
 use crate::Route;
+
+/// MAPPS-1231: the payment-methods findings from the specification pass.
+#[cfg(test)]
+mod mapps1231_payment_method_tests {
+    use super::return_urls;
+
+    fn head() -> &'static str {
+        let src = include_str!("payment_methods.rs");
+        &src[..src
+            .find("mod mapps1231_payment_method_tests")
+            .expect("this module")]
+    }
+
+    /// No origin sent relative URLs, which Stripe refuses.
+    #[test]
+    fn return_urls_are_absolute_or_refused() {
+        assert!(return_urls(None, "/portal/payment-methods").is_err());
+        assert!(return_urls(Some("  ".into()), "/portal/payment-methods").is_err());
+        assert_eq!(
+            return_urls(
+                Some("https://msp.example/".into()),
+                "/portal/payment-methods"
+            ),
+            Ok((
+                "https://msp.example/portal/payment-methods?added=1".to_string(),
+                "https://msp.example/portal/payment-methods".to_string()
+            ))
+        );
+    }
+
+    /// A refused redirect returned silently.
+    #[test]
+    fn a_failed_redirect_is_said() {
+        let head = head();
+        assert!(!head.contains("let _ = win.location().replace(&resp.checkout_url);"));
+        assert!(head.contains("Could not open the payment provider's page. Try again."));
+    }
+
+    /// Repeated Set default clicks sent repeated requests.
+    #[test]
+    fn set_default_ignores_a_repeat() {
+        let head = head();
+        let compact: String = head.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(compact.contains("if default_saving.read().is_some() { return; }"));
+        assert!(compact.contains("default_saving.set(Some(id.clone()));"));
+        assert!(compact.contains("default_saving.set(None); });"));
+    }
+}

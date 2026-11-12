@@ -64,13 +64,22 @@ pub fn link(source_id: &str, preview_id: &str) {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
 
+    // MAPPS-1237: the effect that calls this runs once the split view is
+    // rendered, so a missing document or pane means the panes silently scroll
+    // apart. Say which, as the listener failure below does.
     let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        tracing::warn!(
+            "no document to link the split-view panes #{source_id} and #{preview_id} in"
+        );
         return;
     };
     let (Some(source), Some(preview)) = (
         document.get_element_by_id(source_id),
         document.get_element_by_id(preview_id),
     ) else {
+        tracing::warn!(
+            "split-view scroll sync not linked: #{source_id} or #{preview_id} is not in the document"
+        );
         return;
     };
     // Installing twice would double every scroll event and re-create the guard,
@@ -80,8 +89,15 @@ pub fn link(source_id: &str, preview_id: &str) {
     if source.has_attribute(INSTALLED_ATTR) {
         return;
     }
-    let _ = source.set_attribute(INSTALLED_ATTR, "1");
-    let _ = preview.set_attribute(INSTALLED_ATTR, "1");
+    // MAPPS-1237: a marker that did not stick means the next call installs a
+    // second pair of listeners and every scroll fires twice; log it.
+    for (el, id) in [(&source, source_id), (&preview, preview_id)] {
+        if let Err(e) = el.set_attribute(INSTALLED_ATTR, "1") {
+            tracing::error!(
+                "could not mark #{id} as scroll-synced; a later link would install twice: {e:?}"
+            );
+        }
+    }
 
     // SPEC-3.47.4: one listener per direction, one shared echo flag.
     // One flag for the pair: whichever pane is being driven sets it, and the
@@ -317,6 +333,54 @@ pub fn link(source_id: &str, preview_id: &str) {
         preview = crate::platform::dom::js_string(preview_id),
     ));
     crate::platform::dom::watch_textarea_selection(source_id);
+}
+
+/// MAPPS-1237: the browser `link`'s failure paths, pinned in source (they
+/// need a DOM to drive).
+#[cfg(test)]
+mod link_failure_tests {
+    const SRC: &str = include_str!("scroll_sync.rs");
+
+    fn browser_link() -> String {
+        let end = SRC.find("mod link_failure_tests").expect("this module");
+        let code = SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ");
+        let at = code.find("pub fn link(").expect("browser link");
+        let rest = &code[at..];
+        rest[..rest.find("fn scrolled_fraction").expect("next fn")].to_string()
+    }
+
+    #[test]
+    fn a_missing_document_or_pane_is_logged_with_its_ids() {
+        let body = browser_link();
+        assert!(
+            body.contains(
+                "no document to link the split-view panes #{source_id} and #{preview_id}"
+            ),
+            "{body}"
+        );
+        assert!(
+            body.contains("#{source_id} or #{preview_id} is not in the document"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn a_failed_marker_write_is_logged() {
+        let body = browser_link();
+        assert!(
+            !body.contains("let _ = source.set_attribute(INSTALLED_ATTR"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("let _ = preview.set_attribute(INSTALLED_ATTR"),
+            "{body}"
+        );
+        assert!(
+            body.contains("if let Err(e) = el.set_attribute(INSTALLED_ATTR, \"1\")"),
+            "{body}"
+        );
+        assert!(body.contains("a later link would install twice"), "{body}");
+    }
 }
 
 #[cfg(test)]

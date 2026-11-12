@@ -284,8 +284,18 @@ pub fn default_accent() -> &'static Accent {
 /// Resolve an accent id to an accent, falling back to the default for an
 /// unknown or removed id (matches the spec's error handling).
 // SPEC-3.22.7
+///
+/// MAPPS-1236: the substitution is logged at warn, so a stored preference
+/// that no longer exists does not revert to the default without a trace.
 pub fn resolve(id: &str) -> &'static Accent {
-    by_id(id).unwrap_or_else(default_accent)
+    by_id(id).unwrap_or_else(|| {
+        let fallback = default_accent();
+        tracing::warn!(
+            "unknown accent {id:?}; using the default accent {:?}",
+            fallback.id
+        );
+        fallback
+    })
 }
 
 #[cfg(test)]
@@ -294,6 +304,23 @@ mod tests {
     use super::*;
 
     // SPEC-3.22.4
+    /// MAPPS-1236: the fallback stays (spec 3.25.7), and now says so.
+    /// Pinned in source: the crate has no tracing subscriber under test.
+    #[test]
+    fn an_unknown_accent_is_logged_when_replaced() {
+        let src = include_str!("accents.rs");
+        let code = &src[..src.find("mod tests {").expect("tests module")];
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        let at = flat.find("pub fn resolve(id: &str)").expect("resolve");
+        let body = &flat[at..at + 300.min(flat.len() - at)];
+        assert!(
+            body.contains("tracing::warn!( \"unknown accent {id:?}; using the default accent"),
+            "{body}"
+        );
+        assert!(!body.contains("unwrap_or_else(default_accent)"), "{body}");
+        assert_eq!(resolve("no-such-accent").id, DEFAULT_ACCENT_ID);
+    }
+
     #[test]
     fn every_variant_meets_wcag_aa_on_its_base() {
         for a in ACCENTS {

@@ -1,7 +1,11 @@
 //! Client-side checks for a KB image upload (MAPPS-587).
 //!
-//! These mirror the server's rules in `src/modules/knowledge_base/attachments.rs`
-//! so a rejection is not the first feedback the author gets. They are a
+//! These mirror the server's rules, which live in the mokosh-server repository,
+//! not this one: the type list in `src/utils/inline_image.rs`
+//! (`ALLOWED_INLINE_IMAGE_MIME`) and the size cap in
+//! `src/modules/knowledge_base/attachments.rs` (MAPPS-1241: this named only
+//! the latter, as if it were a path here). They mirror them so a rejection
+//! is not the first feedback the author gets. They are a
 //! courtesy, never the gate: the server re-checks every upload and its cap is
 //! operator-tunable (`KB_ATTACHMENT_MAX_BYTES`), so a file this module accepts
 //! can still come back refused and that refusal has to be shown rather than
@@ -11,8 +15,9 @@
 //! server-side: an SVG is a document that can carry script, and these bytes are
 //! served from an unauthenticated URL that any browser will render.
 
-/// What the server accepts. Kept in the same order as `ALLOWED_MIME` there.
 // SPEC-4.59.1, SPEC-4.59.2
+/// What the server accepts. Kept in the same order as the server's
+/// `ALLOWED_INLINE_IMAGE_MIME`.
 pub const ALLOWED_MIME: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
 
 /// The server's default cap, used only when the deployment has not set

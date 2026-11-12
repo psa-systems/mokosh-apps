@@ -4,26 +4,26 @@
 //!
 //! Every list page used to re-declare its own `Paginated<T>` (and a
 //! matching `meta` struct) with divergent field widths and names. This is
-//! the one canonical envelope they all decode into. Both fields are
-//! `#[serde(default)]` so a response that omits `data` or `meta` still
-//! decodes to an empty list / zeroed totals rather than erroring, and any
-//! `meta` fields beyond `total` are ignored.
+//! the one canonical envelope they all decode into. Both `data` and `meta`
+//! are required: mokosh-server's `PaginatedResponse<T>` always sends both,
+//! so a body missing either is a malformed or wrong-endpoint response and
+//! fails to decode, which the page reports as a failed load. MAPPS-1240:
+//! both used to be `#[serde(default)]`, so such a body rendered as "no
+//! rows", the masking shape the error-visibility rule forbids. `meta`
+//! fields beyond `total` are still ignored, and `total` itself still
+//! defaults to zero inside a present `meta`.
 
 use serde::Deserialize;
 
 /// Server paginated list envelope.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Paginated<T> {
-    /// The page of decoded rows. `default = "Vec::new"` (rather than a
-    /// bare `#[serde(default)]`) keeps the envelope generic over row types
-    /// that are not `Default`: serde's field-default inference would
-    /// otherwise add a spurious `T: Default` bound.
     // SPEC-4.54.1: a missing data array decodes to an empty list.
-    #[serde(default = "Vec::new")]
-    pub data: Vec<T>,
-    /// Pagination totals; absent / partial `meta` decodes to zeroes.
     // SPEC-4.54.1: a missing meta decodes to a zero total.
-    #[serde(default)]
+    /// The page of decoded rows. Required (MAPPS-1240).
+    pub data: Vec<T>,
+    /// Pagination totals. Required; a partial `meta` decodes its missing
+    /// fields to zero.
     pub meta: PaginatedMeta,
 }
 
@@ -51,4 +51,39 @@ pub struct PaginatedMeta {
     // SPEC-4.54.2: u64, default 0; other meta fields are ignored.
     #[serde(default)]
     pub total: u64,
+}
+
+/// MAPPS-1240: a body missing `data` or `meta` is a failed decode, not an
+/// empty page.
+#[cfg(test)]
+mod tests {
+    use super::Paginated;
+
+    #[test]
+    fn a_full_envelope_decodes() {
+        let p: Paginated<u32> =
+            serde_json::from_str(r#"{"data":[1,2],"meta":{"total":2,"page":1}}"#).unwrap();
+        assert_eq!((p.data, p.meta.total), (vec![1, 2], 2));
+    }
+
+    #[test]
+    fn a_partial_meta_still_decodes_its_total_as_zero() {
+        let p: Paginated<u32> = serde_json::from_str(r#"{"data":[],"meta":{}}"#).unwrap();
+        assert_eq!(p.meta.total, 0);
+    }
+
+    #[test]
+    fn a_body_missing_data_or_meta_fails_instead_of_rendering_no_rows() {
+        for body in [
+            r#"{"meta":{"total":3}}"#,
+            r#"{"data":[1]}"#,
+            r#"{"id":"x"}"#,
+            "{}",
+        ] {
+            assert!(
+                serde_json::from_str::<Paginated<u32>>(body).is_err(),
+                "{body}"
+            );
+        }
+    }
 }

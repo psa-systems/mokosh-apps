@@ -1,8 +1,11 @@
 //! Which runtime feature toggles the server has turned on (MAPPS-955).
 //!
 //! The server publishes two surfaces (PMS-1414):
-//! - `GET /api/v1/public/config` returns `{features: {key: bool}}` without
-//!   auth; this is the one the gating hook reads.
+//! - `GET /api/v1/public/config` returns `{features: {key: bool}}` and
+//!   needs no auth; this is the one the gating hook reads. The read goes
+//!   through `get_authed`, which attaches the bearer when one is held, so a
+//!   signed-in session is not a different request path (MAPPS-1238: this
+//!   said the read itself was unauthenticated).
 //! - `GET/PUT /api/v1/settings/feature-toggles` lets a super admin flip
 //!   a key; the admin page uses that.
 //!
@@ -60,15 +63,49 @@ pub async fn refresh_feature_map() {
     }
 }
 
-/// Mount the shared feature-map ticker. Idempotent per component: the
-/// first component to call this starts the loop, every later caller
-/// re-uses the same `GlobalSignal`. Called once from the root layout.
+/// Set while a refresh loop is running, so a second caller does not start
+/// another (MAPPS-1238).
+#[cfg(feature = "app")]
+static LOOP_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Claim the one loop slot, or `None` when a loop already holds it. The
+/// claim is released when dropped, which is when the owning component's task
+/// is cancelled, so a remounted root starts a fresh loop.
+#[cfg(feature = "app")]
+fn claim_loop() -> Option<LoopClaim> {
+    use std::sync::atomic::Ordering;
+    LOOP_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .ok()
+        .map(|_| LoopClaim)
+}
+
+#[cfg(feature = "app")]
+struct LoopClaim;
+
+#[cfg(feature = "app")]
+impl Drop for LoopClaim {
+    fn drop(&mut self) {
+        LOOP_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Mount the shared feature-map ticker. The first caller starts the loop;
+/// a later caller, while it runs, re-uses the same `GlobalSignal` and starts
+/// nothing (MAPPS-1238: there was no guard, so each call spawned its own
+/// 60-second loop). Called once from the root layout.
 pub fn use_feature_map_refresh() {
     #[cfg(feature = "app")]
     {
         use_effect(move || {
+            let Some(claim) = claim_loop() else {
+                tracing::debug!("feature-map refresh loop already running; not starting another");
+                return;
+            };
             dioxus::prelude::spawn(async move {
                 // SPEC-4.13.5: prime read at mount, then every 60 s.
+                // Held for the task's lifetime; dropping it frees the slot.
+                let _claim = claim;
                 // One prime read so the first render has data instead of
                 // a 60-second window of every gate off.
                 refresh_feature_map().await;
@@ -110,6 +147,20 @@ pub struct FeatureRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MAPPS-1238: one loop at a time, and the slot comes back when the
+    /// loop's task is dropped.
+    #[test]
+    fn only_one_refresh_loop_holds_the_slot_at_a_time() {
+        let first = claim_loop().expect("the first caller starts the loop");
+        assert!(
+            claim_loop().is_none(),
+            "a second caller must not start another"
+        );
+        drop(first);
+        let again = claim_loop().expect("a remount after the loop ended starts a new one");
+        drop(again);
+    }
 
     #[test]
     fn an_unloaded_map_reads_as_off_for_every_key() {

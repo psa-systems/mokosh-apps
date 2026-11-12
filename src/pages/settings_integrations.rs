@@ -402,7 +402,7 @@ fn IntegrationsList() -> Element {
             if not_operator {
                 Card {
                     p { class: "text-sm text-muted",
-                        "Integrations are set up by an administrator of this organization."
+                        "The server did not accept your administrator access for this page. If your role changed recently, sign out and sign in again, or ask another administrator."
                     }
                 }
             }
@@ -1076,5 +1076,19 @@ mod mapps1122_panel_tests {
             google.setup.is_some(),
             "and the card has a page to send the operator to, which is its whole job now"
         );
+    }
+}
+
+/// MAPPS-1234: the 403 wording named an administrator to an administrator.
+#[cfg(test)]
+mod mapps1234_integrations_tests {
+    #[test]
+    fn the_403_says_why() {
+        let src = include_str!("settings_integrations.rs");
+        let head = &src[..src
+            .find("mod mapps1234_integrations_tests")
+            .expect("this module")];
+        assert!(!head.contains("Integrations are set up by an administrator of this organization."));
+        assert!(head.contains("The server did not accept your administrator access for this page."));
     }
 }

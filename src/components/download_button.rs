@@ -155,7 +155,15 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
         // be opened) falls back to the save-to-disk path below.
         // SPEC-5.21.1, SPEC-5.21.5, SPEC-5.21.6: tab opened only in preview mode.
         let preview_tab = if preview {
-            crate::utils::download::open_preview_tab().ok()
+            // MAPPS-1244: the fallback to a download is logged with why the
+            // tab did not open (usually the pop-up blocker).
+            crate::utils::download::open_preview_tab()
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        "could not open a preview tab for {path}, downloading instead: {e}"
+                    )
+                })
+                .ok()
         } else {
             None
         };
@@ -167,9 +175,13 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
                     Ok((bytes, name)) => match preview_tab {
                         // SPEC-5.21.2, SPEC-5.21.3: show in the tab, save nothing.
                         Some(tab) => {
+                            // The tab is closed by `show_bytes_in_tab` on failure.
                             if let Err(reason) =
                                 crate::utils::download::show_bytes_in_tab(tab, &bytes).await
                             {
+                                tracing::warn!(
+                                    "could not show {path} in the preview tab: {reason}"
+                                );
                                 outcome.set(Some(Outcome::Failed(
                                     DownloadFailure::CouldNotSave(reason).describe(&what),
                                 )));
@@ -186,15 +198,21 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
                                 // SPEC-5.20.5: The browser shows its own download shelf.
                                 Ok(None) => {}
                                 // SPEC-5.20.6: bytes arrived but the host could not write them.
-                                Err(reason) => outcome.set(Some(Outcome::Failed(
-                                    DownloadFailure::CouldNotSave(reason).describe(&what),
-                                ))),
+                                Err(reason) => {
+                                    tracing::warn!("could not save {path} as {filename}: {reason}");
+                                    outcome.set(Some(Outcome::Failed(
+                                        DownloadFailure::CouldNotSave(reason).describe(&what),
+                                    )))
+                                }
                             }
                         }
                     },
                     // SPEC-5.20.8, SPEC-5.20.12: classify and report the failure.
                     Err(err) => {
                         // SPEC-5.21.4: no blank tab left behind.
+                        // MAPPS-1244: shown on the page, and now logged with
+                        // the path and the cause.
+                        tracing::warn!("download of {path} failed: {err}");
                         if let Some(tab) = preview_tab {
                             tab.close();
                         }
@@ -245,6 +263,40 @@ pub fn DownloadButton(props: DownloadButtonProps) -> Element {
                 None => rsx! {},
             }
         }
+    }
+}
+
+/// MAPPS-1244: the download's failure paths are logged, and a preview tab
+/// that cannot show the document is closed.
+#[cfg(test)]
+mod failure_logging_tests {
+    fn code() -> String {
+        let src = include_str!("download_button.rs");
+        src[..src.find("mod failure_logging_tests").unwrap()]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn every_failure_path_is_logged() {
+        let code = code();
+        assert!(
+            !code.contains("open_preview_tab().ok()"),
+            "the tab failure is not discarded"
+        );
+        assert!(code.contains("could not open a preview tab for {path}, downloading instead: {e}"));
+        assert!(code.contains("download of {path} failed: {err}"));
+        assert!(code.contains("could not show {path} in the preview tab: {reason}"));
+        assert!(code.contains("could not save {path} as {filename}: {reason}"));
+    }
+
+    #[test]
+    fn a_tab_that_cannot_show_the_document_is_closed() {
+        let platform = include_str!("../platform/download.rs");
+        let flat = platform.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("let shown = fill_preview_tab(&window, bytes); if shown.is_err() {"));
+        assert!(flat.contains("let _ = window.close(); } shown"));
     }
 }
 

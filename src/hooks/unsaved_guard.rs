@@ -26,11 +26,19 @@
 //! highest-impact half of the data-loss surface the QA report flagged (closing
 //! the tab on a half-filled Company form lost ~10 fields silently).
 //!
-//! Cleanup. The hook captures a closure that holds a reference to the
-//! shared signal; on unmount Dioxus drops the `use_effect`, but the
-//! window listener stays installed until the wasm module is replaced.
-//! We track the registered closure handle via a per-call thread-local
-//! so a remount swaps the listener instead of stacking duplicates.
+//! Cleanup (MAPPS-1240). There is exactly one `beforeunload` listener for
+//! the app, installed by the first guarded form to mount and kept for the
+//! life of the page; it reads the shared flag, so it never needs replacing.
+//! The previous design stored the closure and replaced it on every mount,
+//! on the belief that dropping a `wasm_bindgen::Closure` detaches its
+//! listener. It does not: `removeEventListener` is never called, so each
+//! mount added a listener and the replaced ones threw when invoked.
+//!
+//! Several guarded forms can be mounted at once, so the flag is not any one
+//! form's dirty bit: each form registers its own state in [`DIRTY_FORMS`]
+//! and the flag is "some mounted form is dirty". Unmounting a clean form no
+//! longer clears the flag a dirty sibling raised, and the last form's mirror
+//! no longer overwrites the others.
 
 #[cfg(feature = "app")]
 use dioxus::prelude::*;
@@ -55,37 +63,78 @@ type BeforeUnloadClosure = Closure<dyn FnMut(web_sys::BeforeUnloadEvent)>;
 
 #[cfg(all(feature = "app", target_arch = "wasm32"))]
 thread_local! {
-    /// Currently-installed `beforeunload` handler, if any. Replacing the
-    /// hook on a remount drops the prior closure, which detaches its
-    /// listener via wasm_bindgen's `Closure` drop semantics.
-    static UNSAVED_HANDLER: std::cell::RefCell<Option<BeforeUnloadClosure>> =
-        const { std::cell::RefCell::new(None) };
+    /// Whether the app's one `beforeunload` listener is attached. Only set
+    /// once the attach succeeded, so a failure is retried by the next mount.
+    static BEFOREUNLOAD_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Publish `dirty()` as the app-wide unsaved-changes flag for as long as the
-/// calling form is mounted, and (on the web) install the `beforeunload` prompt
-/// that reads it. Calling the hook with a new signal on a remount swaps the
-/// listener (the previous closure is dropped, detaching its handler).
+#[cfg(feature = "app")]
+thread_local! {
+    /// The mounted guarded forms that are dirty right now, by guard id
+    /// (MAPPS-1240). [`UNSAVED_CHANGES`] is "this is not empty".
+    static DIRTY_FORMS: std::cell::RefCell<std::collections::BTreeSet<u64>> =
+        const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+    static NEXT_GUARD_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A fresh id for one mounted guard.
+#[cfg(feature = "app")]
+fn next_guard_id() -> u64 {
+    NEXT_GUARD_ID.with(|n| {
+        let id = n.get();
+        n.set(id.wrapping_add(1));
+        id
+    })
+}
+
+/// Record guard `id`'s dirty state; answers whether any form is dirty.
+#[cfg(feature = "app")]
+fn note_form_dirty(id: u64, dirty: bool) -> bool {
+    DIRTY_FORMS.with(|set| {
+        let mut set = set.borrow_mut();
+        if dirty {
+            set.insert(id);
+        } else {
+            set.remove(&id);
+        }
+        !set.is_empty()
+    })
+}
+
+/// Forget guard `id` (its form unmounted); answers whether any other form
+/// is still dirty.
+#[cfg(feature = "app")]
+fn forget_form(id: u64) -> bool {
+    note_form_dirty(id, false)
+}
+
+/// Publish `dirty()` into the app-wide unsaved-changes flag for as long as
+/// the calling form is mounted, and (on the web) make sure the one
+/// `beforeunload` prompt that reads it is installed. The flag is raised
+/// while ANY mounted guarded form is dirty (MAPPS-1240).
 #[cfg(feature = "app")]
 pub fn use_unsaved_guard(dirty: ReadSignal<bool>) {
     // Resolve the global once, here in the component, where the Dioxus runtime
     // is current. The resolved handle is what the `beforeunload` closure and
     // the unmount cleanup below use, neither of which runs in a scope.
     let mut shared = use_hook(|| UNSAVED_CHANGES.signal());
+    let id = use_hook(next_guard_id);
 
     use_effect(move || {
         // SPEC-4.46.2: mirror the form's dirty signal, writing only on change.
-        let is_dirty = *dirty.read();
-        if *shared.peek() != is_dirty {
-            shared.set(is_dirty);
+    // SPEC-4.46.3: unmount lowers the flag; a dropped store is logged, not a panic.
+        let any_dirty = note_form_dirty(id, *dirty.read());
+        if *shared.peek() != any_dirty {
+            shared.set(any_dirty);
         }
     });
 
-    // An unmounted form took its edits with it. Leaving the flag raised would
-    // make the next close prompt about a form that is no longer on screen.
-    // SPEC-4.46.3: unmount lowers the flag; a dropped store is logged, not a panic.
+    // An unmounted form took its edits with it. Leaving its mark raised would
+    // make the next close prompt about a form that is no longer on screen,
+    // but a sibling that is still dirty keeps the flag up.
+    let any_dirty_after = move || forget_form(id);
     use_drop(move || match shared.try_write() {
-        Ok(mut flag) => *flag = false,
+        Ok(mut flag) => *flag = any_dirty_after(),
         // Only reachable when the app itself is being torn down and the store
         // went first, so there is nothing left to guard. Panicking out of a
         // Drop during shutdown would replace a clean exit with a backtrace.
@@ -103,7 +152,11 @@ pub fn use_unsaved_guard(dirty: ReadSignal<bool>) {
 #[cfg(all(feature = "app", target_arch = "wasm32"))]
 fn use_beforeunload(shared: Signal<bool>) {
     use_effect(move || {
+        if BEFOREUNLOAD_INSTALLED.with(std::cell::Cell::get) {
+            return;
+        }
         let Some(win) = web_sys::window() else {
+            tracing::warn!("use_unsaved_guard: no window to install the beforeunload prompt on");
             return;
         };
         let cb: BeforeUnloadClosure =
@@ -141,9 +194,11 @@ fn use_beforeunload(shared: Signal<bool>) {
             tracing::warn!(error = ?err, "use_unsaved_guard: addEventListener failed");
             return;
         }
-        UNSAVED_HANDLER.with(|slot| {
-            *slot.borrow_mut() = Some(cb);
-        });
+        // Kept for the life of the page: the listener reads the shared flag,
+        // so it is never replaced, and dropping the closure would leave the
+        // still-registered listener throwing on every unload.
+        cb.forget();
+        BEFOREUNLOAD_INSTALLED.with(|i| i.set(true));
     });
 }
 
@@ -161,6 +216,53 @@ pub fn use_unsaved_guard(_dirty: dioxus::prelude::ReadSignal<bool>) {}
 /// audit (MAPPS-845). The test reads the two sources directly so the
 /// scan runs on native `cargo test --lib` without a browser or a desktop
 /// runtime.
+/// MAPPS-1240: the dirty flag is "some mounted form is dirty", and the
+/// browser listener is installed once rather than replaced.
+#[cfg(all(test, feature = "app"))]
+mod mapps_1240_tests {
+    use super::{forget_form, next_guard_id, note_form_dirty};
+
+    #[test]
+    fn a_clean_sibling_unmounting_leaves_a_dirty_form_guarded() {
+        let (a, b) = (next_guard_id(), next_guard_id());
+        assert!(note_form_dirty(a, true));
+        assert!(
+            note_form_dirty(b, false),
+            "b's clean state does not overwrite a's dirty one"
+        );
+        assert!(forget_form(b), "b unmounting leaves a guarded");
+        assert!(
+            !forget_form(a),
+            "the last dirty form unmounting clears the flag"
+        );
+    }
+
+    #[test]
+    fn the_flag_tracks_any_dirty_form() {
+        let (a, b) = (next_guard_id(), next_guard_id());
+        assert!(note_form_dirty(a, true));
+        assert!(note_form_dirty(b, true));
+        assert!(note_form_dirty(a, false), "b is still dirty");
+        assert!(!note_form_dirty(b, false));
+    }
+
+    #[test]
+    fn the_beforeunload_listener_is_installed_once_and_never_dropped() {
+        let src = include_str!("unsaved_guard.rs");
+        let code = &src[..src.find("mod mapps_1240_tests").unwrap()];
+        assert!(
+            !code.contains("UNSAVED_HANDLER"),
+            "no stored closure to replace"
+        );
+        assert!(
+            !code.contains("Closure` drop semantics"),
+            "the false claim is gone from the docs"
+        );
+        assert!(code.contains("if BEFOREUNLOAD_INSTALLED.with(std::cell::Cell::get) {"));
+        assert!(code.contains("cb.forget();"));
+    }
+}
+
 #[cfg(test)]
 mod mapps850_two_host_guard_invariant_tests {
     /// The browser arm: `use_unsaved_guard` on `wasm32` installs a

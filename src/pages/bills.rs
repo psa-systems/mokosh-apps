@@ -22,14 +22,35 @@
 //! question there is "which of these are over there", not "what is their
 //! id".
 //!
-//! # Why approve and void and nothing else
+//! # Why approve, void and record a payment, and nothing else
 //!
-//! Those are the two transitions the server mounts. `paid` is reached by
-//! recording a payment, which has no route yet, and a bill cannot be
-//! edited after creation. Offering buttons for either would be offering
-//! what the build cannot do.
+//! Approve and void are the two status transitions the server mounts.
+//! `paid` is reached by recording payments (`POST /bills/{id}/payments`,
+//! MAPPS-1166) until nothing remains, never by a button of its own. A bill
+//! cannot be edited after creation, so the page offers no Edit.
 
 use std::collections::HashMap;
+
+/// MAPPS-1230: the vendor a bill names, as shown, plus why when it is the
+/// placeholder. "Unknown vendor" alone said nothing about whether the vendor
+/// was deleted or the vendor list never loaded; the reason goes on the
+/// placeholder where the person can read it.
+fn vendor_label(
+    names: &HashMap<uuid::Uuid, String>,
+    id: uuid::Uuid,
+    list_failed: bool,
+) -> (String, Option<String>) {
+    if let Some(name) = names.get(&id) {
+        return (name.clone(), None);
+    }
+    let shown = "Unknown vendor";
+    let why = if list_failed {
+        "The vendor list could not be loaded.".to_string()
+    } else {
+        crate::utils::unresolved("bills.vendor", "vendor", Some(id), shown)
+    };
+    (shown.to_string(), Some(why))
+}
 
 use dioxus::prelude::*;
 use serde::Deserialize;
@@ -349,6 +370,7 @@ fn BillListBody() -> Element {
             .ok()
     });
 
+    let vendors_failed = matches!(*vendors.read_unchecked(), Some(None));
     let snap = resource.read_unchecked();
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
@@ -485,10 +507,8 @@ fn BillListBody() -> Element {
                                 let key = row.id.to_string();
                                 let id = row.id;
                                 // SPEC-10.30.6
-                                let vendor = vendor_names
-                                    .get(&row.vendor_id)
-                                    .cloned()
-                                    .unwrap_or_else(|| "Unknown vendor".to_string());
+                                let (vendor, vendor_why) =
+                                    vendor_label(&vendor_names, row.vendor_id, vendors_failed);
                                 let number = row.bill_number.clone().unwrap_or_default();
                                 let issued = row.issue_date.clone();
                                 let due = row.due_date.clone().unwrap_or_default();
@@ -507,8 +527,8 @@ fn BillListBody() -> Element {
                                             onactivate: move |_| {
                                                 navigator.push(Route::BillDetail { id: id.to_string() });
                                             },
-                                            span { class: "font-medium text-accent", "{vendor}" }
                                             // SPEC-10.30.8
+                                            span { class: "font-medium text-accent", title: vendor_why, "{vendor}" }
                                             if let Some(p) = provider.clone() {
                                                 Badge { variant: BadgeVariant::Purple, class: "ml-2", "In {p}" }
                                             }
@@ -1085,7 +1105,11 @@ fn BillDetailBody(id: String) -> Element {
     });
 
     let snap = resource.read_unchecked().clone();
+    // MAPPS-1230: a failed load is `Some(None)`; folding it into `None` left
+    // the page on the skeleton for good.
+    let load_failed = matches!(snap, Some(None));
     let data = snap.as_ref().and_then(|o| o.as_ref()).cloned();
+    let vendors_failed = matches!(*vendors.read_unchecked(), Some(None));
     let vendor_names: HashMap<Uuid, String> = vendors
         .read_unchecked()
         .clone()
@@ -1123,15 +1147,14 @@ fn BillDetailBody(id: String) -> Element {
         }
         match data {
             // SPEC-10.33.3: a failed load also lands here, with no error shown.
+            None if load_failed => rsx! { ErrorBanner { "Could not load this bill." } },
             None => rsx! { crate::components::DetailSkeleton {} },
             Some(loaded) => {
                 let bill = loaded.bill.clone();
                 let (label, tone) = status_badge(&bill.status);
-                let vendor = vendor_names
-                    .get(&bill.vendor_id)
-                    .cloned()
-                    .unwrap_or_else(|| "Unknown vendor".to_string());
                 // SPEC-10.33.4
+                let (vendor, vendor_why) =
+                    vendor_label(&vendor_names, bill.vendor_id, vendors_failed);
                 let number = bill.bill_number.clone().unwrap_or_default();
                 let due = bill.due_date.clone().unwrap_or_default();
                 let notes = bill.notes.clone().unwrap_or_default();
@@ -1148,6 +1171,9 @@ fn BillDetailBody(id: String) -> Element {
                         actions: rsx! { Badge { variant: tone, "{label}" } },
                         div { class: "space-y-4",
                             // SPEC-10.33.5
+                            if let Some(why) = vendor_why {
+                                p { class: "text-xs text-muted", "{why}" }
+                            }
                             if let (Some(p), Some(external)) = (provider.clone(), external_id.clone()) {
                                 StatusBanner { tone: crate::components::BannerTone::Info,
                                     "This bill is held in {p} as {external}. It was raised there when it was created here, and that copy is what your accountant reconciles."
@@ -1326,6 +1352,15 @@ fn BillDetailBody(id: String) -> Element {
 #[component]
 fn PaymentsCard(payments_handle: Resource<Option<Vec<RemoteBillPayment>>>) -> Element {
     let snap = payments_handle.read_unchecked().clone();
+    // MAPPS-1230: a failed read rendered nothing, so a bill with payments
+    // looked unpaid. Say it could not be loaded instead.
+    if matches!(snap, Some(None)) {
+        return rsx! {
+            Card { title: "Payments".to_string(), class: "mt-4",
+                p { class: "text-sm text-red-600 dark:text-red-400", "Could not load the payments for this bill." }
+            }
+        };
+    }
     let data = snap.as_ref().and_then(|o| o.as_ref()).cloned();
     let rows = data.unwrap_or_default();
     // SPEC-10.34.1: a failed payments load also renders nothing here.
@@ -1865,5 +1900,77 @@ mod tests {
         )
         .unwrap_err();
         assert!(no_description.contains("Line 1"), "{no_description}");
+    }
+}
+
+/// MAPPS-1230: the bills findings from the specification pass.
+#[cfg(test)]
+mod mapps1230_bill_tests {
+    use super::vendor_label;
+    use std::collections::HashMap;
+
+    fn head() -> &'static str {
+        let src = include_str!("bills.rs");
+        &src[..src.find("mod mapps1230_bill_tests").expect("this module")]
+    }
+
+    /// A failed bill load kept the skeleton up for good.
+    #[test]
+    fn a_failed_bill_load_is_said() {
+        let head = head();
+        assert!(head.contains("let load_failed = matches!(snap, Some(None));"));
+        assert!(head.contains(
+            r#"None if load_failed => rsx! { ErrorBanner { "Could not load this bill." } },"#
+        ));
+    }
+
+    /// "Unknown vendor" said nothing about why.
+    #[test]
+    fn an_unknown_vendor_says_why() {
+        let id = uuid::Uuid::new_v4();
+        let mut names = HashMap::new();
+        assert_eq!(
+            vendor_label(&names, id, true),
+            (
+                "Unknown vendor".to_string(),
+                Some("The vendor list could not be loaded.".to_string())
+            )
+        );
+        let (shown, why) = vendor_label(&names, id, false);
+        assert_eq!(shown, "Unknown vendor");
+        assert!(
+            why.expect("a reason").contains(&id.to_string()),
+            "names the id"
+        );
+        names.insert(id, "Acme Supply".to_string());
+        assert_eq!(
+            vendor_label(&names, id, true),
+            ("Acme Supply".to_string(), None)
+        );
+        assert!(
+            head().contains("title: vendor_why,"),
+            "the list carries the reason as a tooltip"
+        );
+    }
+
+    /// A failed payments read rendered nothing, so a paid bill looked unpaid.
+    #[test]
+    fn a_failed_payments_read_is_said() {
+        let head = head();
+        let card = &head[head.find("fn PaymentsCard(").expect("the card")..];
+        let failed = card
+            .find("if matches!(snap, Some(None)) {")
+            .expect("the failure branch");
+        let empty = card.find("if rows.is_empty() {").expect("the empty branch");
+        assert!(failed < empty);
+        assert!(card.contains("Could not load the payments for this bill."));
+    }
+
+    /// The module doc said recording a payment had no route.
+    #[test]
+    fn the_module_doc_matches_the_payments_route() {
+        let head = head();
+        assert!(!head.contains("which has no route yet"));
+        assert!(head.contains("`POST /bills/{id}/payments`"));
     }
 }

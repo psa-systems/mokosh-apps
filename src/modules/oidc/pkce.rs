@@ -41,3 +41,16 @@ pub fn random_opaque() -> String {
     rand::rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
+
+/// MAPPS-1235 finding 9 is not a defect: the file has two call sites, as
+/// the import comment says. This keeps the comment honest if one is added.
+#[cfg(test)]
+mod mapps1235_pkce_tests {
+    #[test]
+    fn the_comment_counts_the_call_sites_there_are() {
+        let src = include_str!("pkce.rs");
+        let head = &src[..src.find("mod mapps1235_pkce_tests").expect("this module")];
+        assert!(head.contains("the two `rand::rng().fill_bytes(...)` call sites"));
+        assert_eq!(head.matches("rand::rng().fill_bytes(&mut").count(), 2);
+    }
+}

@@ -79,9 +79,17 @@ pub fn use_theme_sync() {
         synced.set(true);
         spawn(async move {
             // SPEC-4.43.4 / SPEC-4.43.6: reads /auth/me and must log a failure.
-            let Ok(prefs) = crate::hooks::fetch::api::get_authed::<ThemePrefs>(ME_PATH).await
-            else {
-                return;
+            // MAPPS-1240: a failed pull keeps the local theme, as before, but
+            // says why; `synced` is already set, so it is not retried this
+            // session and the log is the only trace.
+            let prefs = match crate::hooks::fetch::api::get_authed::<ThemePrefs>(ME_PATH).await {
+                Ok(prefs) => prefs,
+                Err(e) => {
+                    tracing::warn!(
+                        "could not pull the saved theme from {ME_PATH}; keeping the local one: {e}"
+                    );
+                    return;
+                }
             };
             // SPEC-4.43.5: local setters, not save_to_account, so no push-back loop.
             let mut changed = false;
@@ -103,3 +111,17 @@ pub fn use_theme_sync() {
 // SPEC-4.43.7: a non-app build has no sync.
 #[cfg(not(feature = "app"))]
 pub fn use_theme_sync() {}
+
+/// MAPPS-1240: a failed pull of the saved theme leaves a trace.
+#[cfg(test)]
+mod pull_failure_tests {
+    #[test]
+    fn a_failed_theme_pull_is_logged_with_its_cause() {
+        let src = include_str!("theme_sync.rs");
+        let code = &src[..src.find("mod pull_failure_tests").unwrap()];
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(!flat.contains("let Ok(prefs) = crate::hooks::fetch::api::get_authed::<ThemePrefs>(ME_PATH).await else { return; };"));
+        assert!(flat
+            .contains("could not pull the saved theme from {ME_PATH}; keeping the local one: {e}"));
+    }
+}

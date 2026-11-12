@@ -36,10 +36,13 @@ pub fn fmt_hm(minutes: i64) -> String {
 }
 
 /// One-decimal hours with an `h` suffix (e.g. 90 -> "1.5h"). The legacy
-/// shape, kept for users who read time in fractions.
+/// shape, kept for users who read time in fractions. Negative inputs are
+/// clamped to zero, as [`fmt_hm`] and the pre-fill already do, so the two
+/// display shapes agree (MAPPS-1240: -30 rendered "-0.5h" here and "0:00"
+/// in clock style).
 pub fn fmt_decimal(minutes: i64) -> String {
     // SPEC-4.51.3: one decimal place and an "h" suffix.
-    format!("{:.1}h", minutes as f64 / 60.0)
+    format!("{:.1}h", minutes.max(0) as f64 / 60.0)
 }
 
 /// Format a logged duration using the user's stored preference, falling
@@ -210,6 +213,15 @@ mod tests {
         assert_eq!(parse_input_to_minutes("-1"), None); // negative decimal
         assert_eq!(parse_input_to_minutes("-1:30"), None); // negative hours
         assert_eq!(parse_input_to_minutes("1:-5"), None); // negative minutes
+    }
+
+    #[test]
+    fn the_formatters_agree_on_negative_input() {
+        for m in [-1_i64, -30, -90] {
+            assert_eq!(fmt_decimal(m), "0.0h", "{m}");
+            assert_eq!(fmt_hm(m), "0:00", "{m}");
+            assert_eq!(fmt_input_decimal(m), "0", "{m}");
+        }
     }
 
     #[test]

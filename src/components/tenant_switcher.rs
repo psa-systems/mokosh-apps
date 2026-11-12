@@ -116,6 +116,51 @@ pub fn leave_target(membership: &MembershipView, is_active: bool) -> Option<Stri
     membership.mokosh_bunyip_grant_id.clone()
 }
 
+/// Re-read `/auth/memberships` into the auth context after a create, leave
+/// or accept (MAPPS-1246). The three call sites used `if let Ok` with no else,
+/// so a failed refetch left a stale list and closed as if it worked. A failure
+/// is logged here and returned for the caller to show.
+#[cfg(feature = "app")]
+async fn refresh_memberships(
+    mut auth: Signal<crate::hooks::auth::AuthContext>,
+    after: &str,
+) -> Result<(), String> {
+    match crate::hooks::fetch::api::get_authed_typed::<Vec<MembershipView>>("/auth/memberships")
+        .await
+    {
+        Ok(list) => {
+            auth.write().memberships = list;
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!("could not refresh the team list after {after}: {e}");
+            Err(e.user_message())
+        }
+    }
+}
+
+/// Shown in place of the inbox when `/my-grants/invitations` failed.
+const INVITES_UNAVAILABLE: &str =
+    "Invitations could not be loaded. Close and reopen this menu to try again.";
+
+/// The invitations to list, and whether the load failed. Still loading
+/// counts as neither (MAPPS-1246).
+fn split_invites(
+    snapshot: Option<&Result<Vec<PendingInvite>, String>>,
+) -> (Vec<PendingInvite>, bool) {
+    match snapshot {
+        Some(Ok(list)) => (list.clone(), false),
+        Some(Err(_)) => (Vec::new(), true),
+        None => (Vec::new(), false),
+    }
+}
+
+/// What the switcher says when the team list did not refresh after an
+/// action that itself succeeded (MAPPS-1246).
+fn stale_teams_message(done: &str) -> String {
+    format!("{done}, but the team list could not be refreshed. Reload the page to see it.")
+}
+
 #[component]
 pub fn TenantSwitcher() -> Element {
     let auth = crate::hooks::use_auth();
@@ -271,22 +316,20 @@ pub fn TenantSwitcher() -> Element {
                 {
                     // SPEC-5.67.4: refetch the list, then reset and close; SPEC-5.67.11: the refetch outcome.
                     Ok(_created) => {
-                        // Refetch memberships so the new tenant shows up
-                        // in the dropdown. Best-effort: dropdown will
-                        // still update on the next natural mount if
-                        // this fails.
-                        if let Ok(list) = crate::hooks::fetch::api::get_authed_typed::<
-                            Vec<MembershipView>,
-                        >("/auth/memberships")
-                        .await
-                        {
-                            let mut a = auth_write.write();
-                            a.memberships = list;
-                        }
+                        // Refetch memberships so the new tenant shows up in
+                        // the dropdown. MAPPS-1246: a failed refetch keeps
+                        // the dialog open and says the team exists, rather
+                        // than closing over a stale list. The fields are
+                        // cleared so a second Create cannot make it twice.
                         new_org_name.set(String::new());
                         new_org_slug.set(String::new());
-                        *SHOW_CREATE_ORG.write() = false;
-                        open.set(false);
+                        match refresh_memberships(auth_write, "creating a team").await {
+                            Ok(()) => {
+                                *SHOW_CREATE_ORG.write() = false;
+                                open.set(false);
+                            }
+                            Err(_) => error.set(stale_teams_message("The team was created")),
+                        }
                     }
                     // SPEC-5.67.5: 409 and 400 show the server message verbatim.
                     Err(ApiError::Status {
@@ -332,16 +375,13 @@ pub fn TenantSwitcher() -> Element {
                     // they wanted. Treated as success so a double-click or a
                     // revoke the owner performed first does not raise an error.
                     Ok(()) | Err(ApiError::Status { code: 404, .. }) => {
-                        if let Ok(list) = crate::hooks::fetch::api::get_authed_typed::<
-                            Vec<MembershipView>,
-                        >("/auth/memberships")
-                        .await
-                        {
-                            let mut a = auth_write.write();
-                            a.memberships = list;
-                        }
                         leaving.set(None);
-                        open.set(false);
+                        // MAPPS-1246: the panel stays open to show a failed
+                        // refresh instead of closing over a stale list.
+                        match refresh_memberships(auth_write, "leaving a team").await {
+                            Ok(()) => open.set(false),
+                            Err(_) => error.set(stale_teams_message("You left the team")),
+                        }
                     }
                     // SPEC-5.67.10: other failures stay in the open confirmation.
                     Err(e) => error.set(e.user_message()),
@@ -362,7 +402,9 @@ pub fn TenantSwitcher() -> Element {
     let open_now = *open.read();
     let gen_now = *crate::hooks::fetch::TENANT_GENERATION.read();
     // SPEC-5.68.1: reloads on panel open state and tenant generation.
-    let mut pending_invites: Resource<Vec<PendingInvite>> =
+    // MAPPS-1246: the failure is kept, so the panel can say the
+    // invitations could not be loaded instead of showing an empty inbox.
+    let mut pending_invites: Resource<Result<Vec<PendingInvite>, String>> =
         use_resource(use_reactive(&(open_now, gen_now), |(_, _)| async move {
             #[cfg(feature = "app")]
             {
@@ -370,14 +412,13 @@ pub fn TenantSwitcher() -> Element {
                     .await
                     // SPEC-5.68.2: the failure is logged here.
                     .inspect_err(|e| tracing::warn!("pending-invites load failed: {e}"))
-                    .unwrap_or_default()
             }
             #[cfg(not(feature = "app"))]
             {
-                Vec::<PendingInvite>::new()
+                Ok(Vec::<PendingInvite>::new())
             }
         }));
-    let invites: Vec<PendingInvite> = pending_invites.read_unchecked().clone().unwrap_or_default();
+    let (invites, invites_failed) = split_invites(pending_invites.read_unchecked().as_ref());
     let mut invite_submitting: Signal<Option<String>> = use_signal(|| None);
     let mut invite_error = use_signal(String::new);
 
@@ -400,11 +441,21 @@ pub fn TenantSwitcher() -> Element {
                 {
                     Ok(_) => {
                         // Bump the tenant generation so every active
-                        // use_resource under the current tenant
-                        // refetches; the memberships loader picks the
-                        // new grant up on its next read.
+                        // use_resource under the current tenant refetches.
+                        //
+                        // MAPPS-1246: and refresh the team list here, as
+                        // create and leave do. The comment used to say the
+                        // memberships loader would pick the grant up, but
+                        // that loader only runs while `memberships_loaded` is
+                        // false, and nothing resets it.
                         *crate::hooks::fetch::TENANT_GENERATION.write() += 1;
                         pending_invites.restart();
+                        if refresh_memberships(auth_write, "accepting an invitation")
+                            .await
+                            .is_err()
+                        {
+                            invite_error.set(stale_teams_message("The invitation was accepted"));
+                        }
                     }
                     // SPEC-5.68.7: failures surface under the invitations.
                     Err(err) => invite_error.set(err.user_message()),
@@ -543,9 +594,14 @@ pub fn TenantSwitcher() -> Element {
                     // switcher to accept a team sees the Accept control
                     // first, not a scroll-past of their existing teams.
                     // SPEC-5.68.3: the invitations block appears above the teams.
-                    if !invites.is_empty() {
+                    if !invites.is_empty() || invites_failed || !invite_error().is_empty() {
                         div { class: "px-3 py-2 text-xs uppercase tracking-wide text-subtle",
                             "Pending invitations"
+                        }
+                        if invites_failed {
+                            p { role: "alert", class: "px-3 py-2 text-xs text-red-600 dark:text-red-400",
+                                "{INVITES_UNAVAILABLE}"
+                            }
                         }
                         {invites.iter().map(|inv| {
                             let id = inv.id.clone();
@@ -758,6 +814,59 @@ pub fn TenantSwitcher() -> Element {
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1246: an invitation load failure is not an empty inbox, and every
+/// memberships refetch reports a failure.
+#[cfg(test)]
+mod mapps_1246_tests {
+    use super::{split_invites, stale_teams_message, PendingInvite};
+
+    fn invite(id: &str) -> PendingInvite {
+        PendingInvite {
+            id: id.into(),
+            tenant_slug: None,
+            role: "member".into(),
+            expires_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_failed_load_is_distinct_from_an_empty_inbox() {
+        assert!(!split_invites(Some(&Ok(Vec::new()))).1);
+        assert!(split_invites(Some(&Err("boom".into()))).1);
+        assert!(!split_invites(None).1, "still loading is not a failure");
+        let (list, failed) = split_invites(Some(&Ok(vec![invite("a")])));
+        assert_eq!(list.len(), 1);
+        assert!(!failed);
+    }
+
+    #[test]
+    fn the_stale_list_message_says_the_action_worked() {
+        assert_eq!(
+            stale_teams_message("The team was created"),
+            "The team was created, but the team list could not be refreshed. Reload the page to see it."
+        );
+    }
+
+    #[test]
+    fn create_leave_and_accept_all_refresh_through_the_logging_helper() {
+        let src = include_str!("tenant_switcher.rs");
+        let code = &src[..src.find("mod mapps_1246_tests").unwrap()];
+        assert!(!code.contains("if let Ok(list) = crate::hooks::fetch::api::get_authed_typed::<"));
+        for after in [
+            "\"creating a team\"",
+            "\"leaving a team\"",
+            "\"accepting an invitation\"",
+        ] {
+            assert!(
+                code.contains(&format!("refresh_memberships(auth_write, {after})")),
+                "{after}"
+            );
+        }
+        assert!(!code.contains(".inspect_err(|e| tracing::warn!(\"pending-invites load failed: {e}\")) .unwrap_or_default()"));
+        assert!(code.contains("if invites_failed {"));
     }
 }
 

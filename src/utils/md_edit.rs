@@ -654,7 +654,11 @@ fn heading(src: &str, a: usize, b: usize, level: u8) -> EditResult {
     let (ls, le) = line_span(src, a, b);
     let block = &src[ls..le];
     // SPEC-4.73.5
-    let want = "#".repeat(level.min(6) as usize);
+    // MAPPS-1241: clamped once and used for both the write and the toggle
+    // test; a level above 6 wrote six hashes but only toggled off a line
+    // with the unclamped count, so `Heading(7)` could never remove one.
+    let level = level.min(6);
+    let want = "#".repeat(level as usize);
 
     let rebuilt: Vec<String> = block
         .split('\n')
@@ -681,8 +685,6 @@ fn heading(src: &str, a: usize, b: usize, level: u8) -> EditResult {
     }
 }
 
-/// Fence the selection, on its own lines. An empty selection leaves the caret
-/// inside the fence, which is where the author is about to type.
 /// PMS-939: an image takes its own line.
 ///
 /// This used to insert `![alt](url)` at the caret with no whitespace handling
@@ -722,6 +724,8 @@ fn image(src: &str, a: usize, b: usize, alt: &str, url: &str) -> EditResult {
 }
 
 // SPEC-4.72.12
+/// Fence the selection, on its own lines. An empty selection leaves the caret
+/// inside the fence, which is where the author is about to type.
 fn code_block(src: &str, a: usize, b: usize, lang: &str) -> EditResult {
     let selected = &src[a..b];
     let lead = if a == 0 || src[..a].ends_with('\n') {
@@ -763,6 +767,32 @@ fn table(src: &str, a: usize, b: usize, rows: usize, cols: usize) -> EditResult 
         .map(|i| out[..i].chars().count())
         .unwrap_or(0);
     insert(src, a, b, &out, skip, "Column 1".chars().count())
+}
+
+/// MAPPS-1241: the heading level is clamped once, and each insert carries
+/// its own doc.
+#[cfg(test)]
+mod mapps_1241_tests {
+    use super::{apply, Action};
+
+    #[test]
+    fn a_heading_above_six_toggles_a_six_hash_heading_off() {
+        let on = apply("Title", 0, 5, &Action::Heading(7));
+        assert_eq!(on.text, "###### Title");
+        let off = apply(&on.text, 0, on.text.len() as u32, &Action::Heading(7));
+        assert_eq!(off.text, "Title");
+    }
+
+    #[test]
+    fn the_fence_doc_sits_on_code_block_not_image() {
+        let src = include_str!("md_edit.rs");
+        let image = src.find("fn image(").unwrap();
+        let image_doc = &src[src[..image].rfind("\n\n").unwrap()..image];
+        assert!(!image_doc.contains("Fence the selection"), "{image_doc}");
+        let code = src.find("fn code_block(").unwrap();
+        let code_doc = &src[src[..code].rfind("\n\n").unwrap()..code];
+        assert!(code_doc.contains("Fence the selection"), "{code_doc}");
+    }
 }
 
 #[cfg(test)]
@@ -1107,7 +1137,7 @@ mod raw_html_fidelity {
     use super::*;
 
     const BODY: &str = "# Description\n\n\
-* [ ] <span style=\"color:red\">**REST API**</span> - @niceguyit\n\
+* [ ] <span style=\"color:red\">**REST API**</span> - @acmeworks\n\
     - [ ] Secrets and tokens stored in Infisical\n\n\
 | Issue | Status |\n|---|---|\n| PSA-19 | Mostly built |\n\n\
 ```bash\njust check   # runs the guards\n```\n";
@@ -1157,7 +1187,7 @@ mod raw_html_fidelity {
                 out.text
             );
             assert!(
-                out.text.contains("@niceguyit"),
+                out.text.contains("@acmeworks"),
                 "{action:?} disturbed the mention: {}",
                 out.text
             );

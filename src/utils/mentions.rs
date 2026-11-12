@@ -1,7 +1,7 @@
 //! Resolve `@handle` in Markdown to a real person (MAPPS-578).
 //!
 //! Authors already use mentions to assign ownership: the article that prompted
-//! MAPPS-573 carries `@niceguyit`, `@long` and `@Nate` against checklist items.
+//! MAPPS-573 carries `@acmeworks`, `@alex` and `@Dana` against checklist items.
 //! Rendered as literal text, a reader cannot tell whether those name a
 //! colleague or are leftovers.
 //!
@@ -41,7 +41,7 @@ impl Mention {
     /// There is no username to match on, so this is derived from what people
     /// actually type when mentioning a colleague:
     ///
-    /// - the directory handle, so `long@niceguyit.com` answers to `@long`,
+    /// - the directory handle, so `alex@example.com` answers to `@alex`,
     /// - the first name,
     /// - the full name with a `.` and with nothing between the parts, which is
     ///   the two shapes a handle usually takes.
@@ -111,8 +111,9 @@ pub fn resolve<'a>(handle: &str, people: &'a [Mention]) -> Option<&'a Mention> {
 ///   not a mention;
 /// - an `@` followed by nothing handle-shaped is just an `@`.
 ///
-/// A handle is letters, digits, `.`, `_` and `-`. A trailing `.` or `-` is
-/// excluded so `@long.` at the end of a sentence keeps its full stop.
+/// A handle is letters, digits, `.`, `_` and `-`. A trailing `.`, `-` or `_`
+/// is excluded so `@alex.` at the end of a sentence keeps its full stop
+/// (MAPPS-1241: this said `.` or `-`; the code also trims `_`).
 pub fn handle_end(text: &str, at: usize) -> Option<usize> {
     debug_assert!(text[at..].starts_with('@'));
     // SPEC-4.70.5
@@ -207,7 +208,7 @@ pub fn active_mention(text: &str, caret: u32) -> Option<ActiveMention> {
     // SPEC-4.71.3, SPEC-4.71.4
     let fragment = before[at_byte + 1..].to_string();
     // Everything between the `@` and the caret has to still be handle-shaped.
-    // Typing `@long more` is a finished mention followed by a word, not a
+    // Typing `@alex more` is a finished mention followed by a word, not a
     // nine-character handle, and the walk-back above already stops at
     // whitespace, so this catches the punctuation cases it cannot.
     if !fragment
@@ -299,6 +300,37 @@ fn byte_to_utf16(s: &str, target: usize) -> u32 {
     s[..target].chars().map(|c| c.len_utf16() as u32).sum()
 }
 
+/// MAPPS-1241: the handle doc names every trimmed character, and the
+/// fixtures use placeholder names only.
+#[cfg(test)]
+mod mapps_1241_tests {
+    use super::handle_end;
+
+    #[test]
+    fn a_trailing_underscore_is_trimmed_as_the_doc_says() {
+        let text = "ping @alex_";
+        assert_eq!(&text[5..handle_end(text, 5).unwrap()], "@alex");
+        assert!(include_str!("mentions.rs").contains("A trailing `.`, `-` or `_`"));
+    }
+
+    #[test]
+    fn no_fixture_names_a_real_host_or_mailbox() {
+        for (file, src) in [
+            ("mentions.rs", include_str!("mentions.rs")),
+            ("markdown.rs", include_str!("markdown.rs")),
+            ("md_edit.rs", include_str!("md_edit.rs")),
+        ] {
+            for needle in [
+                concat!("nice", "guyit"),
+                concat!("a8n", ".systems"),
+                concat!("a8n", ".run"),
+            ] {
+                assert!(!src.contains(needle), "{file} names {needle}");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,19 +345,19 @@ mod tests {
 
     #[test]
     fn handles_cover_what_people_actually_type() {
-        let p = person("Long Le", "long");
+        let p = person("Alex Ng", "alex");
         let h = p.handles();
-        assert!(h.contains(&"long".to_string()), "directory handle: {h:?}");
-        assert!(h.contains(&"long.le".to_string()), "first.last: {h:?}");
-        assert!(h.contains(&"longle".to_string()), "firstlast: {h:?}");
+        assert!(h.contains(&"alex".to_string()), "directory handle: {h:?}");
+        assert!(h.contains(&"alex.ng".to_string()), "first.last: {h:?}");
+        assert!(h.contains(&"alexng".to_string()), "firstlast: {h:?}");
         // Last name alone collides with first names too often to be safe.
         assert!(!h.contains(&"le".to_string()), "{h:?}");
     }
 
     #[test]
     fn resolution_is_case_insensitive() {
-        let people = vec![person("Long Le", "long")];
-        for handle in ["long", "Long", "LONG", "Long.Le", "longle"] {
+        let people = vec![person("Alex Ng", "alex")];
+        for handle in ["alex", "Alex", "ALEX", "Alex.Ng", "alexng"] {
             assert!(
                 resolve(handle, &people).is_some(),
                 "`{handle}` should resolve"
@@ -356,7 +388,7 @@ mod tests {
 
     #[test]
     fn an_unknown_handle_resolves_to_nobody() {
-        let people = vec![person("Long Le", "long")];
+        let people = vec![person("Alex Ng", "alex")];
         assert!(resolve("nobody", &people).is_none());
         assert!(resolve("", &people).is_none());
     }
@@ -366,7 +398,7 @@ mod tests {
     #[test]
     fn an_at_inside_a_word_does_not_open_a_handle() {
         for (text, at) in [
-            ("mail long@niceguyit.com", 9),
+            ("mail alex@example.com", 9),
             ("path/to@thing", 7),
             ("v1.2@rc", 4),
         ] {
@@ -379,13 +411,13 @@ mod tests {
 
     #[test]
     fn a_handle_stops_at_punctuation_and_whitespace() {
-        let text = "ask @long, then @nate.";
+        let text = "ask @alex, then @dana.";
         let first = handle_end(text, 4).expect("opens a handle");
-        assert_eq!(&text[4..first], "@long");
+        assert_eq!(&text[4..first], "@alex");
         let second = handle_end(text, 16).expect("opens a handle");
         assert_eq!(
             &text[16..second],
-            "@nate",
+            "@dana",
             "the sentence's full stop is not part of the handle"
         );
     }
@@ -399,28 +431,28 @@ mod tests {
 
     #[test]
     fn a_handle_at_the_start_of_the_text_is_allowed() {
-        let text = "@long owns this";
+        let text = "@alex owns this";
         let end = handle_end(text, 0).expect("opens a handle");
-        assert_eq!(&text[0..end], "@long");
+        assert_eq!(&text[0..end], "@alex");
     }
 
     // MAPPS-580 ------------------------------------------------------------
 
     fn people() -> Vec<Mention> {
         vec![
-            person("Long Le", "long@niceguyit.com"),
-            person("Nate Fisher", "nate@niceguyit.com"),
+            person("Alex Ng", "alex@example.com"),
+            person("Dana Smith", "dana@example.com"),
             person("Chris Adams", "chris@x.test"),
         ]
     }
 
     #[test]
     fn typing_an_at_opens_a_mention_with_the_fragment_so_far() {
-        let text = "ask @lo";
+        let text = "ask @al";
         let active = active_mention(text, 7).expect("a mention is being typed");
         assert_eq!(active.at, 4);
         assert_eq!(active.end, 7);
-        assert_eq!(active.fragment, "lo");
+        assert_eq!(active.fragment, "al");
     }
 
     #[test]
@@ -435,18 +467,18 @@ mod tests {
     #[test]
     fn an_at_the_renderer_would_ignore_does_not_open_a_list() {
         // Inside an email address.
-        assert!(active_mention("mail long@niceguyit", 19).is_none());
+        assert!(active_mention("mail alex@acmeworks", 19).is_none());
         // Mid-word.
         assert!(active_mention("v1.2@rc", 7).is_none());
         // Not a mention context at all.
         assert!(active_mention("no at sign here", 15).is_none());
     }
 
-    /// Typing past the handle closes the list: `@long more` is a finished
+    /// Typing past the handle closes the list: `@alex more` is a finished
     /// mention followed by a word, not a nine-character handle.
     #[test]
     fn the_list_closes_once_the_caret_leaves_the_handle() {
-        let text = "ask @long more";
+        let text = "ask @alex more";
         assert!(active_mention(text, 9).is_some(), "still inside the handle");
         assert!(
             active_mention(text, 14).is_none(),
@@ -457,10 +489,10 @@ mod tests {
     #[test]
     fn matching_prefers_a_handle_prefix_then_a_name_prefix() {
         let people = people();
-        let hits = matches("n", &people);
+        let hits = matches("d", &people);
         assert_eq!(
             hits.first().map(|p| p.display.as_str()),
-            Some("Nate Fisher"),
+            Some("Dana Smith"),
             "the handle prefix wins: {hits:?}"
         );
 
@@ -480,13 +512,13 @@ mod tests {
     }
 
     /// AC4. The handle is inserted, not the display name, because the handle is
-    /// what resolves. Inserting "Long Le" would render as plain text.
+    /// what resolves. Inserting "Alex Ng" would render as plain text.
     #[test]
     fn accepting_inserts_the_handle_and_a_trailing_space() {
         let text = "ask @lo";
         let active = active_mention(text, 7).expect("active");
-        let (out, caret) = accept(text, &active, "long");
-        assert_eq!(out, "ask @long ");
+        let (out, caret) = accept(text, &active, "alex");
+        assert_eq!(out, "ask @alex ");
         assert_eq!(
             caret, 10,
             "the caret follows the space, ready to keep typing"
@@ -499,8 +531,8 @@ mod tests {
     fn the_trailing_space_keeps_the_next_keystroke_out_of_the_handle() {
         let text = "@lo";
         let active = active_mention(text, 3).expect("active");
-        let (out, caret) = accept(text, &active, "long");
-        assert_eq!(out, "@long ");
+        let (out, caret) = accept(text, &active, "alex");
+        assert_eq!(out, "@alex ");
         assert!(
             active_mention(&out, caret).is_none(),
             "the caret is past the handle, so the list does not reopen"
@@ -512,8 +544,8 @@ mod tests {
     fn accepting_leaves_the_rest_of_the_line_alone() {
         let text = "please ask @na about the runbook";
         let active = active_mention(text, 14).expect("active");
-        let (out, _) = accept(text, &active, "nate");
-        assert_eq!(out, "please ask @nate  about the runbook");
+        let (out, _) = accept(text, &active, "dana");
+        assert_eq!(out, "please ask @dana  about the runbook");
     }
 
     /// The same UTF-16 trap `md_edit` documents: the browser counts UTF-16
@@ -525,8 +557,8 @@ mod tests {
         let text = "héllo @na";
         let active = active_mention(text, 9).expect("a mention is being typed");
         assert_eq!(active.fragment, "na");
-        let (out, _) = accept(text, &active, "nate");
-        assert_eq!(out, "héllo @nate ");
+        let (out, _) = accept(text, &active, "dana");
+        assert_eq!(out, "héllo @dana ");
     }
 
     #[test]
@@ -535,8 +567,8 @@ mod tests {
         let text = "🎉 @na";
         let active = active_mention(text, 6).expect("active");
         assert_eq!(active.fragment, "na");
-        let (out, _) = accept(text, &active, "nate");
-        assert_eq!(out, "🎉 @nate ");
+        let (out, _) = accept(text, &active, "dana");
+        assert_eq!(out, "🎉 @dana ");
     }
 
     /// A caret the DOM reports past the end must not panic.
@@ -549,7 +581,7 @@ mod tests {
             end: 999,
             fragment: "lo".to_string(),
         };
-        let (out, _) = accept(text, &active, "long");
-        assert_eq!(out, "@long ");
+        let (out, _) = accept(text, &active, "alex");
+        assert_eq!(out, "@alex ");
     }
 }

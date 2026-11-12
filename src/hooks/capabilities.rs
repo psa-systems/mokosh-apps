@@ -1,13 +1,18 @@
 //! mokosh-contact-login prompt 006: contact-portal capability gating.
 //!
-//! `use_capability("cap")` answers three questions in one call:
-//!   1. Is a staff session active (`current_access_token().is_some()`)?
-//!      Staff bypass capability gating and always return true.
-//!   2. Is a platform-admin bearer stashed in `sessionStorage`? Same
-//!      unconditional bypass so the super-admin persona sees the whole
-//!      UI regardless of contact caps.
-//!   3. Is a contact session active and does its `caps` snapshot
-//!      include the requested cap? True only then.
+//! `use_capability("cap")` answers three questions in one call, in this
+//! order (MAPPS-625; MAPPS-1238 corrected this list, which had the staff
+//! bypass first):
+//!   1. Is a contact session active? Then the answer is whether its `caps`
+//!      snapshot includes the requested cap, and nothing below is asked: a
+//!      stale staff bearer in the same tab never paints staff-only UI over
+//!      a contact session.
+//!   2. Otherwise, is a staff session active
+//!      (`current_access_token().is_some()`)? Staff bypass capability
+//!      gating and get true.
+//!   3. Otherwise, is a platform-admin bearer stashed in `sessionStorage`?
+//!      Same unconditional bypass, so the super-admin persona sees the whole
+//!      UI.
 //!
 //! Otherwise false.
 //!
@@ -224,6 +229,30 @@ pub fn contact_has_no_capabilities() -> bool {
     #[cfg(not(feature = "web"))]
     {
         false
+    }
+}
+
+/// MAPPS-1238: the module header lists the precedence `use_capability`
+/// actually applies (contact session first).
+#[cfg(test)]
+mod header_tests {
+    #[test]
+    fn the_header_puts_the_contact_session_first() {
+        let header: String = include_str!("capabilities.rs")
+            .lines()
+            .take_while(|l| l.starts_with("//!"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let contact = header
+            .find("1. Is a contact session active?")
+            .expect("step 1 is the contact session");
+        let staff = header
+            .find("2. Otherwise, is a staff session active")
+            .expect("step 2 is staff");
+        let platform = header
+            .find("3. Otherwise, is a platform-admin bearer")
+            .expect("step 3 is platform admin");
+        assert!(contact < staff && staff < platform, "{header}");
     }
 }
 

@@ -66,9 +66,8 @@ const POLL_INTERVAL_SECS: u64 = 5 * 60;
 // SPEC-4.47.9: the deferred-reload cap is 1800 s.
 const MAX_DEFERRED_SECS: u64 = 30 * 60;
 
-#[cfg(all(feature = "app", target_arch = "wasm32"))]
+// Not wasm-gated: `build_sha_from_config` reads them and is tested natively.
 const BUILD_SHA_FIELD: &str = "build_sha";
-#[cfg(all(feature = "app", target_arch = "wasm32"))]
 const CONFIG_JSON_PATH: &str = "/_mokosh_config.json";
 
 /// MAPPS-428: app-wide "the bundle this tab is running is out of date"
@@ -180,10 +179,56 @@ async fn fetch_live_build_sha() -> Option<String> {
         .inspect_err(|e| tracing::warn!("update check could not parse {CONFIG_JSON_PATH}: {e}"))
         .ok()?;
     // SPEC-4.47.3: a missing, non-string or empty field is "no live id" for the round.
-    cfg.get(BUILD_SHA_FIELD)
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+    build_sha_from_config(&cfg)
+}
+
+/// The `build_sha` a parsed `_mokosh_config.json` carries.
+///
+/// MAPPS-1240: a body without the field, with a non-string, or with an
+/// empty string used to answer `None` silently, which reads exactly like
+/// "no newer build" and so quietly disabled auto-update on a mis-built
+/// deploy. Each now warns, naming the path and what was there, as the
+/// other failure arms of `fetch_live_build_sha` do.
+#[cfg_attr(not(all(feature = "app", target_arch = "wasm32")), allow(dead_code))]
+fn build_sha_from_config(cfg: &serde_json::Value) -> Option<String> {
+    match cfg.get(BUILD_SHA_FIELD) {
+        Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
+        Some(serde_json::Value::String(_)) => {
+            tracing::warn!("update check: {CONFIG_JSON_PATH} has an empty {BUILD_SHA_FIELD}; auto-update is off until it is set");
+            None
+        }
+        Some(other) => {
+            tracing::warn!("update check: {CONFIG_JSON_PATH} has a non-string {BUILD_SHA_FIELD} ({other}); auto-update is off until it is fixed");
+            None
+        }
+        None => {
+            tracing::warn!("update check: {CONFIG_JSON_PATH} has no {BUILD_SHA_FIELD}; auto-update is off until it is set");
+            None
+        }
+    }
+}
+
+/// What a `visibilitychange` should do (MAPPS-1240).
+#[derive(Debug, PartialEq, Eq)]
+enum VisibilityAction {
+    /// A pending update reaches its reload boundary.
+    Reload,
+    /// Back in view with nothing pending: check the live build now, which is
+    /// what the module doc promised and the listener never did, so a tab
+    /// backgrounded across a deploy waited for the next 5-minute poll.
+    Probe,
+    Nothing,
+}
+
+#[cfg_attr(not(all(feature = "app", target_arch = "wasm32")), allow(dead_code))]
+fn on_visibility_change(pending: bool, hidden: bool, cap_elapsed: bool) -> VisibilityAction {
+    match (pending, hidden) {
+        (true, true) => VisibilityAction::Reload,
+        (true, false) if cap_elapsed => VisibilityAction::Reload,
+        (true, false) => VisibilityAction::Nothing,
+        (false, false) => VisibilityAction::Probe,
+        (false, true) => VisibilityAction::Nothing,
+    }
 }
 
 /// MAPPS-504: there is nothing to detect on the desktop. The whole
@@ -361,10 +406,10 @@ pub fn use_update_check() {
     });
 }
 
-/// Reload when the tab goes hidden after a pending update, or when it
-/// comes back visible and has not yet caught up (which covers the "tab
-/// was backgrounded across a deploy" case, so users probe immediately on
-/// return).
+/// Reload when the tab goes hidden after a pending update (or comes back
+/// visible past the cap), and probe the live build immediately when it
+/// comes back visible with nothing pending, which covers the "tab was
+/// backgrounded across a deploy" case. See [`on_visibility_change`].
 ///
 /// MAPPS-504: browser-only, and not because of the bindings - a desktop
 /// window has no tab to background and no bundle to swap.
@@ -380,22 +425,18 @@ fn subscribe_to_visibility_change() {
         let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
             return;
         };
-        let hidden = doc.hidden();
         // SPEC-4.47.11: not enforced here, see the tracked defect (no immediate probe on becoming visible with nothing pending).
         // SPEC-4.47.9: hidden reloads at once; visible reloads only past the cap.
-        if *UPDATE_PENDING.peek() {
-            if hidden {
-                // User switched away. Reload while they are not
-                // looking; when they come back the new bundle is
-                // already loaded.
-                reload_now();
-            } else if deferred_cap_elapsed() {
-                // Foregrounded with a pending reload. Stay polite
-                // unless we have been holding the reload for too
-                // long; then bite the bullet and reload anyway so
-                // users who never leave the tab still update.
-                reload_now();
-            }
+        let pending = *UPDATE_PENDING.peek();
+        // Hidden with a pending update: reload while the user is not
+        // looking. Foregrounded with one: stay polite unless the reload has
+        // been held past the cap, so users who never leave the tab still
+        // update. Foregrounded with none: probe now (MAPPS-1240), through
+        // the same debounced on-demand probe the fetch layer uses.
+        match on_visibility_change(pending, doc.hidden(), pending && deferred_cap_elapsed()) {
+            VisibilityAction::Reload => reload_now(),
+            VisibilityAction::Probe => note_possible_version_skew(),
+            VisibilityAction::Nothing => {}
         }
     }) as Box<dyn FnMut(web_sys::Event)>);
     if doc
@@ -431,6 +472,62 @@ fn performance_now_secs() -> Option<f64> {
 /// the loop-placement gate is a source scan over this file; the
 /// classification and dev-build gates are ordinary unit tests over the
 /// pure helpers the hook calls.
+/// MAPPS-1240: the visibility decision and the config-field read.
+#[cfg(test)]
+mod mapps_1240_tests {
+    use super::{build_sha_from_config, on_visibility_change, VisibilityAction};
+    use serde_json::json;
+
+    #[test]
+    fn coming_back_into_view_with_nothing_pending_probes() {
+        assert_eq!(
+            on_visibility_change(false, false, false),
+            VisibilityAction::Probe
+        );
+    }
+
+    #[test]
+    fn a_pending_update_reloads_at_the_same_boundaries_as_before() {
+        assert_eq!(
+            on_visibility_change(true, true, false),
+            VisibilityAction::Reload
+        );
+        assert_eq!(
+            on_visibility_change(true, false, true),
+            VisibilityAction::Reload
+        );
+        assert_eq!(
+            on_visibility_change(true, false, false),
+            VisibilityAction::Nothing
+        );
+        assert_eq!(
+            on_visibility_change(false, true, false),
+            VisibilityAction::Nothing
+        );
+    }
+
+    #[test]
+    fn only_a_non_empty_string_is_a_build_sha() {
+        assert_eq!(
+            build_sha_from_config(&json!({"build_sha": "abc"})).as_deref(),
+            Some("abc")
+        );
+        for bad in [
+            json!({}),
+            json!({"build_sha": ""}),
+            json!({"build_sha": 7}),
+            json!({"build_sha": null}),
+        ] {
+            assert_eq!(build_sha_from_config(&bad), None, "{bad}");
+        }
+        let src = include_str!("update_check.rs");
+        let code = &src[..src.find("mod mapps_1240_tests").unwrap()];
+        assert!(code.contains("has no {BUILD_SHA_FIELD}; auto-update is off"));
+        assert!(code.contains("has a non-string {BUILD_SHA_FIELD}"));
+        assert!(code.contains("has an empty {BUILD_SHA_FIELD}"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_dev_sha, is_version_skew_status};

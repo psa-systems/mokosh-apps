@@ -34,7 +34,7 @@ pub const CLASSES: &[&str] = &[
     "hl-key", // property / setting name (JSON, YAML, TOML, INI)
     "hl-ins", // diff: added line
     "hl-del", // diff: removed line
-    "hl-mta", // diff: hunk header and file metadata
+    "hl-mta", // diff: `@@` hunk header (file metadata lines take `hl-com`)
 ];
 
 /// What one language looks like to the scanner.
@@ -307,12 +307,22 @@ fn spec(lang: &str) -> Option<&'static Lang> {
         keyed: true,
     };
 
+    // MAPPS-1241: JSON with comments, which `jsonc` names; it used to share
+    // the JSON grammar, which has no comment markers at all.
+    const JSONC: Lang = Lang {
+        line_comments: &["//"],
+        block_comment: Some(("/*", "*/")),
+        ..JSON
+    };
+
     const YAML: Lang = Lang {
         line_comments: &["#"],
         block_comment: None,
         quotes: &['"', '\''],
         escapes: true,
-        keywords: &["false", "no", "null", "true", "yes", "~"],
+        // No `~`: it is not an identifier character, so the identifier scan
+        // that matches keywords can never produce it (MAPPS-1241).
+        keywords: &["false", "no", "null", "true", "yes"],
         types: &[],
         dollar_vars: true,
         keyed: true,
@@ -336,7 +346,8 @@ fn spec(lang: &str) -> Option<&'static Lang> {
         "python" | "py" => &PYTHON,
         "bash" | "sh" | "shell" | "zsh" | "console" | "shell-session" | "nu" | "nushell" => &SHELL,
         "sql" | "postgres" | "postgresql" | "psql" => &SQL,
-        "json" | "jsonc" => &JSON,
+        "json" => &JSON,
+        "jsonc" => &JSONC,
         "yaml" | "yml" => &YAML,
         "toml" | "ini" | "conf" | "cfg" | "env" | "dotenv" => &TOML,
         // An UNLABELLED fence is left alone, which is what Forgejo does and
@@ -381,6 +392,47 @@ fn push_span(out: &mut String, class: &str, text: &str) {
 ///
 /// `lang` is the fence info string and may be empty. The returned HTML is
 /// already escaped and is safe to place inside `<code>`.
+/// Every fence name the highlighter recognises: the names `spec` maps to a
+/// grammar, plus `diff` and `patch`, which [`highlight_html`] handles first.
+/// The sanitizer allows `language-<name>` for exactly these (MAPPS-1241), and
+/// a test checks this list against `spec`'s match arms.
+pub const LANGUAGE_NAMES: &[&str] = &[
+    "rust",
+    "rs",
+    "js",
+    "javascript",
+    "ts",
+    "typescript",
+    "jsx",
+    "tsx",
+    "python",
+    "py",
+    "bash",
+    "sh",
+    "shell",
+    "zsh",
+    "console",
+    "shell-session",
+    "nu",
+    "nushell",
+    "sql",
+    "postgres",
+    "postgresql",
+    "psql",
+    "json",
+    "jsonc",
+    "yaml",
+    "yml",
+    "toml",
+    "ini",
+    "conf",
+    "cfg",
+    "env",
+    "dotenv",
+    "diff",
+    "patch",
+];
+
 pub fn highlight_html(lang: &str, code: &str) -> String {
     // SPEC-4.61.1
     let name = lang
@@ -530,16 +582,12 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
         // SPEC-4.62.3
         // Line comment. Not inside a string, because strings are consumed whole
         // below before we ever look at their contents.
-        if let Some(marker) = spec
-            .line_comments
-            .iter()
-            .find(|m| rest.starts_with(**m))
-            .copied()
-        {
+        if spec.line_comments.iter().any(|m| rest.starts_with(*m)) {
             // A shell `#!` shebang and a CSS-ish `#rrggbb` are not comments,
-            // but treating them as one only miscolours; keep the rule simple
-            // except for the shebang, which is common at the top of a snippet.
-            let _ = marker;
+            // but treating them as one only miscolours, so the rule stays
+            // simple and has no exception: a shebang is coloured as a comment
+            // like any other `#` line (MAPPS-1241: this used to claim the
+            // shebang was handled separately; it never was).
             let end = rest.find('\n').map(|p| i + p).unwrap_or(code.len());
             push_span(&mut out, "hl-com", &code[i..end]);
             i = end;
@@ -662,6 +710,67 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
     }
     debug_assert_eq!(bytes.len(), code.len());
     out
+}
+
+/// MAPPS-1241: the name list matches `spec`, `jsonc` has comments, and the
+/// comments describe the code.
+#[cfg(test)]
+mod mapps_1241_tests {
+    use super::{highlight_html, LANGUAGE_NAMES};
+
+    const SRC: &str = include_str!("highlight.rs");
+
+    fn code() -> &'static str {
+        &SRC[..SRC.find("mod mapps_1241_tests").unwrap()]
+    }
+
+    #[test]
+    fn the_name_list_is_every_name_spec_maps_plus_diff() {
+        let code = code();
+        let start = code
+            .find("Some(match name.as_str() {")
+            .expect("spec's match");
+        let end = start
+            + code[start..]
+                .find("\"\" => return None,")
+                .expect("the unlabelled arm");
+        let mut arms: Vec<&str> = code[start..end].split('"').skip(1).step_by(2).collect();
+        arms.extend(["diff", "patch"]);
+        arms.sort_unstable();
+        let mut listed = LANGUAGE_NAMES.to_vec();
+        listed.sort_unstable();
+        assert_eq!(listed, arms);
+    }
+
+    #[test]
+    fn a_jsonc_fence_colours_its_comments() {
+        let out = highlight_html("jsonc", "{ // note\n  \"a\": 1 /* b */ }");
+        assert!(
+            out.contains(r#"<span class="hl-com">// note</span>"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"<span class="hl-com">/* b */</span>"#),
+            "{out}"
+        );
+        let json = highlight_html("json", "// not a comment in json");
+        assert!(!json.contains("hl-com"), "{json}");
+    }
+
+    #[test]
+    fn the_comments_match_the_code() {
+        let code = code();
+        assert!(!code.contains("let _ = marker;"));
+        assert!(!code.contains(concat!(
+            "except for the shebang, which is common",
+            " at the top"
+        )));
+        assert!(!code.contains(concat!("hunk header and file", " metadata\"")));
+        assert!(
+            !code.contains(concat!("\"yes\", ", "\"~\"]")),
+            "an unreachable keyword"
+        );
+    }
 }
 
 #[cfg(test)]

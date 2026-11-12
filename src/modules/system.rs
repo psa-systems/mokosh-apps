@@ -50,7 +50,11 @@ pub struct ServerVersionResponse {
 pub struct VersionPair {
     #[serde(deserialize_with = "deserialize_semver")]
     pub running: String,
-    /// `None` until the registry poll has resolved.
+    /// What `running` is compared against. For the server pair this is
+    /// always `None`: `/version` has no registry poll (see the module doc).
+    /// For the client pair it is the server's version, since the two share a
+    /// release line (MAPPS-372; MAPPS-1236: this used to say "until the registry poll has
+    /// resolved", a poll that does not exist).
     #[serde(default, deserialize_with = "deserialize_optional_semver")]
     pub latest: Option<String>,
 }
@@ -191,6 +195,26 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MAPPS-1236: `latest` was documented as waiting on a registry poll
+    /// that `get_version` never makes. Pinned in source because
+    /// `get_version` needs a server.
+    #[test]
+    fn the_latest_doc_matches_what_get_version_fills_in() {
+        let src = include_str!("system.rs");
+        let code = &src[..src.find("mod tests {").expect("tests module")];
+        assert!(!code.contains(concat!("`None` until the registry poll", " has resolved")));
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("always `None`: `/version` has no registry poll"));
+        assert!(
+            flat.contains("latest: None, },"),
+            "server pair is filled with None"
+        );
+        assert!(
+            flat.contains("latest: Some(server_running),"),
+            "client pair gets the server's version"
+        );
+    }
 
     #[test]
     fn normalise_strips_v_prefix() {

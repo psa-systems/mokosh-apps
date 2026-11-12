@@ -15,19 +15,42 @@
 #[cfg(target_arch = "wasm32")]
 // SPEC-3.42.11
 pub fn get(key: &str) -> Option<String> {
-    web_sys::window()?
-        .local_storage()
-        .ok()??
-        .get_item(key)
-        .ok()?
+    // MAPPS-1242: an unreachable store answers `None` like an unset key, so
+    // the caller's default takes over; it is now logged with the key, as a
+    // failed write already was.
+    let storage = local_storage(key)?;
+    match storage.get_item(key) {
+        Ok(value) => value,
+        Err(e) => {
+            tracing::warn!("could not read preference {key}: {e:?}");
+            None
+        }
+    }
+}
+
+/// The browser's `localStorage`, or `None` with a warning naming `key`.
+#[cfg(target_arch = "wasm32")]
+fn local_storage(key: &str) -> Option<web_sys::Storage> {
+    match web_sys::window().map(|w| w.local_storage()) {
+        Some(Ok(Some(storage))) => Some(storage),
+        Some(Ok(None)) => {
+            tracing::warn!("localStorage is unavailable; preference {key} is not persisted");
+            None
+        }
+        Some(Err(e)) => {
+            tracing::warn!("localStorage is blocked ({e:?}); preference {key} is not persisted");
+            None
+        }
+        None => {
+            tracing::warn!("no window; preference {key} is not persisted");
+            None
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 pub fn set(key: &str, value: &str) {
-    let Some(storage) = web_sys::window()
-        .and_then(|w| w.local_storage().ok())
-        .flatten()
-    else {
+    let Some(storage) = local_storage(key) else {
         return;
     };
     if let Err(_e) = storage.set_item(key, value) {
@@ -40,10 +63,7 @@ pub fn set(key: &str, value: &str) {
 
 #[cfg(target_arch = "wasm32")]
 pub fn remove(key: &str) {
-    let Some(storage) = web_sys::window()
-        .and_then(|w| w.local_storage().ok())
-        .flatten()
-    else {
+    let Some(storage) = local_storage(key) else {
         return;
     };
     if storage.remove_item(key).is_err() {
@@ -169,4 +189,25 @@ pub fn set(key: &str, value: &str) {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn remove(key: &str) {
     native::remove(key);
+}
+
+/// MAPPS-1242: an unreachable browser store is logged with the key on read,
+/// write and remove. Pinned in source; the browser half needs a DOM.
+#[cfg(test)]
+mod storage_trace_tests {
+    #[test]
+    fn every_browser_path_logs_an_unreachable_store() {
+        let src = include_str!("prefs.rs");
+        let code = &src[..src.find("mod storage_trace_tests").unwrap()];
+        assert!(!code.contains(".ok()??"), "the read no longer swallows it");
+        assert_eq!(
+            code.matches("let Some(storage) = local_storage(key) else {")
+                .count(),
+            2,
+            "set and remove"
+        );
+        assert!(code.contains("let storage = local_storage(key)?;"), "get");
+        assert!(code.contains("preference {key} is not persisted"));
+        assert!(code.contains("could not read preference {key}"));
+    }
 }

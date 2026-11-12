@@ -26,6 +26,21 @@ pub struct BarChartProps {
     /// values display as-is).
     #[props(default = false)]
     pub one_decimal: bool,
+    /// The chart's accessible name (MAPPS-1243). The SVG is `role="img"`, so
+    /// without one a screen reader announced an unnamed image.
+    #[props(default = "Bar chart".to_string())]
+    pub title: String,
+}
+
+/// The value text one row shows, also read out by the text alternative.
+fn value_label(value: f64, one_decimal: bool, unit_suffix: &str) -> String {
+    if one_decimal {
+        format!("{value:.1}{unit_suffix}")
+    } else if value.fract() == 0.0 {
+        format!("{}{unit_suffix}", value as i64)
+    } else {
+        format!("{value}{unit_suffix}")
+    }
 }
 
 #[component]
@@ -55,8 +70,17 @@ pub fn BarChart(props: BarChartProps) -> Element {
 
     rsx! {
         div { class: "overflow-x-auto",
+            // MAPPS-1243: the data as text, for a screen reader. The drawn
+            // labels are SVG `text` inside an image, which assistive tech
+            // does not read row by row.
+            ul { class: "sr-only",
+                for d in props.data.iter() {
+                    li { "{d.label}: {value_label(d.value, props.one_decimal, &props.unit_suffix)}" }
+                }
+            }
             svg {
                 role: "img",
+                "aria-label": "{props.title}",
                 width: "{total_width}",
                 height: "{total_height}",
                 view_box: "0 0 {total_width} {total_height}",
@@ -71,14 +95,8 @@ pub fn BarChart(props: BarChartProps) -> Element {
                         let bar_x = label_col;
                         let value_x = label_col + bar_track_width + 8;
                         // SPEC-5.5.5
-                        let value_label = if props.one_decimal {
-                            format!("{value:.1}{}", props.unit_suffix)
-                        } else if value.fract() == 0.0 {
-                            format!("{}{}", value as i64, props.unit_suffix)
-                        } else {
-                            format!("{value}{}", props.unit_suffix)
-                        };
                         // SPEC-5.5.4
+                        let value_label = value_label(value, props.one_decimal, &props.unit_suffix);
                         rsx! {
                             text {
                                 x: "0",
@@ -111,5 +129,27 @@ pub fn BarChart(props: BarChartProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1243: the chart has an accessible name and its data as text.
+#[cfg(test)]
+mod tests {
+    use super::value_label;
+
+    #[test]
+    fn value_labels_read_as_before() {
+        assert_eq!(value_label(3.0, false, " hours"), "3 hours");
+        assert_eq!(value_label(2.5, false, "%"), "2.5%");
+        assert_eq!(value_label(2.0, true, ""), "2.0");
+    }
+
+    #[test]
+    fn the_svg_is_named_and_the_rows_are_text() {
+        let src = include_str!("bar_chart.rs");
+        let code = &src[..src.find("mod tests {").unwrap()];
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("role: \"img\", \"aria-label\": \"{props.title}\","));
+        assert!(flat.contains("ul { class: \"sr-only\","));
     }
 }

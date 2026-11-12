@@ -10,8 +10,10 @@
 //! - `refresh_contact_session` posts to `/contact/auth/refresh`, which
 //!   succeeds or fails on the server's reading of that cookie
 //!   (MAPPS-1169), and on success writes both fresh tokens through the
-//!   fetch helpers. On any failure it clears both so the visitor lands
-//!   on `/portal/{slug}/login` rather than looping.
+//!   fetch helpers. When the server refuses the refresh it clears both so
+//!   the visitor lands on `/portal/{slug}/login` rather than looping; a
+//!   network error or a 5xx keeps the session, as the staff plane does
+//!   (MAPPS-1238). Either way the cause is logged.
 //! - `use_contact_auto_refresh` runs a periodic loop that calls
 //!   `refresh_contact_session` while a session is held, so a long-lived
 //!   tab keeps its access token fresh without a user round-trip. It
@@ -87,9 +89,15 @@ struct RefreshContactSnippet {
 /// cold load (empty in-memory token) work (MAPPS-1169). Whether the
 /// refresh can succeed is therefore a server decision, not something
 /// this function can rule out in advance. On a 2xx it writes both the
-/// new access + refresh tokens through the setters and returns `Ok`. On
-/// ANY failure it clears both tokens so a stale refresh cannot loop the
-/// visitor through repeated bootstrap attempts.
+/// new access + refresh tokens through the setters and returns `Ok`.
+///
+/// MAPPS-1238: a failure is logged with its cause, and only a refusal ends
+/// the session. A 4xx (or a 2xx this build cannot read) clears both tokens,
+/// the capabilities and the branding, so a stale refresh cannot loop the
+/// visitor through repeated bootstrap attempts. A network error or a 5xx is
+/// [`refresh_failure_is_transient`] and keeps the session for the next tick,
+/// the policy the staff plane follows (`renewal_is_unrecoverable` in
+/// `auth.rs`): it used to sign the contact out over a blip.
 #[cfg(feature = "web")]
 pub async fn refresh_contact_session() -> Result<(), String> {
     // SPEC-4.9.1: empty token is sent on a cold load; the cookie carries the session.
@@ -138,8 +146,13 @@ pub async fn refresh_contact_session() -> Result<(), String> {
             crate::hooks::capabilities::set_contact_capabilities(Some(caps));
             Ok(())
         }
+        Err(e) if refresh_failure_is_transient(&e) => {
+            tracing::warn!("contact session refresh failed transiently; keeping the session: {e}");
+            Err(e.to_string())
+        }
         Err(e) => {
             // SPEC-4.9.5: any failure drops session, caps and brand.
+            tracing::warn!("contact session refresh refused; signing the contact out: {e}");
             crate::hooks::fetch::api::clear_contact_session();
             crate::hooks::capabilities::clear_contact_capabilities();
             // MAPPS-621: brand goes with the session; falling back to
@@ -148,6 +161,20 @@ pub async fn refresh_contact_session() -> Result<(), String> {
             crate::hooks::branding::clear_effective_branding();
             Err(e.to_string())
         }
+    }
+}
+
+/// Is a failed refresh worth another tick rather than a sign-out? A
+/// transport failure or a 5xx is the network or the server having a bad
+/// moment; a 4xx is the server refusing the cookie, and an undecodable 2xx
+/// is a contract this build cannot honour, so both of those end the session.
+#[cfg(feature = "web")]
+fn refresh_failure_is_transient(e: &crate::hooks::fetch::api::ApiError) -> bool {
+    use crate::hooks::fetch::api::ApiError;
+    match e {
+        ApiError::Network(_) => true,
+        ApiError::Status { code, .. } => *code >= 500,
+        ApiError::Decode(_) => false,
     }
 }
 
@@ -187,6 +214,8 @@ pub fn use_contact_auto_refresh() {
             // SPEC-4.9.7: wait first, then refresh only while a contact session is held.
             gloo_timers::future::TimeoutFuture::new(120_000).await;
             if crate::hooks::fetch::api::has_contact_session() {
+                // MAPPS-1238: the failure is logged, with its cause, inside
+                // `refresh_contact_session`; there is nothing more to do here.
                 let _ = refresh_contact_session().await;
             }
         }
@@ -228,6 +257,7 @@ fn install_focus_refresh_listener() {
             return;
         }
         dioxus::prelude::spawn(async move {
+            // Logged inside `refresh_contact_session` (MAPPS-1238).
             let _ = refresh_contact_session().await;
         });
     }) as Box<dyn FnMut(web_sys::Event)>);
@@ -238,4 +268,60 @@ fn install_focus_refresh_listener() {
     }
     cb.forget();
     FOCUS_INSTALLED.with(|f| f.set(true));
+}
+
+/// MAPPS-1238: a refresh failure ends the contact session only when the
+/// server refused it.
+#[cfg(all(test, feature = "web"))]
+mod refresh_policy_tests {
+    use super::refresh_failure_is_transient;
+    use crate::hooks::fetch::api::ApiError;
+
+    fn status(code: u16) -> ApiError {
+        ApiError::Status {
+            code,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        }
+    }
+
+    #[test]
+    fn a_network_error_or_a_5xx_keeps_the_session() {
+        assert!(refresh_failure_is_transient(&ApiError::Network(
+            "offline".into()
+        )));
+        for code in [500, 502, 503, 504] {
+            assert!(refresh_failure_is_transient(&status(code)), "{code}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_or_an_unreadable_answer_ends_it() {
+        for code in [400, 401, 403, 410] {
+            assert!(!refresh_failure_is_transient(&status(code)), "{code}");
+        }
+        assert!(!refresh_failure_is_transient(&ApiError::Decode(
+            "bad".into()
+        )));
+    }
+
+    #[test]
+    fn every_failure_is_logged_and_only_a_refusal_clears() {
+        let src = include_str!("contact_auth.rs");
+        let code = &src[..src.find("mod refresh_policy_tests").expect("this module")];
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        let transient = flat
+            .find("Err(e) if refresh_failure_is_transient(&e) => {")
+            .expect("a transient arm");
+        let refused = flat[transient..]
+            .find("signing the contact out: {e}")
+            .map(|i| i + transient)
+            .expect("the refusal arm logs");
+        let clear = flat.find("clear_contact_session();").expect("the clear");
+        assert!(flat[transient..refused].contains("keeping the session: {e}"));
+        assert!(!flat[transient..refused].contains("clear_contact_session"));
+        assert!(clear > refused, "the clear is in the refusal arm only");
+    }
 }

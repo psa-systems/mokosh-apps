@@ -1,7 +1,8 @@
 //! Reusable Asset picker (PMS-344).
 //!
 //! Mirror of [`crate::components::CompanyPicker`]: hits
-//! `GET /assets?q=...&per_page=20` on each keystroke, renders the
+//! `GET /assets?q=...&per_page=20` once the query has been still for 300 ms
+//! (MAPPS-855), renders the
 //! matches in a click-to-select dropdown, and reports the selected
 //! asset's UUID + name back through callbacks. Used on the New Ticket
 //! form and on the ticket-detail inline-edit sidebar to associate a

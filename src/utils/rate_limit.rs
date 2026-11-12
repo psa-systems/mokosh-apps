@@ -40,8 +40,11 @@ pub fn retry_after_seconds(body: &str) -> Option<u64> {
 pub fn retry_after_phrase(body: &str) -> Option<String> {
     // SPEC-4.79.5
     let seconds = retry_after_seconds(body)?;
-    Some(if seconds < 60 {
         // SPEC-4.79.6
+    Some(if seconds == 1 {
+        // MAPPS-1242: not "in 1 seconds".
+        "in 1 second".to_string()
+    } else if seconds < 60 {
         format!("in {seconds} seconds")
     } else {
         // SPEC-4.79.7: rounds up so the advice is never early.
@@ -57,6 +60,19 @@ pub fn retry_after_phrase(body: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MAPPS-1242.
+    #[test]
+    fn one_second_is_singular() {
+        assert_eq!(
+            retry_after_phrase(r#"{"retry_after_seconds":1}"#).as_deref(),
+            Some("in 1 second")
+        );
+        assert_eq!(
+            retry_after_phrase(r#"{"retry_after_seconds":2}"#).as_deref(),
+            Some("in 2 seconds")
+        );
+    }
 
     const REAL_BODY: &str = r#"{"error":"rate_limited","message":"Too many password reset attempts, please try again later","retry_after_seconds":45}"#;
 

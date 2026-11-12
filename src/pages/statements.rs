@@ -270,14 +270,16 @@ fn StatementBody() -> Element {
             }
             // SPEC-10.45.3
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            if let Ok(row) = crate::hooks::fetch::api::get_authed::<CompanyNameRow>(&format!(
+            match crate::hooks::fetch::api::get_authed::<CompanyNameRow>(&format!(
                 "/contacts/companies/{id}"
             ))
             .await
             {
-                if !row.name.trim().is_empty() {
-                    company_name.set(row.name);
-                }
+                Ok(row) if !row.name.trim().is_empty() => company_name.set(row.name),
+                Ok(_) => tracing::warn!("statement company {id} has no name"),
+                // MAPPS-1231: the picker then shows no name for the chosen
+                // company; the log says why.
+                Err(e) => tracing::warn!("statement company name lookup failed for {id}: {e}"),
             }
         }
     });
@@ -806,5 +808,22 @@ mod tests {
             "company_id=abc&period_start=2026-03-01&period_end=2026-03-31"
         );
         assert_eq!(iso(day(2026, 3, 5)), "2026-03-05");
+    }
+}
+
+/// MAPPS-1231: a failed company name lookup was dropped with no log.
+#[cfg(test)]
+mod mapps1231_statement_tests {
+    #[test]
+    fn a_failed_company_name_lookup_is_logged() {
+        let src = include_str!("statements.rs");
+        let head = &src[..src
+            .find("mod mapps1231_statement_tests")
+            .expect("this module")];
+        assert!(head.contains(
+            r#"Err(e) => tracing::warn!("statement company name lookup failed for {id}: {e}"),"#
+        ));
+        assert!(!head
+            .contains("if let Ok(row) = crate::hooks::fetch::api::get_authed::<CompanyNameRow>"));
     }
 }

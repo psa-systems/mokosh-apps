@@ -304,6 +304,9 @@ fn initial_auth_context() -> AuthContext {
                 theme_base_mode: None,
                 theme_accent_id: None,
                 own_company_id: None,
+                // MAPPS-1238: the field the other literals here set; without
+                // it this variant did not compile under the feature.
+                tenant_kind: String::new(),
             }),
             is_loading: false,
             error: None,
@@ -330,6 +333,28 @@ fn initial_auth_context() -> AuthContext {
     rehydrate_from_storage()
         .or_else(rehydrate_standalone)
         .unwrap_or_default()
+}
+
+/// The user and home-tenant ids an id_token names (MAPPS-1238).
+///
+/// An unparseable `sub`, or a `tenant_id` claim that is present but not a
+/// UUID, is an error carrying the value, as the OIDC callback already treats
+/// it: substituting `Uuid::nil()` gave a user whose writes are scoped to a
+/// tenant that does not exist. An absent `tenant_id` is `None`.
+fn identity_from_claims(
+    sub: &str,
+    tenant_id: Option<&str>,
+) -> Result<(uuid::Uuid, Option<uuid::Uuid>), String> {
+    let user_id = sub
+        .parse::<uuid::Uuid>()
+        .map_err(|e| format!("the id_token subject {sub:?} is not a UUID: {e}"))?;
+    let tenant = tenant_id
+        .map(|t| {
+            t.parse::<uuid::Uuid>()
+                .map_err(|e| format!("the id_token tenant_id {t:?} is not a UUID: {e}"))
+        })
+        .transpose()?;
+    Ok((user_id, tenant))
 }
 
 /// Pull a persisted token bundle out of `sessionStorage` and rebuild
@@ -360,15 +385,18 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
     };
     // SPEC-4.2.4: identity claims seed the user; /me fills the rest later.
     let claims = tokens.id_claims().ok()?;
-    let user_id = claims
-        .sub
-        .parse::<uuid::Uuid>()
-        .unwrap_or_else(|_| uuid::Uuid::nil());
-    let tenant_id = claims
-        .tenant_id
-        .as_deref()
-        .and_then(|s| s.parse::<uuid::Uuid>().ok())
-        .unwrap_or_else(uuid::Uuid::nil);
+    let (user_id, home_tenant) =
+        match identity_from_claims(&claims.sub, claims.tenant_id.as_deref()) {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::error!("the stored session is unusable, signing in again: {e}");
+                return None;
+            }
+        };
+    // `CurrentUser::tenant_id` is not optional; an absent claim stays nil
+    // there, but the active tenant is left for the memberships load to set
+    // rather than seeded as `Some(nil)`.
+    let tenant_id = home_tenant.unwrap_or_else(uuid::Uuid::nil);
     // Role comes from `/api/v1/auth/me` (PMS-158); the id_token carries no
     // usable role claim post-cutover, so seed the Technician default and let
     // the post-rehydrate /me fetch reconcile it within a tick.
@@ -376,7 +404,7 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
 
     // The id_token has no active-tenant claim; seed the active tenant from the
     // home tenant. A tenant switch (or the memberships load) updates it.
-    let active_tenant_id = Some(tenant_id);
+    let active_tenant_id = home_tenant;
     // MAPPS-661: a bundle whose access token is spent (or nearly) is the
     // discarded-tab case, and nothing signed-in renders until the confirmation
     // answers.
@@ -704,10 +732,23 @@ pub fn use_memberships_loader() {
                 match crate::hooks::fetch::api::get_authed::<TenantView>("/tenants/current").await {
                     // SPEC-4.6.11: a named tenant becomes the single membership row.
                     Ok(t) if !t.name.trim().is_empty() => {
+                        // MAPPS-1238: a row with an id that is not a UUID used
+                        // to be stored while the active tenant silently kept
+                        // its old value. Refuse it, with the id, like the
+                        // other failures below.
+                        let id = match t.id.parse::<uuid::Uuid>() {
+                            Ok(id) => id,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "organisation load returned the id {:?}, which is not a UUID ({e}); leaving it unset",
+                                    t.id
+                                );
+                                auth.write().memberships_loaded = true;
+                                return;
+                            }
+                        };
                         let mut a = auth.write();
-                        if let Ok(id) = t.id.parse::<uuid::Uuid>() {
-                            a.active_tenant_id = Some(id);
-                        }
+                        a.active_tenant_id = Some(id);
                         a.memberships = vec![MembershipView {
                             tenant_id: t.id,
                             tenant_name: t.name,
@@ -1089,12 +1130,31 @@ async fn heartbeat_tick() {
         if tab_is_hidden() {
             return;
         }
-        // Fire and discard. The fetch layer handles the 410 case (flips
-        // ACCOUNT_DELETED) and, since MAPPS-435, the 401 case (renew, else
-        // clear the session and redirect); 200 / network errors are no-ops
-        // here.
         // SPEC-4.7.2: the response body is unused; the fetch layer owns 401 and 410.
-        let _ = crate::hooks::fetch::api::get_authed_typed::<serde_json::Value>("/auth/me").await;
+        // The fetch layer handles the 410 case (flips ACCOUNT_DELETED) and,
+        // since MAPPS-435, the 401 case (renew, else clear the session and
+        // redirect). MAPPS-1238: anything else used to vanish; it is logged
+        // here, a network error at debug because an offline tab hits it every
+        // tick and the reachability monitor already says so.
+        if let Err(e) =
+            crate::hooks::fetch::api::get_authed_typed::<serde_json::Value>("/auth/me").await
+        {
+            log_heartbeat_failure(&e);
+        }
+    }
+}
+
+/// How a failed heartbeat reaches the log (MAPPS-1238). A 401 or 410 is
+/// already acted on by the fetch layer, so it is not repeated here.
+#[cfg(feature = "app")]
+fn log_heartbeat_failure(e: &crate::hooks::fetch::api::ApiError) {
+    use crate::hooks::fetch::api::ApiError;
+    match e {
+        ApiError::Status {
+            code: 401 | 410, ..
+        } => {}
+        ApiError::Network(_) => tracing::debug!("auth heartbeat could not reach the server: {e}"),
+        _ => tracing::warn!("auth heartbeat failed: {e}"),
     }
 }
 
@@ -1125,10 +1185,13 @@ fn tab_is_hidden() -> bool {
 /// with it. MAPPS-504: a desktop window has no document to replace, and
 /// the cleared context is what moves it.
 fn redirect_to_login() {
-    // MAPPS-518 URL swap: tenant login lives at /client/login now; /login is
-    // the platform-admin page and would be the wrong destination for a
-    // forced tenant sign-out.
     // SPEC-4.5.3: browser builds hard-navigate; other builds rely on the cleared context.
+    // `/client/login` is the MAPPS-518 tenant URL. Since MAPPS-520 the
+    // router's `/login` is the unified page for both personas and
+    // `/client/login` is a legacy stub (`ClientLoginLegacy`) that forwards
+    // there; it is kept here so this matches the fetch layer's own sign-out
+    // redirect (MAPPS-1238 corrected this comment, which called `/login` the
+    // platform-admin page).
     #[cfg(target_arch = "wasm32")]
     if let Err(e) = crate::platform::location::set_href("/client/login") {
         tracing::warn!("redirect to /client/login after sign-out failed: {e}");
@@ -1331,9 +1394,9 @@ pub fn use_bfcache_invalidator() {
     use wasm_bindgen::JsCast;
 
     use_effect(move || {
-        let win = match web_sys::window() {
-            Some(w) => w,
-            None => return,
+        let Some(win) = web_sys::window() else {
+            tracing::error!("no window to install the back-forward cache listener on");
+            return;
         };
         let handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |evt: web_sys::Event| {
             // `persisted` is only present on PageTransitionEvent (the
@@ -1350,7 +1413,14 @@ pub fn use_bfcache_invalidator() {
             }
         })
             as Box<dyn FnMut(web_sys::Event)>);
-        let _ = win.add_event_listener_with_callback("pageshow", handler.as_ref().unchecked_ref());
+        // MAPPS-1238: without the listener a restored page shows the session
+        // it was frozen with, so a failed install is logged.
+        if let Err(e) =
+            win.add_event_listener_with_callback("pageshow", handler.as_ref().unchecked_ref())
+        {
+            tracing::error!("could not install the back-forward cache listener: {e:?}");
+            return;
+        }
         // Listener must outlive its registration; SPA root, fires once.
         handler.forget();
     });
@@ -1363,8 +1433,9 @@ pub fn use_bfcache_invalidator() {}
 /// auth context when the fetch layer ends a session from outside the
 /// component tree.
 ///
-/// In a browser that path finishes with `location.set_href("/login")`,
-/// and the reload wipes `AuthContext` on the way. A desktop window has
+/// In a browser that path finishes with `location.set_href("/client/login")`
+/// (the legacy stub that forwards to the unified `/login`), and the reload
+/// wipes `AuthContext` on the way. A desktop window has
 /// no reload, so without this the user would keep looking at a populated
 /// dashboard whose every request 401s. Clearing the context is enough:
 /// the route guard reads it and moves them to the login screen.
@@ -1397,6 +1468,113 @@ pub fn use_session_end_watch() {
 /// The browser reloads instead, which is what clears the context there.
 #[cfg(any(not(feature = "app"), target_arch = "wasm32"))]
 pub fn use_session_end_watch() {}
+
+/// MAPPS-1238: identity parsing, the silent failure paths and the comments
+/// that disagreed with the router.
+#[cfg(test)]
+mod mapps_1238_tests {
+    use super::identity_from_claims;
+
+    fn code_only() -> String {
+        const SRC: &str = include_str!("auth.rs");
+        let end = SRC.find("mod mapps_1238_tests").expect("this module");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    const USER: &str = "6f1c1c0e-6c1b-4b55-9b8a-2b0f2a5b9a11";
+    const TENANT: &str = "0c9e2d8a-1f6b-4e2b-8a54-7d1d3a9f0b22";
+
+    #[test]
+    fn valid_claims_give_both_ids() {
+        let (user, tenant) = identity_from_claims(USER, Some(TENANT)).unwrap();
+        assert_eq!(user.to_string(), USER);
+        assert_eq!(tenant.map(|t| t.to_string()).as_deref(), Some(TENANT));
+    }
+
+    #[test]
+    fn an_absent_tenant_claim_is_none_not_nil() {
+        assert_eq!(identity_from_claims(USER, None).unwrap().1, None);
+    }
+
+    #[test]
+    fn an_unparseable_claim_is_an_error_naming_the_value() {
+        let err = identity_from_claims("not-a-uuid", Some(TENANT)).unwrap_err();
+        assert!(err.contains("\"not-a-uuid\""), "{err}");
+        let err = identity_from_claims(USER, Some("tenant-x")).unwrap_err();
+        assert!(err.contains("\"tenant-x\""), "{err}");
+    }
+
+    #[test]
+    fn rehydrate_no_longer_substitutes_nil_for_a_bad_claim() {
+        let code = code_only();
+        let at = code.find("fn rehydrate_from_storage()").expect("rehydrate");
+        let body = &code[at..at + 2500.min(code.len() - at)];
+        assert!(
+            !body.contains("unwrap_or_else(|_| uuid::Uuid::nil())"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("let active_tenant_id = Some(tenant_id);"),
+            "{body}"
+        );
+        assert!(
+            body.contains("let active_tenant_id = home_tenant;"),
+            "{body}"
+        );
+        assert!(
+            body.contains("the stored session is unusable, signing in again: {e}"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_tenant_id_from_the_org_load_is_logged_and_not_stored() {
+        let code = code_only();
+        assert!(!code.contains("if let Ok(id) = t.id.parse::<uuid::Uuid>() {"));
+        assert!(code.contains("which is not a UUID ({e}); leaving it unset"));
+    }
+
+    #[test]
+    fn the_heartbeat_and_bfcache_failures_are_logged() {
+        let code = code_only();
+        assert!(!code.contains(
+            "let _ = crate::hooks::fetch::api::get_authed_typed::<serde_json::Value>(\"/auth/me\")"
+        ));
+        assert!(code.contains("log_heartbeat_failure(&e);"));
+        assert!(!code.contains("let _ = win.add_event_listener_with_callback(\"pageshow\""));
+        assert!(code.contains("could not install the back-forward cache listener"));
+    }
+
+    #[test]
+    fn the_login_comments_match_the_router() {
+        let code = code_only();
+        assert!(!code.contains(concat!("/login is the platform-admin", " page")));
+        assert!(!code.contains(concat!(
+            "finishes with `location.set_href(\"/login\")`",
+            ","
+        )));
+        assert!(code.contains("`/login` is the unified page for both personas"));
+    }
+
+    /// The bypass variant is not compiled here, so its literal is pinned
+    /// against the field the other literals set.
+    #[test]
+    fn the_dev_bypass_user_sets_tenant_kind() {
+        let code = code_only();
+        let at = code
+            .find("Some(email), Some(password)")
+            .expect("bypass arm");
+        let end = code[at..]
+            .find("is_loading: false")
+            .expect("end of the user")
+            + at;
+        assert!(
+            code[at..end].contains("tenant_kind: String::new(),"),
+            "{}",
+            &code[at..end]
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

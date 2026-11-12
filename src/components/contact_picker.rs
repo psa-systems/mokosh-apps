@@ -1,8 +1,8 @@
 //! Reusable Contact picker (MAPPS-207).
 //!
 //! Mirror of [`crate::components::AssetPicker`] / [`crate::components::CompanyPicker`]:
-//! hits `GET /contacts/contacts?q=...&per_page=20` on each keystroke,
-//! renders the matches in a click-to-select dropdown, and reports the
+//! hits `GET /contacts/contacts?q=...&per_page=20` once the query has been
+//! still for 300 ms (MAPPS-855), renders the matches in a click-to-select dropdown, and reports the
 //! selected contact's UUID + full name back through callbacks.
 //!
 //! Used to close the relational gaps in MAPPS-207:
@@ -121,6 +121,32 @@ impl CreatedContact {
     }
 }
 
+/// The company scope a parent handed the picker (MAPPS-1243).
+#[derive(Debug, PartialEq)]
+enum CompanyFilter {
+    None,
+    Company(uuid::Uuid),
+    /// Present, but not a UUID: neither the search nor the create can use it.
+    Invalid,
+}
+
+/// What the search and the create show when the company scope is unusable.
+const INVALID_COMPANY_FILTER: &str =
+    "This list is scoped to a company that could not be identified. Reload the page and try again.";
+
+fn classify_company_filter(raw: Option<&str>) -> CompanyFilter {
+    match raw.map(str::trim).filter(|c| !c.is_empty()) {
+        None => CompanyFilter::None,
+        Some(c) => match uuid::Uuid::parse_str(c) {
+            Ok(id) => CompanyFilter::Company(id),
+            Err(e) => {
+                tracing::warn!("contact picker company filter {c:?} is not a uuid: {e}");
+                CompanyFilter::Invalid
+            }
+        },
+    }
+}
+
 #[component]
 pub fn ContactPicker(props: ContactPickerProps) -> Element {
     let mut query = use_signal(String::new);
@@ -147,19 +173,18 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
     // create closure captures nothing but Copy state and both the Create button
     // and the modal's Enter key can hold one. A filter that is not a UUID says
     // so rather than silently creating an unattached contact.
-    let company_uuid_for_create = props
-        .company_filter
-        .as_deref()
-        .map(str::trim)
-        .filter(|c| !c.is_empty())
-        .and_then(|c| {
-            uuid::Uuid::parse_str(c)
                 // SPEC-5.16.13
-                .inspect_err(|e| {
-                    tracing::warn!("contact picker company filter {c:?} is not a uuid: {e}")
-                })
-                .ok()
-        });
+    //
+    // MAPPS-1243: only the log said so. The search still sent the bad id and
+    // the create dropped it, making an unattached contact with nothing on
+    // screen. Now both fail visibly: the search shows its failure banner and
+    // the create refuses with an error in the dialog.
+    let company_filter_state = classify_company_filter(props.company_filter.as_deref());
+    let company_uuid_for_create = match &company_filter_state {
+        CompanyFilter::Company(id) => Some(*id),
+        _ => None,
+    };
+    let company_filter_invalid = matches!(company_filter_state, CompanyFilter::Invalid);
     // Read the query signal INSIDE the use_resource closure so Dioxus
     // subscribes the resource to it and re-fetches on every keystroke
     // (same pattern as the Company/Asset pickers).
@@ -178,8 +203,14 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
             if !q.is_empty() {
                 path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
             }
-            if let Some(cid) = company_filter.as_ref().filter(|s| !s.is_empty()) {
-                path.push_str(&format!("&company_id={}", urlencoding_minimal(cid)));
+            match classify_company_filter(company_filter.as_deref()) {
+                CompanyFilter::Company(cid) => {
+                    path.push_str(&format!("&company_id={cid}"));
+                }
+                CompanyFilter::Invalid => {
+                    return Err(INVALID_COMPANY_FILTER.to_string());
+                }
+                CompanyFilter::None => {}
             }
             // MAPPS-503: keep the failure. `.ok()` here made a failed search
             // indistinguishable from "still loading", so the panel sat on
@@ -215,16 +246,32 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                         div { class: "min-w-0",
                             p { class: "text-sm font-medium text-content truncate", "{name}" }
                         }
-                        Button {
-                            variant: ButtonVariant::Link,
-                            size: ButtonSize::Small,
-                            onclick: move |_| {
-                                onclear.call(());
-                                query.set(String::new());
-                                editing.set(true);
-                                nav.open();
-                            },
-                            "Change"
+                        // MAPPS-1243: the AssetPicker contract (PMS-344
+                        // follow-up). Change only swaps to search mode
+                        // locally; it used to fire `onclear` too, and the
+                        // ticket-detail editor's `onclear` PUTs the contact
+                        // away, so merely opening the search detached it.
+                        // Removing the association is its own Unassign.
+                        div { class: "flex items-center gap-1 shrink-0 ml-2",
+                            Button {
+                                variant: ButtonVariant::Link,
+                                size: ButtonSize::Small,
+                                onclick: move |_| {
+                                    query.set(String::new());
+                                    editing.set(true);
+                                    nav.open();
+                                },
+                                "Change"
+                            }
+                            button {
+                                r#type: "button",
+                                class: "text-xs text-muted hover:text-red-600 dark:hover:text-red-400 px-2 py-1",
+                                onclick: move |_| {
+                                    onclear.call(());
+                                    query.set(String::new());
+                                },
+                                "Unassign"
+                            }
                         }
                     }
                 }
@@ -456,6 +503,12 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                         if creating() {
                             return;
                         }
+                        // MAPPS-1243: never create an unattached contact
+                        // because the scope the parent passed was unusable.
+                        if company_filter_invalid {
+                            create_error.set(INVALID_COMPANY_FILTER.to_string());
+                            return;
+                        }
                         creating.set(true);
                         create_error.set(String::new());
                         let email_v = new_email.read().trim().to_string();
@@ -498,6 +551,8 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                     }
                                     // SPEC-5.16.14
                                     Err(err) => {
+                                        // MAPPS-1243: logged as well as shown.
+                                        tracing::warn!("contact picker could not create {first:?} {last:?}: {err}");
                                         create_error.set(format!(
                                             "Could not create contact: {err}"
                                         ));
@@ -680,5 +735,63 @@ mod tests {
             field < focus && focus < next,
             "the autofocus belongs to new_contact_first"
         );
+    }
+}
+
+/// MAPPS-1243: a bad company scope fails visibly, Change leaves the
+/// association alone, and a failed create is logged.
+#[cfg(test)]
+mod mapps_1243_tests {
+    use super::{classify_company_filter, CompanyFilter};
+
+    #[test]
+    fn the_company_scope_is_none_a_company_or_invalid() {
+        assert_eq!(classify_company_filter(None), CompanyFilter::None);
+        assert_eq!(classify_company_filter(Some("  ")), CompanyFilter::None);
+        let id = uuid::Uuid::from_u128(9);
+        assert_eq!(
+            classify_company_filter(Some(&id.to_string())),
+            CompanyFilter::Company(id)
+        );
+        assert_eq!(
+            classify_company_filter(Some("acme")),
+            CompanyFilter::Invalid
+        );
+    }
+
+    fn code() -> String {
+        let src = include_str!("contact_picker.rs");
+        src[..src.find("mod mapps_1243_tests").unwrap()]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn an_invalid_scope_neither_searches_unscoped_nor_creates_unattached() {
+        let code = code();
+        assert!(code.contains(
+            "CompanyFilter::Invalid => { return Err(INVALID_COMPANY_FILTER.to_string()); }"
+        ));
+        assert!(code.contains("if company_filter_invalid { create_error.set(INVALID_COMPANY_FILTER.to_string()); return; }"));
+    }
+
+    #[test]
+    fn change_does_not_clear_and_unassign_does() {
+        let code = code();
+        let change = code.find("\"Change\"").expect("Change");
+        let before = &code[..change];
+        let change_click = before.rfind("onclick:").expect("its handler");
+        assert!(
+            !before[change_click..].contains("onclear.call"),
+            "Change must not fire onclear"
+        );
+        let unassign = code.find("\"Unassign\"").expect("Unassign");
+        assert!(code[change..unassign].contains("onclear.call(());"));
+    }
+
+    #[test]
+    fn a_failed_create_is_logged() {
+        assert!(code().contains("contact picker could not create {first:?} {last:?}: {err}"));
     }
 }

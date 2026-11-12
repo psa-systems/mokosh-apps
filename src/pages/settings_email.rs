@@ -125,6 +125,10 @@ fn EmailSettingsForm() -> Element {
     let snap = settings_resource.read_unchecked();
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(crate::pages::settings::OperatorLoad::Failed));
+    // MAPPS-1234: nothing loaded means nothing to edit. The form used to stay
+    // live after a failed load, and Save sent blanks that cleared every
+    // override.
+    let form_locked = is_loading || fetch_failed;
     // PMS-1280: the relay belongs to the deployment's operator.
     let not_operator = matches!(
         *snap,
@@ -151,22 +155,13 @@ fn EmailSettingsForm() -> Element {
         error.set(String::new());
         port_error.set(String::new());
 
-        let parsed_port = {
-            let raw = port.read().trim().to_string();
             // SPEC-11.42.7: blank port is null.
-            if raw.is_empty() {
-                None
-            } else {
                 // SPEC-11.42.6
-                match raw.parse::<u16>() {
-                    Ok(p) => Some(p),
-                    Err(_) => {
-                        port_error.set(
-                            "Enter a port between 1 and 65535, or leave it blank.".to_string(),
-                        );
-                        return;
-                    }
-                }
+        let parsed_port = match parse_port(&port.read()) {
+            Ok(p) => p,
+            Err(e) => {
+                port_error.set(e);
+                return;
             }
         };
 
@@ -359,7 +354,7 @@ fn EmailSettingsForm() -> Element {
                         label: "SMTP host",
                         value: host(),
                         // SPEC-11.42.5
-                        disabled: is_loading || saving(),
+                        disabled: form_locked || saving(),
                         placeholder: "smtp.example.com",
                         oninput: move |e: FormEvent| host.set(e.value()),
                     }
@@ -368,7 +363,7 @@ fn EmailSettingsForm() -> Element {
                         label: "Port",
                         r#type: "number".to_string(),
                         value: port(),
-                        disabled: is_loading || saving(),
+                        disabled: form_locked || saving(),
                         error: port_error(),
                         placeholder: "587",
                         oninput: move |e: FormEvent| {
@@ -380,7 +375,7 @@ fn EmailSettingsForm() -> Element {
                         name: "smtp_tls",
                         label: "TLS",
                         value: tls(),
-                        disabled: is_loading || saving(),
+                        disabled: form_locked || saving(),
                         options: TLS_MODES
                             .iter()
                             .map(|(v, l)| SelectOption::new(*v, *l))
@@ -391,7 +386,7 @@ fn EmailSettingsForm() -> Element {
                         name: "smtp_username",
                         label: "Username",
                         value: username(),
-                        disabled: is_loading || saving(),
+                        disabled: form_locked || saving(),
                         oninput: move |e: FormEvent| username.set(e.value()),
                     }
                     Input {
@@ -399,7 +394,7 @@ fn EmailSettingsForm() -> Element {
                         label: "Password",
                         r#type: "password".to_string(),
                         value: password(),
-                        disabled: is_loading || saving() || clear_password(),
+                        disabled: form_locked || saving() || clear_password(),
                         placeholder: password_placeholder,
                         help: "Write-only: never shown once saved. Leave blank to keep the current password."
                             .to_string(),
@@ -411,7 +406,7 @@ fn EmailSettingsForm() -> Element {
                             name: "smtp_password_clear",
                             label: "Clear the stored password",
                             checked: clear_password(),
-                            disabled: is_loading || saving(),
+                            disabled: form_locked || saving(),
                             onchange: move |e: FormEvent| {
                                 let checked = e.value() == "true";
                                 clear_password.set(checked);
@@ -425,7 +420,7 @@ fn EmailSettingsForm() -> Element {
                         name: "smtp_from",
                         label: "From address",
                         value: from(),
-                        disabled: is_loading || saving(),
+                        disabled: form_locked || saving(),
                         placeholder: "no-reply@example.com",
                         oninput: move |e: FormEvent| from.set(e.value()),
                     }
@@ -434,7 +429,7 @@ fn EmailSettingsForm() -> Element {
                             variant: ButtonVariant::Primary,
                             loading: saving(),
                             // SPEC-11.42.5
-                            disabled: !can_mutate || is_loading,
+                            disabled: !can_mutate || form_locked,
                             title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                             onclick: handle_save,
                             "Save Changes"
@@ -493,6 +488,20 @@ fn EmailSettingsForm() -> Element {
     }
 }
 
+/// The SMTP port the form sends: blank is `None` (fall back to the
+/// deployment's configuration), 1..=65535 is the port. MAPPS-1234: 0 parses
+/// as a `u16` but is not a port, and the message already said "between 1".
+fn parse_port(raw: &str) -> Result<Option<u16>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    match raw.parse::<u16>() {
+        Ok(p) if p >= 1 => Ok(Some(p)),
+        _ => Err("Enter a port between 1 and 65535, or leave it blank.".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// The page is admin only and calls all three routes MAPPS-887 names.
@@ -509,5 +518,35 @@ mod tests {
         ));
         assert!(head.contains("post_authed_json_no_content(\n                    TEST_SEND_PATH,"));
         assert!(head.contains("post_authed_json_no_content(\n                    VERIFY_PATH,"));
+    }
+}
+
+/// MAPPS-1234: the email settings findings from the specification pass.
+#[cfg(test)]
+mod mapps1234_email_tests {
+    use super::parse_port;
+
+    #[test]
+    fn port_zero_is_refused() {
+        assert_eq!(parse_port(""), Ok(None));
+        assert_eq!(parse_port(" 587 "), Ok(Some(587)));
+        assert!(parse_port("0").is_err());
+        assert!(parse_port("65536").is_err());
+    }
+
+    /// A failed load left the form live, and Save sent blanks.
+    #[test]
+    fn a_failed_load_locks_the_form() {
+        let src = include_str!("settings_email.rs");
+        let head = &src[..src.find("mod mapps1234_email_tests").expect("this module")];
+        assert!(head.contains("let form_locked = is_loading || fetch_failed;"));
+        assert!(
+            !head.contains("disabled: is_loading ||"),
+            "every input uses form_locked"
+        );
+        assert!(
+            head.contains("disabled: !can_mutate || form_locked,"),
+            "and Save"
+        );
     }
 }

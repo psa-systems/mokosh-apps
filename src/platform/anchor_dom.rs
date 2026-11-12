@@ -111,13 +111,18 @@ pub fn clear_highlights(container_id: &str) {
 // SPEC-3.30.4, SPEC-3.30.5, SPEC-3.30.13: applied after the sanitizer, so no attribute must survive it.
 pub fn apply_highlights(container_id: &str, specs: &[MarkSpec]) {
     use wasm_bindgen::JsCast;
+    // MAPPS-1236: every early return below leaves the article with fewer
+    // marks than it has comments and nothing else says so, so each one logs.
     let Some(root) = container(container_id) else {
+        tracing::warn!("no #{container_id} to highlight inline comments in");
         return;
     };
     let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        tracing::error!("no document to highlight inline comments in");
         return;
     };
     let Ok(walker) = document.create_tree_walker_with_what_to_show(&root, SHOW_TEXT) else {
+        tracing::error!("could not walk #{container_id} to highlight inline comments");
         return;
     };
     // Snapshot the text nodes with their char offsets before any cut.
@@ -143,6 +148,10 @@ pub fn apply_highlights(container_id: &str, specs: &[MarkSpec]) {
             if piece_start > current_start {
                 let cut = utf16_len(&current.data(), piece_start - current_start);
                 let Ok(rest) = current.split_text(cut) else {
+                    tracing::error!(
+                        "could not split text to highlight inline comments {:?}",
+                        spec.ids
+                    );
                     return;
                 };
                 current = rest;
@@ -150,9 +159,17 @@ pub fn apply_highlights(container_id: &str, specs: &[MarkSpec]) {
             }
             let cut = utf16_len(&current.data(), piece_end - current_start);
             let Ok(after) = current.split_text(cut) else {
+                tracing::error!(
+                    "could not split text to highlight inline comments {:?}",
+                    spec.ids
+                );
                 return;
             };
             let Ok(mark) = document.create_element("mark") else {
+                tracing::error!(
+                    "could not create the mark for inline comments {:?}",
+                    spec.ids
+                );
                 return;
             };
             let _ = mark.set_attribute("data-comment", &spec.ids.join(","));
@@ -296,8 +313,21 @@ pub fn watch_mark_activation(
             on_open.call(ids);
         }
     }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
-    let _ = root.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
-    let _ = root.add_event_listener_with_callback("keydown", key.as_ref().unchecked_ref());
+    // MAPPS-1236: the marker above is set before either listener exists. If
+    // attaching fails, clear it and say so, as `clipboard.rs` does, or every
+    // later install returns early and the marks stay dead for the page's
+    // lifetime with nothing in the console.
+    let attached = root
+        .add_event_listener_with_callback("click", click.as_ref().unchecked_ref())
+        .and_then(|()| {
+            root.add_event_listener_with_callback("keydown", key.as_ref().unchecked_ref())
+        });
+    if let Err(e) = attached {
+        tracing::error!("could not listen for inline comment marks in #{container_id}: {e:?}");
+        let _ = root.remove_event_listener_with_callback("click", click.as_ref().unchecked_ref());
+        let _ = root.remove_attribute("data-kb-marks");
+        return;
+    }
     // Lives for the container's lifetime; the page unmount drops the DOM.
     click.forget();
     key.forget();
@@ -390,7 +420,11 @@ pub fn apply_highlights(container_id: &str, specs: &[MarkSpec]) {
             })
             .collect::<Vec<_>>(),
     )
-    .unwrap_or_else(|_| "[]".to_string());
+    .unwrap_or_else(|e| {
+        // MAPPS-1236: `[]` draws no marks at all; say why.
+        tracing::error!("could not serialise the inline comment marks: {e}");
+        "[]".to_string()
+    });
     dioxus::document::eval(&format!(
         "const el = document.getElementById({id}); if (!el) return; \
          const specs = {specs}; \
@@ -448,6 +482,9 @@ pub async fn mark_positions(container_id: &str) -> Vec<MarkPosition> {
                 })
                 .collect()
         })
+        // MAPPS-1236: an empty answer hides every margin card, so the reason
+        // has to reach the log.
+        .inspect_err(|e| tracing::warn!("mark positions read failed on the desktop: {e}"))
         .unwrap_or_default()
 }
 
@@ -530,6 +567,74 @@ pub fn focus_mark(container_id: &str, comment_id: &str) {
         js_string(container_id),
         js_string(comment_id)
     ));
+}
+
+/// MAPPS-1236: the failure paths that used to be silent. Pinned in source,
+/// since each needs a DOM or a webview to drive.
+#[cfg(test)]
+mod failure_logging_tests {
+    const SRC: &str = include_str!("anchor_dom.rs");
+
+    fn code_only() -> String {
+        let end = SRC.find("mod failure_logging_tests").expect("this module");
+        SRC[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The body of the first fn whose signature starts with `sig`, up to the
+    /// next `#[cfg(`.
+    fn body_of(code: &str, sig: &str, nth: usize) -> String {
+        let at = code
+            .match_indices(sig)
+            .nth(nth)
+            .unwrap_or_else(|| panic!("{sig} #{nth}"))
+            .0;
+        let rest = &code[at..];
+        let end = rest[1..].find("#[cfg(").map_or(rest.len(), |e| e + 1);
+        rest[..end].to_string()
+    }
+
+    #[test]
+    fn browser_apply_highlights_never_returns_silently() {
+        let body = body_of(&code_only(), "pub fn apply_highlights(", 0);
+        let returns = body.matches("return;").count();
+        assert!(returns >= 6, "{body}");
+        let logged =
+            body.matches("tracing::warn!").count() + body.matches("tracing::error!").count();
+        assert_eq!(logged, returns, "every early return logs: {body}");
+    }
+
+    #[test]
+    fn a_failed_mark_listener_clears_its_marker_and_logs() {
+        let body = body_of(&code_only(), "pub fn watch_mark_activation(", 0);
+        assert!(
+            !body.contains("let _ = root.add_event_listener_with_callback"),
+            "{body}"
+        );
+        assert!(
+            body.contains("let _ = root.remove_attribute(\"data-kb-marks\");"),
+            "{body}"
+        );
+        assert!(
+            body.contains("could not listen for inline comment marks"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn desktop_fallbacks_say_why() {
+        let code = code_only();
+        let apply = body_of(&code, "pub fn apply_highlights(", 1);
+        assert!(
+            apply.contains("could not serialise the inline comment marks"),
+            "{apply}"
+        );
+        assert!(!apply.contains("unwrap_or_else(|_| \"[]\""), "{apply}");
+        let positions = body_of(&code, "pub async fn mark_positions(", 1);
+        assert!(
+            positions.contains("mark positions read failed on the desktop"),
+            "{positions}"
+        );
+    }
 }
 
 #[cfg(test)]

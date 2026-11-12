@@ -126,17 +126,17 @@ struct RemoteInvoiceBalance {
     balance_due: String,
 }
 
-/// Fetch the credit notes raised against one invoice. Best-effort: an empty
-/// list on error, so the invoice page still renders without them.
-pub(crate) async fn load_invoice_credit_notes(invoice_id: &str) -> Vec<RemoteCreditNote> {
     // SPEC-10.36.6
+/// Fetch the credit notes raised against one invoice, or `None` when the read
+/// failed. MAPPS-1230: an empty list on error let the invoice page say "No
+/// credit notes" about an invoice whose notes it never read; the caller now
+/// renders the failure.
+pub(crate) async fn load_invoice_credit_notes(invoice_id: &str) -> Option<Vec<RemoteCreditNote>> {
     let path = format!("/credit-notes?invoice_id={invoice_id}");
     crate::hooks::fetch::api::get_all_authed::<RemoteCreditNote>(&path)
         .await
-        .unwrap_or_else(|e| {
-            tracing::warn!("credit note load failed for invoice {invoice_id}: {e}");
-            Vec::new()
-        })
+        .inspect_err(|e| tracing::error!("credit note load failed for invoice {invoice_id}: {e}"))
+        .ok()
 }
 
 // ============================================================================
@@ -270,7 +270,12 @@ fn CreditNoteListBody() -> Element {
             // the instant the server comes back.
             let _reachable = crate::hooks::use_server_reachable();
             // SPEC-10.35.2: a missing token returns None here with no log.
-            let token = crate::hooks::fetch::api::current_access_token()?;
+            // MAPPS-1230: a missing token is a load failure with a log line,
+            // like every other one in this list.
+            let Some(token) = crate::hooks::fetch::api::current_access_token() else {
+                tracing::error!("credit note list load failed: no access token");
+                return None;
+            };
             let mut path = format!("/credit-notes?page={current_page}&per_page={PER_PAGE}");
             if !status.is_empty() {
                 path.push_str(&format!("&status={status}"));
@@ -484,8 +489,9 @@ fn one_line(text: &str, max: usize) -> String {
         return first.to_string();
     }
     let cut: String = first.chars().take(max).collect();
-    // PMS-1335: ASCII only in customer-facing copy; the ellipsis
-    // character becomes three dots.
+    // PMS-1335: this cut-off reason is truncated data, ended with three
+    // ASCII dots. It is not a rule for UI copy, which uses the U+2026 glyph
+    // the ellipsis guard enforces (MAPPS-445).
     format!("{}...", cut.trim_end())
 }
 
@@ -648,6 +654,9 @@ fn CreditNoteDetailBody(id: String) -> Element {
 
     let act_err = action_error.read().clone();
     let invoice_snap = invoice_resource.read_unchecked();
+    // MAPPS-1230: with an invoice to load, `Some(None)` is a failed read; it
+    // used to read "Loading the invoice" for good.
+    let invoice_failed = matches!(&*invoice_snap, Some(None));
     let invoice = match &*invoice_snap {
         Some(Some(inv)) => Some(inv.clone()),
         _ => None,
@@ -931,6 +940,8 @@ fn CreditNoteDetailBody(id: String) -> Element {
                                     }
                                 } else if invoice_id.is_empty() {
                                     p { class: "text-sm text-muted", "This credit note is not linked to an invoice." }
+                                } else if invoice_failed {
+                                    p { class: "text-sm text-red-600 dark:text-red-400", "Could not load the invoice." }
                                 } else {
                                     p { class: "text-sm text-muted", "Loading the invoice\u{2026}" }
                                 }
@@ -1269,11 +1280,11 @@ pub fn CreditNoteFormModal(props: CreditNoteFormModalProps) -> Element {
                     ErrorBanner { "{error.read()}" }
                 }
                 p { class: "text-sm text-muted",
-                    // PMS-1335: three independent statements; the Create
-                    // button already names the issuance step and the amount
-                    // field already says it reduces what the customer owes.
-                    // The whole-balance side-effect stays because it is
-                    // not obvious.
+                    // PMS-1335: one statement. The Create button already
+                    // names the issuance step and the amount field already
+                    // says it reduces what the customer owes; the
+                    // whole-balance side-effect stays because it is not
+                    // obvious.
                     "Crediting the whole balance voids the invoice."
                 }
                 crate::components::Textarea {
@@ -1703,5 +1714,62 @@ mod copy_style_tests {
                 );
             }
         }
+    }
+}
+
+/// MAPPS-1230: the credit-note findings from the specification pass.
+#[cfg(test)]
+mod mapps1230_credit_note_tests {
+    fn head() -> &'static str {
+        let src = include_str!("credit_notes.rs");
+        &src[..src
+            .find("mod mapps1230_credit_note_tests")
+            .expect("this module")]
+    }
+
+    #[test]
+    fn a_missing_token_is_logged() {
+        assert!(
+            head().contains(r#"tracing::error!("credit note list load failed: no access token");"#)
+        );
+    }
+
+    /// Finding 6 is not a defect: UI copy uses the U+2026 glyph repo-wide
+    /// (MAPPS-445's guard). What contradicted it was a comment that stated
+    /// the excerpt's three-dot suffix as a rule for all customer copy.
+    #[test]
+    fn the_excerpt_comment_does_not_claim_a_copy_rule() {
+        let head = head();
+        assert!(!head.contains("ASCII only in customer-facing copy"));
+        assert!(head.contains(r#""Loading the invoice\u{2026}""#));
+    }
+
+    /// "Loading the invoice" stayed up for good when the read failed.
+    #[test]
+    fn a_failed_invoice_read_is_said() {
+        let head = head();
+        let failed = head
+            .find("} else if invoice_failed {")
+            .expect("the failure branch");
+        let loading = head
+            .find(r#""Loading the invoice\u{2026}""#)
+            .expect("the loading line");
+        assert!(failed < loading);
+        assert!(head.contains("Could not load the invoice."));
+    }
+
+    /// An invoice page could not tell "no credit notes" from a failed read.
+    #[test]
+    fn the_invoice_credit_notes_read_keeps_its_failure() {
+        assert!(head().contains(
+            "pub(crate) async fn load_invoice_credit_notes(invoice_id: &str) -> Option<Vec<RemoteCreditNote>> {"
+        ));
+        let billing = include_str!("billing.rs");
+        assert!(billing.contains("Could not load the credit notes for this invoice."));
+    }
+
+    #[test]
+    fn the_comment_counts_its_statements() {
+        assert!(!head().contains("three independent statements"));
     }
 }

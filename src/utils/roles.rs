@@ -62,7 +62,10 @@ pub fn display_role_label(role: &str) -> String {
                 }
             }
             // SPEC-4.80.7
-            if out.is_empty() {
+            // MAPPS-1242: `trim`, because an identifier of only underscores
+            // ("_") leaves just the separators behind, which is not empty and
+            // used to render as a blank label.
+            if out.trim().is_empty() {
                 other.to_string()
             } else {
                 out
@@ -74,6 +77,14 @@ pub fn display_role_label(role: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::display_role_label;
+
+    /// MAPPS-1242: only separators falls back to the identifier.
+    #[test]
+    fn an_identifier_of_only_underscores_falls_back_to_itself() {
+        assert_eq!(display_role_label("_"), "_");
+        assert_eq!(display_role_label("__"), "__");
+        assert_eq!(display_role_label("service_delivery"), "Service delivery");
+    }
 
     #[test]
     fn admin_renders_as_owner_per_pms_588() {

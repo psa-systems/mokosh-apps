@@ -26,7 +26,7 @@ use crate::hooks::branding::{CompanyBranding, TenantBranding};
 
 /// Which plane the editor writes on. Drives the URL + the fetch
 /// helper (staff bearer vs contact bearer) for asset uploads.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum BrandingPlane {
     /// MSP admin editing the tenant-wide defaults. All Companies
     /// inherit these unless they override at Company scope. Writes
@@ -65,7 +65,10 @@ impl BrandingPlane {
 fn best_contrast_against_bw(hex: &str) -> Option<f32> {
     fn parse(hex: &str) -> Option<(u8, u8, u8)> {
         let s = hex.trim().trim_start_matches('#');
-        if s.len() != 6 {
+        // MAPPS-1243: six ASCII hex digits, checked as characters. `len()`
+        // counts bytes, so a corrupt stored value with a multi-byte character
+        // could be six bytes long and panic in the slices below.
+        if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
         let r = u8::from_str_radix(&s[0..2], 16).ok()?;
@@ -289,13 +292,19 @@ fn ColorField(
         let plane = plane_for_reset.clone();
         let mut value = value;
         spawn(async move {
+            let plane_name = format!("{plane:?}");
             match reset_field(plane, &field).await {
                 Ok(_) => {
                     value.set(String::new());
                     on_reset_saved.call(());
                 }
                 // SPEC-5.7.12
-                Err(_) => error.set("Reset failed. Try again in a moment.".to_string()),
+                Err(e) => {
+                    // MAPPS-1243: the message the user sees is generic, so the
+                    // cause goes to the log.
+                    tracing::warn!("branding reset of {field} on {plane_name} failed: {e}");
+                    error.set("Reset failed. Try again in a moment.".to_string());
+                }
             }
             saving.set(false);
         });
@@ -915,6 +924,30 @@ pub fn BrandingEditor(props: BrandingEditorProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1243: the contrast parse refuses anything but six ASCII hex
+/// digits, and a failed reset is logged.
+#[cfg(test)]
+mod mapps_1243_tests {
+    use super::best_contrast_against_bw;
+
+    #[test]
+    fn a_multi_byte_value_is_rejected_not_sliced() {
+        // Six bytes, but `é` straddles the first slice boundary.
+        assert_eq!("é1234".len(), 6);
+        assert_eq!(best_contrast_against_bw("#é1234"), None);
+        assert_eq!(best_contrast_against_bw("#12345g"), None);
+        assert!(best_contrast_against_bw("#ff8800").is_some());
+    }
+
+    #[test]
+    fn a_failed_reset_is_logged_with_field_and_plane() {
+        let src = include_str!("branding_editor.rs");
+        let code = &src[..src.find("mod mapps_1243_tests").unwrap()];
+        assert!(!code.contains("Err(_) => error.set(\"Reset failed."));
+        assert!(code.contains("branding reset of {field} on {plane_name} failed: {e}"));
     }
 }
 

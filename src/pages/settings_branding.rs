@@ -21,7 +21,9 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::{BrandingEditor, BrandingPlane, Card, Checkbox, ContentUnavailable};
+use crate::components::{
+    BrandingEditor, BrandingPlane, Card, Checkbox, ContentUnavailable, ErrorBanner,
+};
 use crate::hooks::branding::{CompanyBranding, TenantBranding};
 use crate::Route;
 
@@ -75,6 +77,10 @@ pub fn SettingsBrandingPage() -> Element {
     };
     let portal_module_enabled = matches!(&*snap, Some(Some(t)) if t.portal_module_enabled);
     let loading = (*snap).is_none();
+    // MAPPS-1234: a failed load is `Some(None)`, which used to render the
+    // editor seeded with empty defaults and an unchecked portal toggle; a
+    // save from there would overwrite the real branding.
+    let load_failed = matches!(&*snap, Some(None));
 
     // MAPPS-651 / MAPPS-648: tier-1 toggle. Save posts
     // `{portal_module_enabled: v}` alone so a flip does not disturb
@@ -179,6 +185,8 @@ pub fn SettingsBrandingPage() -> Element {
             // SPEC-11.36.5: loading text replaces the card and editor.
             if loading {
                 p { class: "text-sm text-muted", "Loading branding…" }
+            } else if load_failed {
+                ErrorBanner { "Could not load the current branding, so it cannot be edited here. Refresh the page to try again." }
             } else {
                 // MAPPS-651 / MAPPS-648: tier-1 toggle sits above the
                 // branding editor since it gates whether the whole
@@ -225,5 +233,26 @@ pub fn SettingsBrandingPage() -> Element {
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1234: a failed tenant load rendered editable empty branding.
+#[cfg(test)]
+mod mapps1234_branding_tests {
+    #[test]
+    fn a_failed_load_shows_no_editor() {
+        let src = include_str!("settings_branding.rs");
+        let head = &src[..src
+            .find("mod mapps1234_branding_tests")
+            .expect("this module")];
+        assert!(head.contains("let load_failed = matches!(&*snap, Some(None));"));
+        let failed = head
+            .find("} else if load_failed {")
+            .expect("the failure branch");
+        let editor = head.find("BrandingEditor {").expect("the editor");
+        assert!(
+            failed < editor,
+            "the failure is decided before the editor renders"
+        );
     }
 }

@@ -143,7 +143,16 @@ mod imp {
         body: Body,
     ) -> Result<reqwest::Request, Error> {
         let mut req = client.request(builder.method, &builder.url);
+        // MAPPS-1236: a JSON or multipart body writes its own `Content-Type`
+        // below, and reqwest *appends* headers, so a caller's
+        // `.header("Content-Type", ..)` would otherwise go out as a second,
+        // conflicting value. The body's own type wins, as it does in the
+        // browser build.
+        let body_sets_type = matches!(body, Body::Json(_) | Body::Multipart { .. });
         for (k, v) in &builder.headers {
+            if body_sets_type && k.eq_ignore_ascii_case("content-type") {
+                continue;
+            }
             req = req.header(k.as_str(), v.as_str());
         }
         req = match body {
@@ -160,8 +169,9 @@ mod imp {
                     .mime_str(&mime)
                     .map_err(|e| Error::new(format!("could not prepare the upload: {e}")))?;
                 // reqwest writes `Content-Type` with the boundary it
-                // generated; anything we set by hand is dropped here
-                // for the same reason the browser path leaves it alone.
+                // generated; a caller's own `Content-Type` was skipped
+                // above for the same reason the browser path leaves it
+                // alone.
                 req.multipart(reqwest::multipart::Form::new().part("file", part))
             }
         };
@@ -377,6 +387,64 @@ mod imp {
                     .map(|v| v.to_str().unwrap()),
                 Some("application/json"),
             );
+        }
+
+        fn content_types(req: &reqwest::Request) -> Vec<String> {
+            req.headers()
+                .get_all("content-type")
+                .iter()
+                .map(|v| v.to_str().unwrap().to_string())
+                .collect()
+        }
+
+        /// MAPPS-1236: a caller-set `Content-Type` on a JSON body used to go
+        /// out next to the one `Body::Json` adds, two values for one header.
+        #[test]
+        fn json_request_with_a_caller_content_type_sends_exactly_one() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            let client = reqwest::Client::new();
+            let builder = RequestBuilder::new(reqwest::Method::POST, "https://example.invalid/x")
+                .header("Content-Type", "application/json");
+            let body = Body::Json(b"{}".to_vec());
+
+            let req = build_reqwest_request(&client, builder, body).unwrap();
+
+            assert_eq!(content_types(&req), vec!["application/json".to_string()]);
+        }
+
+        /// MAPPS-1236: the same for a multipart upload, where a hand-set type
+        /// would also lack the boundary the server needs to split the body.
+        #[test]
+        fn multipart_request_with_a_caller_content_type_keeps_only_the_boundary_one() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            let client = reqwest::Client::new();
+            let builder = RequestBuilder::new(reqwest::Method::POST, "https://example.invalid/x")
+                .header("content-type", "application/octet-stream");
+            let body = Body::Multipart {
+                file_name: "a.png".to_string(),
+                mime: "image/png".to_string(),
+                bytes: vec![1, 2, 3],
+            };
+
+            let req = build_reqwest_request(&client, builder, body).unwrap();
+
+            let types = content_types(&req);
+            assert_eq!(types.len(), 1, "{types:?}");
+            assert!(
+                types[0].starts_with("multipart/form-data; boundary="),
+                "{types:?}"
+            );
+        }
+
+        /// Other headers still pass through untouched.
+        #[test]
+        fn caller_headers_other_than_content_type_still_go_out() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            let client = reqwest::Client::new();
+            let builder = RequestBuilder::new(reqwest::Method::POST, "https://example.invalid/x")
+                .header("Authorization", "Bearer t");
+            let req = build_reqwest_request(&client, builder, Body::Json(b"{}".to_vec())).unwrap();
+            assert_eq!(req.headers().get("authorization").unwrap(), "Bearer t");
         }
     }
 }

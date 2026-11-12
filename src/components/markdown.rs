@@ -197,6 +197,8 @@ fn install_click_listener(dom_id: String, on_toggle: Option<EventHandler<usize>>
         .and_then(|w| w.document())
         .and_then(|d| d.get_element_by_id(&dom_id))
     else {
+        // MAPPS-1245: as below, the checkboxes would render and do nothing.
+        tracing::error!("no #{dom_id} to attach the markdown click listener to");
         return;
     };
     // SPEC-5.34.2, SPEC-5.34.3
@@ -237,6 +239,17 @@ fn install_click_listener(dom_id: String, on_toggle: Option<EventHandler<usize>>
 /// pinned is the decision, and the decision lives in the source. The module is
 /// excluded from its own scan because every assertion quotes the pattern it
 /// looks for, which would otherwise match itself and pass regardless.
+/// MAPPS-1245: a missing container is logged, like a failed registration.
+#[cfg(test)]
+mod listener_trace_tests {
+    #[test]
+    fn a_missing_container_is_logged_with_its_id() {
+        let src = include_str!("markdown.rs");
+        let code = &src[..src.find("mod listener_trace_tests").unwrap()];
+        assert!(code.contains("no #{dom_id} to attach the markdown click listener to"));
+    }
+}
+
 #[cfg(test)]
 mod mention_wiring_tests {
     const SRC: &str = include_str!("markdown.rs");

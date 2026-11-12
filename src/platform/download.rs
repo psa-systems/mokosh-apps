@@ -14,8 +14,6 @@
 #[cfg(target_arch = "wasm32")]
 // SPEC-3.35.1, SPEC-3.35.2
 pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<String>, String> {
-    use wasm_bindgen::JsCast;
-
     let array = js_sys::Uint8Array::from(bytes);
     let parts = js_sys::Array::new();
     parts.push(&array);
@@ -23,6 +21,20 @@ pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<S
         .map_err(|_| "could not build the download blob".to_string())?;
     let url = web_sys::Url::create_object_url_with_blob(&blob)
         .map_err(|_| "could not create the download URL".to_string())?;
+
+    // MAPPS-1236: every step after the URL exists can fail, and each early
+    // return used to leave the blob pinned for the page's lifetime. The
+    // steps run in a closure so the URL is revoked on every exit.
+    let result = click_download(&url, filename);
+    let _ = web_sys::Url::revoke_object_url(&url);
+    result.map(|()| None)
+}
+
+/// Point a hidden anchor at `url` and click it. The browser has taken the
+/// blob into its download pipeline once this returns `Ok`.
+#[cfg(target_arch = "wasm32")]
+fn click_download(url: &str, filename: &str) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
 
     let document = web_sys::window()
         .and_then(|w| w.document())
@@ -32,7 +44,7 @@ pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<S
         .map_err(|_| "could not create the download anchor".to_string())?
         .dyn_into::<web_sys::HtmlAnchorElement>()
         .map_err(|_| "download anchor cast failed".to_string())?;
-    anchor.set_href(&url);
+    anchor.set_href(url);
     anchor.set_download(filename);
     // Attach the anchor (hidden) before clicking: a detached-anchor click is
     // not honored in every browser. Remove it again afterwards.
@@ -43,11 +55,7 @@ pub async fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<Option<S
     let _ = body.append_child(&anchor);
     anchor.click();
     let _ = body.remove_child(&anchor);
-
-    // The browser has taken the blob into its download pipeline, so the object
-    // URL can be released.
-    let _ = web_sys::Url::revoke_object_url(&url);
-    Ok(None)
+    Ok(())
 }
 
 /// Write to the per-user downloads directory, falling back to the
@@ -106,8 +114,15 @@ async fn save_bytes_into(
             .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
 
         let filename = sanitize_filename(&filename);
-        let path = unique_path(&dir, &filename);
-        std::fs::write(&path, &bytes)
+        let path = unique_path(&dir, &filename)?;
+        // MAPPS-1236: `create_new`, so a file that appeared at `path` after
+        // `unique_path` looked is reported, never overwritten.
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        std::io::Write::write_all(&mut file, &bytes)
             .map_err(|e| format!("could not write {}: {e}", path.display()))?;
         Ok(Some(path.display().to_string()))
     })
@@ -181,6 +196,20 @@ impl PreviewTab {
 #[cfg(target_arch = "wasm32")]
 // SPEC-3.35.9
 pub async fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), String> {
+    let window = tab.0;
+    let shown = fill_preview_tab(&window, bytes);
+    if shown.is_err() {
+        // MAPPS-1244: a tab that will never show the document is closed, as
+        // the fetch-failure path already does; this function owns the tab
+        // once it is called, so the caller has no way to.
+        let _ = window.close();
+    }
+    shown
+}
+
+/// Point `window` at a blob URL holding `bytes` as a PDF.
+#[cfg(target_arch = "wasm32")]
+fn fill_preview_tab(window: &web_sys::Window, bytes: &[u8]) -> Result<(), String> {
     use wasm_bindgen::{closure::Closure, JsCast};
 
     let array = js_sys::Uint8Array::from(bytes);
@@ -193,11 +222,12 @@ pub async fn show_bytes_in_tab(tab: PreviewTab, bytes: &[u8]) -> Result<(), Stri
     let url = web_sys::Url::create_object_url_with_blob(&blob)
         .map_err(|_| "could not create the preview URL".to_string())?;
 
-    let window = tab.0;
-    window
-        .location()
-        .set_href(&url)
-        .map_err(|_| "could not show the PDF in the new tab".to_string())?;
+    if window.location().set_href(&url).is_err() {
+        // MAPPS-1236: the tab never navigates, so its `load` below would
+        // never fire to revoke the URL; release it now.
+        let _ = web_sys::Url::revoke_object_url(&url);
+        return Err("could not show the PDF in the new tab".to_string());
+    }
 
     // Revoked on the tab's `load`, not right away: revoking before the
     // navigation finishes can leave the tab blank.
@@ -232,13 +262,29 @@ pub async fn show_bytes_in_tab(_tab: PreviewTab, bytes: &[u8]) -> Result<(), Str
     .map_err(|e| format!("the preview task panicked: {e}"))?
 }
 
+/// How many ` (n)` suffixes [`unique_path`] tries before giving up.
 #[cfg(not(target_arch = "wasm32"))]
 // SPEC-3.35.5, SPEC-3.35.6: re-sanitizes so it never escapes `dir` even when called directly.
-fn unique_path(dir: &std::path::Path, filename: &str) -> std::path::PathBuf {
+const MAX_SUFFIX: u32 = 999;
+
+/// A name for `filename` inside `dir` that nothing is using yet.
+#[cfg(not(target_arch = "wasm32"))]
+fn unique_path(dir: &std::path::Path, filename: &str) -> Result<std::path::PathBuf, String> {
+    unique_path_within(dir, filename, MAX_SUFFIX)
+}
+
+/// [`unique_path`] with the suffix cap as a parameter, so a test can reach
+/// the cap without a thousand files.
+#[cfg(not(target_arch = "wasm32"))]
+fn unique_path_within(
+    dir: &std::path::Path,
+    filename: &str,
+    max_suffix: u32,
+) -> Result<std::path::PathBuf, String> {
     let filename = sanitize_filename(filename);
     let candidate = dir.join(&filename);
     if !candidate.exists() {
-        return candidate;
+        return Ok(candidate);
     }
     let path = std::path::Path::new(&filename);
     let stem = path
@@ -249,16 +295,19 @@ fn unique_path(dir: &std::path::Path, filename: &str) -> std::path::PathBuf {
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_default();
-    // Bounded so a directory that somehow rejects every name cannot
-    // spin here; past the cap the last candidate is returned and the
-    // write reports whatever the filesystem says about it.
-    for n in 1..1000 {
+    // Bounded so a directory that somehow rejects every name cannot spin
+    // here. MAPPS-1236: past the cap this is an error; it used to hand back
+    // `name (1000).ext` unchecked, which the write then overwrote.
+    for n in 1..=max_suffix {
         let candidate = dir.join(format!("{stem} ({n}){ext}"));
         if !candidate.exists() {
-            return candidate;
+            return Ok(candidate);
         }
     }
-    dir.join(format!("{stem} (1000){ext}"))
+    Err(format!(
+        "could not save {filename}: {} already holds {max_suffix} numbered copies of it",
+        dir.display()
+    ))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -278,9 +327,53 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         for filename in ["../../evil", "/etc/evil"] {
-            let candidate = unique_path(&dir, filename);
+            let candidate = unique_path(&dir, filename).unwrap();
             assert_eq!(candidate.parent(), Some(dir.as_path()));
         }
+    }
+
+    /// MAPPS-1236: the write refuses to replace a file that appeared after
+    /// `unique_path` looked, and the browser save revokes its URL on every
+    /// exit, not only after a successful click.
+    #[test]
+    fn the_save_never_overwrites_and_the_browser_url_is_always_released() {
+        let src = include_str!("download.rs");
+        let code = &src[..src.find("mod tests {").expect("tests module")];
+        let flat = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains(".write(true) .create_new(true)"),
+            "save_bytes_into must use create_new"
+        );
+        assert!(flat.contains("let result = click_download(&url, filename); let _ = web_sys::Url::revoke_object_url(&url);"));
+        assert!(
+            flat.contains("if window.location().set_href(&url).is_err() { // MAPPS-1236"),
+            "show_bytes_in_tab revokes on a failed navigation"
+        );
+    }
+
+    /// MAPPS-1236: once every numbered name is taken, the answer is an
+    /// error naming the directory and file, not a path that already exists.
+    #[test]
+    fn unique_path_past_the_cap_is_an_error_not_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "mokosh-apps-unique-cap-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["r.pdf", "r (1).pdf", "r (2).pdf"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+
+        assert_eq!(
+            unique_path_within(&dir, "r.pdf", 3).unwrap(),
+            dir.join("r (3).pdf")
+        );
+        std::fs::write(dir.join("r (3).pdf"), b"x").unwrap();
+        let err = unique_path_within(&dir, "r.pdf", 3).unwrap_err();
+        assert!(err.contains("r.pdf"), "{err}");
+        assert!(err.contains(&dir.display().to_string()), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// MAPPS-1073: the same property MAPPS-1046 added, asserted against a

@@ -307,6 +307,9 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
 
     let snap = overview.read_unchecked().clone();
+    // MAPPS-1231: a failed load is `Some(None)`; folding it into `None` kept
+    // the skeleton up for good.
+    let load_failed = matches!(snap, Some(None));
     let data = snap.as_ref().and_then(|o| o.as_ref()).cloned();
     let state = data.as_ref().map(card_state_of);
 
@@ -461,6 +464,9 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
             ErrorBanner { class: "mb-4", "{error}" }
         }
         match state {
+            None if load_failed => rsx! {
+                ErrorBanner { "Could not load the {issuer.display} connection status." }
+            },
             None => rsx! { crate::components::DetailSkeleton {} },
             Some(state) => {
                 let (badge, tone) = badge_for(&state);
@@ -1123,5 +1129,26 @@ mod tests {
                 "{name} is written into the shared body; it belongs in the table"
             );
         }
+    }
+}
+
+/// MAPPS-1231: a failed overview load kept the skeleton up for good.
+#[cfg(test)]
+mod mapps1231_issuer_tests {
+    #[test]
+    fn a_failed_status_load_is_said() {
+        let src = include_str!("settings_invoice_issuer.rs");
+        let head = &src[..src.find("mod mapps1231_issuer_tests").expect("this module")];
+        assert!(head.contains("let load_failed = matches!(snap, Some(None));"));
+        let failed = head
+            .find("None if load_failed => rsx! {")
+            .expect("the failure arm");
+        let skeleton =
+            head[failed..].find("None => rsx! { crate::components::DetailSkeleton {} },");
+        assert!(
+            skeleton.is_some(),
+            "the failure arm comes before the skeleton"
+        );
+        assert!(head.contains("Could not load the {issuer.display} connection status."));
     }
 }

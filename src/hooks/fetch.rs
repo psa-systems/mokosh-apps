@@ -1007,6 +1007,16 @@ pub mod api {
         CONTACT_REFRESH_TOKEN.with(|t| t.borrow().clone())
     }
 
+    /// Log a browser-storage write that the browser refused (quota, private
+    /// mode, blocked storage). The values written are best-effort hints, so
+    /// nothing stops on a failure, but it is no longer silent (MAPPS-1239).
+    #[cfg(target_arch = "wasm32")]
+    fn note_storage_write(op: &str, key: &str, result: Result<(), wasm_bindgen::JsValue>) {
+        if let Err(e) = result {
+            tracing::warn!("browser storage {op} for {key} failed: {e:?}");
+        }
+    }
+
     /// Remember the last slug this browser signed in on. Used by the
     /// AuthGuard bounce on expired sessions to route the visitor back
     /// to the same portal they came from.
@@ -1016,7 +1026,11 @@ pub mod api {
         #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
             if let Ok(Some(storage)) = win.local_storage() {
-                let _ = storage.set_item(CONTACT_LAST_SLUG_STORAGE_KEY, slug);
+                note_storage_write(
+                    "set_item",
+                    CONTACT_LAST_SLUG_STORAGE_KEY,
+                    storage.set_item(CONTACT_LAST_SLUG_STORAGE_KEY, slug),
+                );
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1056,7 +1070,11 @@ pub mod api {
         #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
             if let Ok(Some(storage)) = win.local_storage() {
-                let _ = storage.set_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY, value);
+                note_storage_write(
+                    "set_item",
+                    CONTACT_LAST_PORTAL_ID_STORAGE_KEY,
+                    storage.set_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY, value),
+                );
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1075,7 +1093,11 @@ pub mod api {
         #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
             if let Ok(Some(storage)) = win.local_storage() {
-                let _ = storage.remove_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY);
+                note_storage_write(
+                    "remove_item",
+                    CONTACT_LAST_PORTAL_ID_STORAGE_KEY,
+                    storage.remove_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY),
+                );
             }
         }
     }
@@ -1157,8 +1179,16 @@ pub mod api {
         #[cfg(target_arch = "wasm32")]
         if let Some(win) = web_sys::window() {
             if let Ok(Some(storage)) = win.local_storage() {
-                let _ = storage.remove_item(CONTACT_LAST_SLUG_STORAGE_KEY);
-                let _ = storage.remove_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY);
+                note_storage_write(
+                    "remove_item",
+                    CONTACT_LAST_SLUG_STORAGE_KEY,
+                    storage.remove_item(CONTACT_LAST_SLUG_STORAGE_KEY),
+                );
+                note_storage_write(
+                    "remove_item",
+                    CONTACT_LAST_PORTAL_ID_STORAGE_KEY,
+                    storage.remove_item(CONTACT_LAST_PORTAL_ID_STORAGE_KEY),
+                );
             }
         }
     }
@@ -1179,7 +1209,11 @@ pub mod api {
             if let Ok(Some(session)) = win.session_storage() {
                 // Kept in sync with the `PLATFORM_TOKEN_KEY` const in
                 // hooks/capabilities.rs + pages/platform_login.rs.
-                let _ = session.remove_item("mokosh:platform_token");
+                note_storage_write(
+                    "remove_item",
+                    "mokosh:platform_token",
+                    session.remove_item("mokosh:platform_token"),
+                );
             }
         }
     }
@@ -1237,6 +1271,8 @@ pub mod api {
         let url = format!("{}{}", api_base(), path);
 
         let response = Request::get(&url).send().await.map_err(transport_err)?;
+        // Every completed response is classified here, once (MAPPS-1239).
+        super::note_response_status(response.status());
 
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
@@ -1278,9 +1314,10 @@ pub mod api {
     // SPEC-4.32.1
     async fn status_error(response: crate::platform::http::Response) -> String {
         let status = response.status();
-        // A real HTTP response (even an error one) proves reachability; a
-        // 5xx is classified as "down" (MAPPS-333).
-        super::note_response_status(status);
+        // MAPPS-1239: NOT classified here. Every caller classifies the
+        // response at its send site, once, on the 2xx path too; classifying
+        // again here counted one 5xx as two consecutive failures and tripped
+        // the PMS-1330 threshold of 2 on a single error.
         // fetch-error-logging-allow: the request already failed and its status
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
@@ -1337,23 +1374,6 @@ pub mod api {
         }
     }
 
-    /// MAPPS-282: replace the developer-facing "Request failed with status:
-    /// 422" string fallback with a user-facing message keyed on the status
-    /// class. This is the last-resort branch in `status_error` (server
-    /// returned a non-2xx with no `ErrorResponse` envelope and no field
-    /// errors), reached by the many forms that still use the string-error
-    /// helpers (`post_authed`, `put_authed`). The forms that have been
-    /// migrated to the `_typed` variants already get the field-level
-    /// `ApiError::user_message` treatment; this brings the legacy callers
-    /// to at least non-developer-facing parity.
-    /// MAPPS-624: "Your session has expired" reads as an incorrect
-    /// signal when the caller is authenticated and only lacks
-    /// permission for the specific endpoint (e.g. a portal contact
-    /// hitting a staff-only URL). Treat 401 the same as 403 whenever
-    /// we hold any session; only bounce to the "sign in again" copy
-    /// when the browser has no session at all, which is the true
-    /// "session expired" case a returning visitor would hit.
-    ///
     /// MAPPS-624: recognise the server's generic 401/403 envelope
     /// messages so we override them with the plane-aware
     /// [`permission_message`]. Anything else (e.g. "This organization
@@ -1396,6 +1416,25 @@ pub mod api {
         "You don't have permission to perform this action.".into()
     }
 
+    /// MAPPS-282: replace the developer-facing "Request failed with status:
+    /// 422" string fallback with a user-facing message keyed on the status
+    /// class. This is the last-resort branch in `status_error` (server
+    /// returned a non-2xx with no `ErrorResponse` envelope and no field
+    /// errors), reached by the many forms that still use the string-error
+    /// helpers (`post_authed`, `put_authed`). The forms that have been
+    /// migrated to the `_typed` variants already get the field-level
+    /// `ApiError::user_message` treatment; this brings the legacy callers
+    /// to at least non-developer-facing parity.
+    ///
+    /// MAPPS-624: "Your session has expired" reads as an incorrect
+    /// signal when the caller is authenticated and only lacks
+    /// permission for the specific endpoint (e.g. a portal contact
+    /// hitting a staff-only URL). Treat 401 the same as 403 whenever
+    /// we hold any session; only bounce to the "sign in again" copy
+    /// when the browser has no session at all, which is the true
+    /// "session expired" case a returning visitor would hit.
+    ///
+    /// MAPPS-1239: this doc sat fused onto `is_generic_auth_message`.
     #[cfg(feature = "app")]
     // SPEC-4.32.8
     fn user_friendly_status(status: u16) -> String {
@@ -1425,6 +1464,58 @@ pub mod api {
         }
     }
 
+    /// The [`ApiError`] for a non-2xx response whose body has been read.
+    ///
+    /// MAPPS-1239: the one envelope parse every typed helper uses. The
+    /// no-content and bytes helpers each carried their own copy of it, and
+    /// none of those copies had the MAPPS-818 429 branch, so a rate-limited
+    /// response surfaced the raw `rate_limited` JSON as its message. A 429
+    /// now reads "Too many requests. ..." on every path. Otherwise the
+    /// standard `{"error":{...}}` envelope, or the body capped at 200
+    /// characters so a runaway HTML 500 page does not end up in a toast.
+    #[cfg(feature = "app")]
+    pub(crate) fn api_error_from_body(status: u16, body: &str) -> ApiError {
+        if status == 429 {
+            return ApiError::Status {
+                code: status,
+                message: rate_limited_message(body),
+                fields: Vec::new(),
+                envelope_code: String::new(),
+                envelope_body: None,
+            };
+        }
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(body) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    // Keep the raw parse around so callers who need a
+                    // sub-object (`error.captcha.site_key` on the portal
+                    // login CAPTCHA challenge) can pluck it out without a
+                    // second parse.
+                    let raw = serde_json::from_str::<serde_json::Value>(body).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        }
+    }
+
     /// Get request with auth token
     #[cfg(feature = "app")]
     // SPEC-4.34.2
@@ -1437,6 +1528,8 @@ pub mod api {
             .send()
             .await
             .map_err(transport_err)?;
+        // Every completed response is classified here, once (MAPPS-1239).
+        super::note_response_status(response.status());
 
         if agent_lane && response.status() == 401 {
             note_agent_unauthorized().await;
@@ -1522,6 +1615,8 @@ pub mod api {
             .send()
             .await
             .map_err(transport_err)?;
+        // Every completed response is classified here, once (MAPPS-1239).
+        super::note_response_status(response.status());
 
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
@@ -1547,6 +1642,8 @@ pub mod api {
             .send()
             .await
             .map_err(transport_err)?;
+        // Every completed response is classified here, once (MAPPS-1239).
+        super::note_response_status(response.status());
 
         if agent_lane && response.status() == 401 {
             note_agent_unauthorized().await;
@@ -1575,6 +1672,8 @@ pub mod api {
             .send()
             .await
             .map_err(transport_err)?;
+        // Every completed response is classified here, once (MAPPS-1239).
+        super::note_response_status(response.status());
 
         if agent_lane && response.status() == 401 {
             note_agent_unauthorized().await;
@@ -1608,6 +1707,8 @@ pub mod api {
             .send()
             .await
             .map_err(transport_err)?;
+        // Every completed response is classified here, once (MAPPS-1239).
+        super::note_response_status(response.status());
 
         if agent_lane && response.status() == 401 {
             note_agent_unauthorized().await;
@@ -1631,6 +1732,8 @@ pub mod api {
             .send()
             .await
             .map_err(transport_err)?;
+        // Every completed response is classified here, once (MAPPS-1239).
+        super::note_response_status(response.status());
 
         if agent_lane && response.status() == 401 {
             note_agent_unauthorized().await;
@@ -1658,6 +1761,8 @@ pub mod api {
             .send()
             .await
             .map_err(transport_err)?;
+        // Every completed response is classified here, once (MAPPS-1239).
+        super::note_response_status(response.status());
 
         if agent_lane && response.status() == 401 {
             note_agent_unauthorized().await;
@@ -1842,6 +1947,8 @@ pub mod api {
             .send()
             .await
             .map_err(transport_err)?;
+        // Every completed response is classified here, once (MAPPS-1239).
+        super::note_response_status(response.status());
         if agent_lane && response.status() == 401 {
             note_agent_unauthorized().await;
         }
@@ -2047,32 +2154,7 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
-        let (message, fields, envelope_code, envelope_body) =
-            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
-                Ok(env) => {
-                    let code = env.error.code.clone();
-                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
-                    (
-                        env.error.message,
-                        env.error.errors.unwrap_or_default(),
-                        code,
-                        raw,
-                    )
-                }
-                Err(_) => (
-                    body_text.chars().take(200).collect(),
-                    Vec::new(),
-                    String::new(),
-                    None,
-                ),
-            };
-        Err(ApiError::Status {
-            code: status,
-            message,
-            fields,
-            envelope_code,
-            envelope_body,
-        })
+        Err(api_error_from_body(status, &body_text))
     }
 
     /// Portal-authed PATCH with a JSON body that returns 204. Mirrors
@@ -2108,32 +2190,7 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
-        let (message, fields, envelope_code, envelope_body) =
-            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
-                Ok(env) => {
-                    let code = env.error.code.clone();
-                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
-                    (
-                        env.error.message,
-                        env.error.errors.unwrap_or_default(),
-                        code,
-                        raw,
-                    )
-                }
-                Err(_) => (
-                    body_text.chars().take(200).collect(),
-                    Vec::new(),
-                    String::new(),
-                    None,
-                ),
-            };
-        Err(ApiError::Status {
-            code: status,
-            message,
-            fields,
-            envelope_code,
-            envelope_body,
-        })
+        Err(api_error_from_body(status, &body_text))
     }
 
     /// Portal-authed POST that discards the response body. Used by
@@ -2165,32 +2222,7 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
-        let (message, fields, envelope_code, envelope_body) =
-            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
-                Ok(env) => {
-                    let code = env.error.code.clone();
-                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
-                    (
-                        env.error.message,
-                        env.error.errors.unwrap_or_default(),
-                        code,
-                        raw,
-                    )
-                }
-                Err(_) => (
-                    body_text.chars().take(200).collect(),
-                    Vec::new(),
-                    String::new(),
-                    None,
-                ),
-            };
-        Err(ApiError::Status {
-            code: status,
-            message,
-            fields,
-            envelope_code,
-            envelope_body,
-        })
+        Err(api_error_from_body(status, &body_text))
     }
 
     /// PMS-729 phase 2 §7 slice B / I12: portal-authed empty-body PUT.
@@ -2345,32 +2377,7 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
-        let (message, fields, envelope_code, envelope_body) =
-            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
-                Ok(env) => {
-                    let code = env.error.code.clone();
-                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
-                    (
-                        env.error.message,
-                        env.error.errors.unwrap_or_default(),
-                        code,
-                        raw,
-                    )
-                }
-                Err(_) => (
-                    body_text.chars().take(200).collect(),
-                    Vec::new(),
-                    String::new(),
-                    None,
-                ),
-            };
-        Err(ApiError::Status {
-            code: status,
-            message,
-            fields,
-            envelope_code,
-            envelope_body,
-        })
+        Err(api_error_from_body(status, &body_text))
     }
 
     /// MAPPS-674: PUT with no body, no response body.
@@ -2396,32 +2403,7 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
-        let (message, fields, envelope_code, envelope_body) =
-            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
-                Ok(env) => {
-                    let code = env.error.code.clone();
-                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
-                    (
-                        env.error.message,
-                        env.error.errors.unwrap_or_default(),
-                        code,
-                        raw,
-                    )
-                }
-                Err(_) => (
-                    body_text.chars().take(200).collect(),
-                    Vec::new(),
-                    String::new(),
-                    None,
-                ),
-            };
-        Err(ApiError::Status {
-            code: status,
-            message,
-            fields,
-            envelope_code,
-            envelope_body,
-        })
+        Err(api_error_from_body(status, &body_text))
     }
 
     #[cfg(feature = "app")]
@@ -2482,32 +2464,7 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
-        let (message, fields, envelope_code, envelope_body) =
-            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
-                Ok(env) => {
-                    let code = env.error.code.clone();
-                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
-                    (
-                        env.error.message,
-                        env.error.errors.unwrap_or_default(),
-                        code,
-                        raw,
-                    )
-                }
-                Err(_) => (
-                    body_text.chars().take(200).collect(),
-                    Vec::new(),
-                    String::new(),
-                    None,
-                ),
-            };
-        Err(ApiError::Status {
-            code: status,
-            message,
-            fields,
-            envelope_code,
-            envelope_body,
-        })
+        Err(api_error_from_body(status, &body_text))
     }
 
     // --- Session-agnostic authed helpers (MAPPS-604) -------------------
@@ -2560,6 +2517,25 @@ pub mod api {
         get_all_with_auth(path, &t).await
     }
 
+    /// The bearer an `_any_` helper sends, and whether it is the staff one.
+    ///
+    /// MAPPS-1239: the contact bearer first, as before. On the staff path the
+    /// token is renewed BEFORE it is sent and the caller runs
+    /// `note_agent_unauthorized` on a 401, the MAPPS-435 invariant every other
+    /// staff-bearer sender keeps; these four sent a spent token and left the
+    /// user on the error. A contact's 401 stays the contact plane's business
+    /// (MAPPS-768), and an anonymous one is the caller's to render.
+    #[cfg(feature = "app")]
+    async fn any_bearer() -> (Option<String>, bool) {
+        if let Some(t) = current_contact_access_token() {
+            return (Some(t), false);
+        }
+        ensure_fresh_access_token().await;
+        let t = current_access_token();
+        let staff = t.is_some();
+        (t, staff)
+    }
+
     /// Typed sibling of [`get_authed_any`]. Same contact-first bearer
     /// selection; surfaces `ApiError::Status` so a page can branch on
     /// 401 / 403 / 404 without re-parsing the envelope.
@@ -2568,11 +2544,14 @@ pub mod api {
     pub async fn get_authed_any_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::get(&url);
-        let bearer = current_contact_access_token().or_else(current_access_token);
+        let (bearer, staff) = any_bearer().await;
         if let Some(t) = bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
         let resp = req.send().await.map_err(network_err)?;
+        if staff && resp.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         handle_response(resp).await
     }
 
@@ -2592,7 +2571,7 @@ pub mod api {
     ) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::post(&url);
-        let bearer = current_contact_access_token().or_else(current_access_token);
+        let (bearer, staff) = any_bearer().await;
         if let Some(t) = bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
@@ -2602,6 +2581,9 @@ pub mod api {
             .send()
             .await
             .map_err(network_err)?;
+        if staff && resp.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         handle_response(resp).await
     }
 
@@ -2621,7 +2603,7 @@ pub mod api {
     ) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::patch(&url);
-        let bearer = current_contact_access_token().or_else(current_access_token);
+        let (bearer, staff) = any_bearer().await;
         if let Some(t) = bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
@@ -2631,6 +2613,9 @@ pub mod api {
             .send()
             .await
             .map_err(network_err)?;
+        if staff && resp.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         handle_response(resp).await
     }
 
@@ -2647,11 +2632,14 @@ pub mod api {
     pub async fn get_authed_any_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), ApiError> {
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::get(&url);
-        let bearer = current_contact_access_token().or_else(current_access_token);
+        let (bearer, staff) = any_bearer().await;
         if let Some(t) = bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
         let resp = req.send().await.map_err(network_err)?;
+        if staff && resp.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         let status = resp.status();
         super::note_response_status(status);
         if !(200..300).contains(&status) {
@@ -2659,32 +2647,7 @@ pub mod api {
             // is what gets reported; an unreadable body only costs the server's own
             // message, and the status-class fallback is used in its place.
             let body = resp.text().await.unwrap_or_default();
-            let (message, fields, envelope_code, envelope_body) =
-                match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
-                    Ok(env) => {
-                        let code = env.error.code.clone();
-                        let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
-                        (
-                            env.error.message,
-                            env.error.errors.unwrap_or_default(),
-                            code,
-                            raw,
-                        )
-                    }
-                    Err(_) => (
-                        body.chars().take(200).collect(),
-                        Vec::new(),
-                        String::new(),
-                        None,
-                    ),
-                };
-            return Err(ApiError::Status {
-                code: status,
-                message,
-                fields,
-                envelope_code,
-                envelope_body,
-            });
+            return Err(api_error_from_body(status, &body));
         }
         let filename = resp
             .headers()
@@ -2830,41 +2793,7 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
-        if status == 429 {
-            return ApiError::Status {
-                code: status,
-                message: rate_limited_message(&body_text),
-                fields: Vec::new(),
-                envelope_code: String::new(),
-                envelope_body: None,
-            };
-        }
-        let (message, fields, envelope_code, envelope_body) =
-            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
-                Ok(env) => {
-                    let code = env.error.code.clone();
-                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
-                    (
-                        env.error.message,
-                        env.error.errors.unwrap_or_default(),
-                        code,
-                        raw,
-                    )
-                }
-                Err(_) => (
-                    body_text.chars().take(200).collect(),
-                    Vec::new(),
-                    String::new(),
-                    None,
-                ),
-            };
-        ApiError::Status {
-            code: status,
-            message,
-            fields,
-            envelope_code,
-            envelope_body,
-        }
+        api_error_from_body(status, &body_text)
     }
 
     /// MAPPS-946: platform-authed PUT with a JSON body that answers 200 with
@@ -2925,7 +2854,7 @@ pub mod api {
     /// page is scoped to (`mokosh-server/src/modules/platform/routes.rs:48-51`),
     /// so this cached hint is what the page renders; it is kept in sync
     /// locally after every successful setup/enable/disable.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(feature = "app")]
     const PLATFORM_MFA_ENABLED_KEY: &str = "mokosh:platform_mfa_enabled";
 
     #[cfg(feature = "app")]
@@ -2933,15 +2862,52 @@ pub mod api {
     pub fn current_platform_mfa_enabled() -> bool {
         #[cfg(target_arch = "wasm32")]
         {
-            if let Some(win) = web_sys::window() {
-                if let Ok(Some(store)) = win.session_storage() {
-                    if let Ok(Some(v)) = store.get_item(PLATFORM_MFA_ENABLED_KEY) {
-                        return v == "true";
-                    }
-                }
+            let stored = web_sys::window()
+                .ok_or_else(|| "no window".to_string())
+                .and_then(|w| {
+                    w.session_storage()
+                        .map_err(|e| format!("{e:?}"))?
+                        .ok_or_else(|| "sessionStorage is unavailable".to_string())
+                })
+                .and_then(|store| {
+                    store
+                        .get_item(PLATFORM_MFA_ENABLED_KEY)
+                        .map_err(|e| format!("{e:?}"))
+                });
+            platform_mfa_from_storage(stored)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        false
+    }
+
+    /// What a read of [`PLATFORM_MFA_ENABLED_KEY`] means.
+    ///
+    /// MAPPS-1239: absent, unreadable and a stored `"false"` all answered
+    /// `false` with no trace. The answer is still `false` for each (the
+    /// fail-closed default the callers rely on), but only a stored `"false"`
+    /// is silent: an absent key is noted at debug, and unreadable storage or
+    /// an unrecognised value at warn.
+    #[cfg(feature = "app")]
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) fn platform_mfa_from_storage(stored: Result<Option<String>, String>) -> bool {
+        match stored {
+            Ok(Some(v)) if v == "true" => true,
+            Ok(Some(v)) if v == "false" => false,
+            Ok(Some(v)) => {
+                tracing::warn!("{PLATFORM_MFA_ENABLED_KEY} holds {v:?}, not true or false; reading it as false");
+                false
+            }
+            Ok(None) => {
+                tracing::debug!("no {PLATFORM_MFA_ENABLED_KEY} stored; reading it as false");
+                false
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "could not read {PLATFORM_MFA_ENABLED_KEY}: {e}; reading it as false"
+                );
+                false
             }
         }
-        false
     }
 
     #[cfg(feature = "app")]
@@ -2951,9 +2917,13 @@ pub mod api {
         {
             if let Some(win) = web_sys::window() {
                 if let Ok(Some(store)) = win.session_storage() {
-                    let _ = store.set_item(
+                    note_storage_write(
+                        "set_item",
                         PLATFORM_MFA_ENABLED_KEY,
-                        if enabled { "true" } else { "false" },
+                        store.set_item(
+                            PLATFORM_MFA_ENABLED_KEY,
+                            if enabled { "true" } else { "false" },
+                        ),
                     );
                 }
             }
@@ -3127,58 +3097,23 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body = response.text().await.unwrap_or_default();
-        // MAPPS-818: same shape mismatch `status_error` handles above - the
-        // 429 body never parses as `ErrorResponse`, so its wait is read here
-        // directly rather than falling through to the generic envelope path.
         // SPEC-4.33.3
-        if status == 429 {
-            return Err(ApiError::Status {
-                code: status,
-                message: rate_limited_message(&body),
-                fields: Vec::new(),
-                envelope_code: String::new(),
-                envelope_body: None,
-            });
-        }
-        let (message, fields, envelope_code, envelope_body) =
-            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
-                Ok(env) => {
-                    // MAPPS-348: mirror `status_error`'s terminal-state
-                    // detection on the typed path so a fetch on either
-                    // helper flips the global `ACCOUNT_DELETED` signal.
                     // SPEC-4.27.5
-                    if status == 410 && env.error.code == "ACCOUNT_DELETED" {
-                        super::note_account_deleted();
-                    }
-                    let code = env.error.code.clone();
-                    // Keep the raw parse around so callers who need a
-                    // sub-object (`error.captcha.site_key` on the portal
-                    // login CAPTCHA challenge) can pluck it out without
-                    // a second parse.
-                    let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
-                    (
-                        env.error.message,
-                        env.error.errors.unwrap_or_default(),
-                        code,
-                        raw,
-                    )
-                }
-                // Fall back to the raw body, capped so a runaway HTML
-                // 500 page doesn't end up in a toast.
-                Err(_) => (
-                    body.chars().take(200).collect(),
-                    Vec::new(),
-                    String::new(),
-                    None,
-                ),
-            };
-        Err(ApiError::Status {
-            code: status,
-            message,
-            fields,
+        let err = api_error_from_body(status, &body);
+        // MAPPS-348: mirror `status_error`'s terminal-state detection on the
+        // typed path so a fetch on either helper flips the global
+        // `ACCOUNT_DELETED` signal.
+        if let ApiError::Status {
+            code: 410,
             envelope_code,
-            envelope_body,
-        })
+            ..
+        } = &err
+        {
+            if envelope_code == "ACCOUNT_DELETED" {
+                super::note_account_deleted();
+            }
+        }
+        Err(err)
     }
 
     #[cfg(feature = "app")]
@@ -3307,32 +3242,7 @@ pub mod api {
             // is what gets reported; an unreadable body only costs the server's own
             // message, and the status-class fallback is used in its place.
             let body = resp.text().await.unwrap_or_default();
-            let (message, fields, envelope_code, envelope_body) =
-                match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
-                    Ok(env) => {
-                        let code = env.error.code.clone();
-                        let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
-                        (
-                            env.error.message,
-                            env.error.errors.unwrap_or_default(),
-                            code,
-                            raw,
-                        )
-                    }
-                    Err(_) => (
-                        body.chars().take(200).collect(),
-                        Vec::new(),
-                        String::new(),
-                        None,
-                    ),
-                };
-            return Err(ApiError::Status {
-                code: status,
-                message,
-                fields,
-                envelope_code,
-                envelope_body,
-            });
+            return Err(api_error_from_body(status, &body));
         }
         let filename = resp
             .headers()
@@ -3428,32 +3338,7 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body_text = resp.text().await.unwrap_or_default();
-        let (message, fields, envelope_code, envelope_body) =
-            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
-                Ok(env) => {
-                    let code = env.error.code.clone();
-                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
-                    (
-                        env.error.message,
-                        env.error.errors.unwrap_or_default(),
-                        code,
-                        raw,
-                    )
-                }
-                Err(_) => (
-                    body_text.chars().take(200).collect(),
-                    Vec::new(),
-                    String::new(),
-                    None,
-                ),
-            };
-        Err(ApiError::Status {
-            code: status,
-            message,
-            fields,
-            envelope_code,
-            envelope_body,
-        })
+        Err(api_error_from_body(status, &body_text))
     }
 
     /// MAPPS-368: unauthed typed POST, for the standalone login form. Same as
@@ -3534,32 +3419,7 @@ pub mod api {
         // is what gets reported; an unreadable body only costs the server's own
         // message, and the status-class fallback is used in its place.
         let body = resp.text().await.unwrap_or_default();
-        let (message, fields, envelope_code, envelope_body) =
-            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
-                Ok(env) => {
-                    let code = env.error.code.clone();
-                    let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
-                    (
-                        env.error.message,
-                        env.error.errors.unwrap_or_default(),
-                        code,
-                        raw,
-                    )
-                }
-                Err(_) => (
-                    body.chars().take(200).collect(),
-                    Vec::new(),
-                    String::new(),
-                    None,
-                ),
-            };
-        Err(ApiError::Status {
-            code: status,
-            message,
-            fields,
-            envelope_code,
-            envelope_body,
-        })
+        Err(api_error_from_body(status, &body))
     }
 
     #[cfg(feature = "app")]
@@ -3651,32 +3511,7 @@ pub mod api {
             // is what gets reported; an unreadable body only costs the server's own
             // message, and the status-class fallback is used in its place.
             let body = resp.text().await.unwrap_or_default();
-            let (message, fields, envelope_code, envelope_body) =
-                match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
-                    Ok(env) => {
-                        let code = env.error.code.clone();
-                        let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
-                        (
-                            env.error.message,
-                            env.error.errors.unwrap_or_default(),
-                            code,
-                            raw,
-                        )
-                    }
-                    Err(_) => (
-                        body.chars().take(200).collect(),
-                        Vec::new(),
-                        String::new(),
-                        None,
-                    ),
-                };
-            Err(ApiError::Status {
-                code: status,
-                message,
-                fields,
-                envelope_code,
-                envelope_body,
-            })
+            Err(api_error_from_body(status, &body))
         }
     }
 
@@ -3699,6 +3534,226 @@ pub mod api {
                  once per call"
             );
         }
+    }
+}
+
+/// MAPPS-1239: response classification, the `_any_` helpers' bearer
+/// handling, the shared error parse, and the storage traces.
+#[cfg(all(test, feature = "app"))]
+mod mapps_1239_tests {
+    use super::api::{api_error_from_body, ApiError};
+
+    const SRC: &str = include_str!("fetch.rs");
+
+    fn production_src() -> &'static str {
+        &SRC[..SRC.find("mod mapps_1239_tests").expect("this module")]
+    }
+
+    /// `(name, body)` for every fn in the production half, each body
+    /// running to the next fn line.
+    fn function_bodies() -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for line in production_src().lines() {
+            let t = line.trim_start();
+            if !t.starts_with("//") {
+                if let Some(idx) = t.find("fn ").filter(|i| *i == 0 || t[..*i].ends_with(' ')) {
+                    let name: String = t[idx + 3..]
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if !name.is_empty() {
+                        out.push((name, String::new()));
+                    }
+                }
+            }
+            if let Some((_, body)) = out.last_mut() {
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+        out
+    }
+
+    fn body_of(name: &str) -> String {
+        function_bodies()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} is defined"))
+            .1
+    }
+
+    /// Findings 1 and 2: `status_error` no longer classifies, so a helper
+    /// that classified at its send site and then called it counted one 5xx
+    /// twice; and every helper that hands a response to `status_error`
+    /// classifies it exactly once at its send site, on the 2xx path too.
+    #[test]
+    fn every_string_helper_classifies_each_response_exactly_once() {
+        let status_error = body_of("status_error");
+        assert!(
+            !status_error.contains("note_response_status"),
+            "{status_error}"
+        );
+        let mut checked = 0;
+        for (name, body) in function_bodies() {
+            if !body.contains("Err(status_error(resp") || name == "status_error" {
+                continue;
+            }
+            checked += 1;
+            assert_eq!(
+                body.matches("super::note_response_status(").count(),
+                1,
+                "{name} must classify its response exactly once:\n{body}"
+            );
+            let at_classify = body.find("super::note_response_status(").unwrap();
+            let at_ok = body
+                .find(".ok()")
+                .unwrap_or_else(|| panic!("{name} branches on ok()"));
+            assert!(
+                at_classify < at_ok,
+                "{name} classifies before it branches, so a 2xx counts too"
+            );
+        }
+        assert_eq!(checked, 13, "the string helpers that use status_error");
+    }
+
+    /// Finding 3: the `_any_` helpers renew the staff bearer before sending
+    /// and treat its 401 as a session event, as every other staff sender does.
+    #[test]
+    fn the_any_helpers_renew_and_recover_on_the_staff_bearer() {
+        let picker = body_of("any_bearer");
+        let renew = picker
+            .find("ensure_fresh_access_token().await")
+            .expect("renews");
+        let staff = picker.find("current_access_token()").expect("reads staff");
+        assert!(
+            renew < staff,
+            "renewal comes before the staff token is read:\n{picker}"
+        );
+        assert!(
+            picker.contains(
+                "if let Some(t) = current_contact_access_token() { return (Some(t), false); }"
+            ) || picker.contains("return (Some(t), false);"),
+            "{picker}"
+        );
+        for name in [
+            "get_authed_any_typed",
+            "post_authed_any_typed",
+            "patch_authed_any_typed",
+            "get_authed_any_bytes",
+        ] {
+            let body = body_of(name);
+            assert!(
+                body.contains("let (bearer, staff) = any_bearer().await;"),
+                "{name}:\n{body}"
+            );
+            assert!(
+                body.contains("if staff && resp.status() == 401 {")
+                    && body.contains("note_agent_unauthorized().await;"),
+                "{name} must recover on a staff 401:\n{body}"
+            );
+            assert!(
+                !body.contains("current_contact_access_token().or_else(current_access_token)"),
+                "{name}"
+            );
+        }
+    }
+
+    /// Finding 4: one envelope parse, with the MAPPS-818 rule.
+    #[test]
+    fn a_429_reads_too_many_requests_on_the_typed_paths() {
+        let body = r#"{"error":"rate_limited","retry_after_seconds":30}"#;
+        let ApiError::Status { code, message, .. } = api_error_from_body(429, body) else {
+            panic!("a 429 is a Status");
+        };
+        assert_eq!(code, 429);
+        assert!(message.starts_with("Too many requests."), "{message}");
+        assert!(!message.contains("rate_limited"), "{message}");
+    }
+
+    #[test]
+    fn an_envelope_and_a_raw_body_still_parse_as_before() {
+        let env = r#"{"error":{"code":"NOT_FOUND","message":"No such invoice"}}"#;
+        let ApiError::Status {
+            message,
+            envelope_code,
+            envelope_body,
+            ..
+        } = api_error_from_body(404, env)
+        else {
+            panic!("Status");
+        };
+        assert_eq!(
+            (message.as_str(), envelope_code.as_str()),
+            ("No such invoice", "NOT_FOUND")
+        );
+        assert!(envelope_body.is_some());
+        let html = "<html>".repeat(100);
+        let ApiError::Status { message, .. } = api_error_from_body(500, &html) else {
+            panic!("Status");
+        };
+        assert_eq!(message.chars().count(), 200, "the raw body is capped");
+    }
+
+    #[test]
+    fn no_helper_parses_an_error_envelope_inline_any_more() {
+        for (name, body) in function_bodies() {
+            if matches!(name.as_str(), "api_error_from_body" | "status_error") {
+                continue;
+            }
+            assert!(
+                !body.contains("serde_json::from_str::<crate::utils::error::ErrorResponse>(&body"),
+                "{name} parses the envelope itself and skips the 429 rule:\n{body}"
+            );
+        }
+    }
+
+    /// Finding 5.
+    #[test]
+    fn the_mfa_flag_reads_only_a_stored_true_as_true() {
+        use super::api::platform_mfa_from_storage as read;
+        assert!(read(Ok(Some("true".into()))));
+        assert!(!read(Ok(Some("false".into()))));
+        assert!(!read(Ok(Some("yes".into()))));
+        assert!(!read(Ok(None)));
+        assert!(!read(Err("blocked".into())));
+        let body = body_of("platform_mfa_from_storage");
+        assert!(
+            body.contains("no {PLATFORM_MFA_ENABLED_KEY} stored"),
+            "absence leaves a trace"
+        );
+        assert!(
+            body.contains("could not read {PLATFORM_MFA_ENABLED_KEY}"),
+            "failure leaves a trace"
+        );
+    }
+
+    /// Finding 6.
+    #[test]
+    fn no_storage_write_is_discarded() {
+        let code = production_src();
+        for pat in [
+            "let _ = storage.set_item",
+            "let _ = storage.remove_item",
+            "let _ = session.remove_item",
+            "let _ = store.set_item",
+        ] {
+            assert!(!code.contains(pat), "{pat}");
+        }
+        assert!(body_of("note_storage_write").contains("tracing::warn!"));
+    }
+
+    /// Finding 10.
+    #[test]
+    fn each_status_doc_sits_on_its_own_function() {
+        let code = production_src();
+        let generic = code.find("fn is_generic_auth_message").unwrap();
+        let doc_start = code[..generic].rfind("\n\n").unwrap();
+        let doc = &code[doc_start..generic];
+        assert!(!doc.contains("MAPPS-282"), "{doc}");
+        assert!(!doc.contains("Treat 401 the same as 403"), "{doc}");
+        let friendly = code.find("fn user_friendly_status").unwrap();
+        let doc_start = code[..friendly].rfind("\n\n").unwrap();
+        assert!(code[doc_start..friendly].contains("MAPPS-282"));
     }
 }
 

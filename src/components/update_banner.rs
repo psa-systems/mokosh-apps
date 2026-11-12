@@ -3,7 +3,9 @@
 //!
 //! The version skew is read from mokosh-server's public
 //! `GET /api/v1/version` endpoint; on any fetch error the banner
-//! renders nothing. Non-admin users never see it (the check is in
+//! renders nothing, and the error is logged at warn (MAPPS-1247), so
+//! "could not check for updates" is findable rather than looking exactly
+//! like "no update". Non-admin users never see it (the check is in
 //! this component, not the layout, so adding it does not change
 //! non-admin renders).
 //!
@@ -99,26 +101,31 @@ pub fn UpdateBanner() -> Element {
     // mounts benefit. The non-admin early-out below means we still
     // skip the network call entirely for non-admins (MAPPS-187).
     // SPEC-5.71.6: gate false resolves to an error with no request
+    //
+    // MAPPS-1247: `None` means the gate refused, which is not a fetch result.
+    // It used to be the sentinel `Err("not admin")`, which the effect below
+    // wrote into the shared App-root cache, so an admin mounting later read a
+    // recorded "failure" first and sat Collapsed until its own fetch landed.
     let version_resource = use_resource(move || {
         let check = should_check();
         async move {
             if !check {
-                return Err("not admin".to_string());
+                return None;
             }
-            get_version().await
+            Some(
+                get_version()
+                    .await
+                    .inspect_err(|e| tracing::warn!("could not check for an update: {e}")),
+            )
         }
     });
-    // Each time the resource resolves, write through to the App-root
-    // cache so the next AppLayout re-mount (any nav click) starts at a
-    // resolved state instead of `Reserving`.
     // SPEC-5.71.7: write the result through to the App-root cache
+    // Each time a real fetch resolves, write through to the App-root cache
+    // so the next AppLayout re-mount (any nav click) starts at a resolved
+    // state instead of `Reserving`. A gated (`None`) result is not cached.
     use_effect(move || {
-        if let Some(result) = version_resource.read().as_ref() {
-            let snapshot: Result<SystemVersion, String> = match result {
-                Ok(v) => Ok(v.clone()),
-                Err(e) => Err(e.clone()),
-            };
-            cached_version.set(Some(snapshot));
+        if let Some(Some(result)) = version_resource.read().as_ref() {
+            cached_version.set(Some(result.clone()));
         }
     });
 
@@ -178,8 +185,8 @@ pub fn UpdateBanner() -> Element {
     ) {
         (Some(Ok(v)), _) => derive_state(v),
         (Some(Err(_)), _) => BannerState::Collapsed,
-        (None, Some(Ok(v))) => derive_state(v),
-        (None, Some(Err(_))) => BannerState::Collapsed,
+        (None, Some(Some(Ok(v)))) => derive_state(v),
+        (None, Some(Some(Err(_)))) | (None, Some(None)) => BannerState::Collapsed,
         (None, None) => BannerState::Reserving,
     };
 
@@ -317,5 +324,31 @@ mod tests {
     #[test]
     fn not_admin_and_not_standalone_does_not_check() {
         assert!(!should_check_for_update(false, false));
+    }
+}
+
+/// MAPPS-1247: a failed version check is logged, and the gate is not cached
+/// as a failure.
+#[cfg(test)]
+mod mapps_1247_tests {
+    fn code() -> String {
+        let src = include_str!("update_banner.rs");
+        src[..src.find("mod mapps_1247_tests").unwrap()]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn a_failed_check_is_logged() {
+        assert!(code().contains("tracing::warn!(\"could not check for an update: {e}\")"));
+    }
+
+    #[test]
+    fn the_gate_is_not_written_to_the_shared_cache() {
+        let code = code();
+        assert!(!code.contains("Err(\"not admin\".to_string())"));
+        assert!(code.contains("if !check { return None; }"));
+        assert!(code.contains("if let Some(Some(result)) = version_resource.read().as_ref() { cached_version.set(Some(result.clone())); }"));
     }
 }

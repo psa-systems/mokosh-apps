@@ -1,7 +1,10 @@
 //! URL helpers shared across the client.
 
 /// Tiny percent-encoder for the few characters that actually break URL
-/// query strings: space, `&`, `#`, `?`, `+`, `=`, and control bytes.
+/// query strings: `%`, space, `&`, `#`, `?`, `+`, `=`, and control bytes.
+/// `%` comes first in that list for a reason (MAPPS-1242): left alone, a
+/// value like `100%` or `a%26b` was decoded by the server into a different
+/// value.
 /// Avoids pulling in the full `urlencoding` crate for the handful of
 /// places that build paths inline. The server ILIKE / exact-matches the
 /// result, so non-ASCII passes straight through.
@@ -10,6 +13,7 @@ pub fn urlencoding_minimal(s: &str) -> String {
     // SPEC-4.86.1, SPEC-4.86.2: '%' is not encoded yet (see defects).
     for c in s.chars() {
         match c {
+            '%' => out.push_str("%25"),
             ' ' => out.push_str("%20"),
             '&' => out.push_str("%26"),
             '#' => out.push_str("%23"),
@@ -217,6 +221,18 @@ mod tests {
     use super::{
         decode_component, encode_uri_component, query_param_in, safe_href, scheme_of, QueryString,
     };
+
+    /// MAPPS-1242: a literal `%` survives the round trip to the server.
+    #[test]
+    fn a_percent_sign_is_encoded() {
+        use super::urlencoding_minimal;
+        assert_eq!(urlencoding_minimal("100%"), "100%25");
+        assert_eq!(urlencoding_minimal("a%26b"), "a%2526b");
+        assert_eq!(
+            decode_component(&urlencoding_minimal("a%26b & c")),
+            "a%26b & c"
+        );
+    }
 
     #[test]
     fn query_param_in_reads_the_query_a_link_carried() {
