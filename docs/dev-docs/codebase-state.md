@@ -296,7 +296,7 @@ end-to-end.
 | `/settings/integrations` | IntegrationSettingsPage | `pages/settings.rs` | partial (Connect / Configure all dead) |
 | `/settings/billing` | BillingSettingsPage | `pages/settings.rs` | partial (Manage Subscription dead) |
 | `/admin/team` | TeamPage | `pages/team.rs` | working (invite + revoke wired; PMS-247). Role picker hidden behind `ROLE_ASSIGNMENT_ENABLED=false` until full RBAC lands - invites go out as Technician (PMS-513) |
-| `/admin/tenants` | TenantManagementPage | `pages/admin.rs` | partial (dead row clicks) |
+| `/admin/tenants` | TenantManagementPage (since removed) | `pages/admin.rs` (since deleted) | retired: the route left the router with the Clients tab (`mokosh-contact-login` prompt 001) and MAPPS-944 deleted the page and `pages/admin.rs`. At the walk it was partial (dead row clicks) |
 | `/portal` | PortalHomePage | `pages/portal.rs` | working |
 | `/portal/tickets` | PortalTicketListPage | `pages/portal.rs` | partial (rows fully inert - no inner Link either) |
 | `/portal/tickets/new` | PortalTicketNewPage | `pages/portal.rs` | **broken (P0 GET-leak)** |
@@ -348,7 +348,7 @@ TableRow {
 Apply caller-side fix to: `dashboard.rs`, `tickets.rs`,
 `time.rs`, `contacts.rs`,
 `contracts.rs`, `billing.rs`, `assets.rs`,
-`knowledge_base.rs`, `admin.rs`, `portal.rs`.
+`knowledge_base.rs`, `admin.rs` (since deleted, MAPPS-944), `portal.rs` (since retired).
 
 ### F2. `/tickets` row-click empty closure
 

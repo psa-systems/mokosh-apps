@@ -155,6 +155,8 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
     let mut code_lang = use_signal(String::new);
     let mut table_rows = use_signal(|| "3".to_string());
     let mut table_cols = use_signal(|| "3".to_string());
+    // MAPPS-1245: why the typed table size was refused, shown in the dialog.
+    let mut table_error = use_signal(String::new);
 
     let target = props.target_id.clone();
     let value = props.value.clone();
@@ -173,7 +175,7 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
             // a second row rather than scrolling actions off the edge, so every
             // control stays reachable without a hidden overflow menu to
             // discover. Chosen over an overflow menu because there are only
-            // thirteen actions and they are all one tap.
+            // fourteen actions and they are all one tap.
             class: "flex flex-wrap items-center gap-0.5 rounded-t border border-line border-b-0 bg-surface px-1.5 py-1",
             role: "toolbar",
             aria_label: "Formatting",
@@ -239,7 +241,10 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
             }
             ToolButton {
                 label: "Table".to_string(), shortcut: None, disabled,
-                onclick: move |_| dialog.set(Some(Dialog::Table)),
+                onclick: move |_| {
+                    table_error.set(String::new());
+                    dialog.set(Some(Dialog::Table));
+                },
                 TableIcon { size: IconSize::Small }
             }
             // MAPPS-600: tidy the table the caret is in. Next to the button
@@ -297,10 +302,23 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
                                     Some(Dialog::CodeBlock) => Some(Action::CodeBlock {
                                         lang: code_lang.read().trim().to_string(),
                                     }),
-                                    Some(Dialog::Table) => Some(Action::Table {
-                                        rows: table_rows.read().parse().unwrap_or(3),
-                                        cols: table_cols.read().parse().unwrap_or(3),
-                                    }),
+                                    // MAPPS-1245: an empty, unparseable or
+                                    // out-of-range count is refused here, with
+                                    // the dialog left open, instead of quietly
+                                    // becoming 3 (or a clamped 1).
+                                    Some(Dialog::Table) => match parse_table_size(
+                                        &table_rows.read(),
+                                        &table_cols.read(),
+                                    ) {
+                                        Ok((rows, cols)) => {
+                                            table_error.set(String::new());
+                                            Some(Action::Table { rows, cols })
+                                        }
+                                        Err(why) => {
+                                            table_error.set(why);
+                                            return;
+                                        }
+                                    },
                                     None => None,
                                 };
                                 if let Some(action) = action {
@@ -355,8 +373,11 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
                                                 let mime = file
                                                     .content_type()
                                                     .unwrap_or_default();
-                                                if let Ok(bytes) = file.read_bytes().await {
-                                                    on_file.call((name, mime, bytes.to_vec()));
+                                                match file.read_bytes().await {
+                                                    Ok(bytes) => on_file.call((name, mime, bytes.to_vec())),
+                                                    // MAPPS-1245: nothing was
+                                                    // inserted, so say so.
+                                                    Err(e) => report_unreadable_file(&name, &e.to_string()),
                                                 }
                                             });
                                         },
@@ -405,6 +426,11 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
                                         oninput: move |e: FormEvent| table_cols.set(e.value()),
                                     }
                                 }
+                                if !table_error.read().is_empty() {
+                                    p { class: "mt-2 text-sm text-red-600 dark:text-red-400", role: "alert",
+                                        "{table_error}"
+                                    }
+                                }
                             },
                             None => rsx! {},
                         }
@@ -413,6 +439,29 @@ pub fn MarkdownToolbar(props: MarkdownToolbarProps) -> Element {
             }
         }
     }
+}
+
+/// The table size the dialog asked for, or why it cannot be inserted
+/// (MAPPS-1245). The bounds are the ones `md_edit::table` would otherwise
+/// clamp to silently: 1 to 50 rows, 1 to 12 columns.
+fn parse_table_size(rows: &str, cols: &str) -> Result<(usize, usize), String> {
+    let count = |raw: &str, what: &str, max: usize| -> Result<usize, String> {
+        match raw.trim().parse::<usize>() {
+            Ok(n) if (1..=max).contains(&n) => Ok(n),
+            _ => Err(format!("{what} must be a whole number from 1 to {max}.")),
+        }
+    };
+    Ok((count(rows, "Rows", 50)?, count(cols, "Columns", 12)?))
+}
+
+/// A picked or dropped file could not be read: log it with the file name
+/// and tell the author, since nothing was inserted (MAPPS-1245).
+pub(crate) fn report_unreadable_file(name: &str, cause: &str) {
+    tracing::warn!("could not read the file {name:?} the author picked: {cause}");
+    crate::hooks::toast::push_toast(
+        crate::components::AlertType::Error,
+        format!("{name} could not be read, so nothing was inserted."),
+    );
 }
 
 /// Map a keydown on the body field to a toolbar action (MAPPS-579).
@@ -428,6 +477,44 @@ pub fn shortcut_action(ctrl_or_meta: bool, key: &str) -> Option<Action> {
         "b" => Some(Action::Bold),
         "i" => Some(Action::Italic),
         _ => None,
+    }
+}
+
+/// MAPPS-1245: the table size is validated, unreadable files are reported,
+/// and the comment counts the buttons.
+#[cfg(test)]
+mod mapps_1245_tests {
+    use super::parse_table_size;
+
+    #[test]
+    fn a_valid_size_passes_and_an_invalid_one_is_refused() {
+        assert_eq!(parse_table_size("3", " 4 "), Ok((3, 4)));
+        assert_eq!(parse_table_size("50", "12"), Ok((50, 12)));
+        for (rows, cols) in [
+            ("", "3"),
+            ("abc", "3"),
+            ("0", "3"),
+            ("-1", "3"),
+            ("3", "13"),
+            ("51", "3"),
+            ("2.5", "3"),
+        ] {
+            assert!(parse_table_size(rows, cols).is_err(), "{rows} x {cols}");
+        }
+        assert_eq!(
+            parse_table_size("0", "3").unwrap_err(),
+            "Rows must be a whole number from 1 to 50."
+        );
+    }
+
+    #[test]
+    fn the_comment_counts_the_buttons_it_describes() {
+        let src = include_str!("markdown_toolbar.rs");
+        let code = &src[..src.find("mod mapps_1245_tests").unwrap()];
+        let buttons = code.matches("ToolButton {").count();
+        assert_eq!(buttons, 14);
+        assert!(code.contains("fourteen actions"));
+        assert!(code.contains("Err(e) => report_unreadable_file(&name, &e.to_string()),"));
     }
 }
 

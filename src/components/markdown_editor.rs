@@ -142,12 +142,6 @@ pub(crate) fn body_pane_class(visible: bool) -> &'static str {
     }
 }
 
-/// Class for one option in the view switcher.
-///
-/// PMS-939: the house segmented-control style, taken from the theme picker's
-/// Base mode row (`components/theme_picker.rs`) - a `bg-surface-2` track with a
-/// raised `bg-surface` pill on the selected option. Selection reads as
-/// elevation and weight, not colour alone.
 /// Choose a mode and remember it. One place, so the click path and the
 /// keyboard path cannot drift over whether the choice is persisted.
 pub(crate) fn set_view_mode(view: &mut Signal<ViewMode>, next: ViewMode, pref_key: &str) {
@@ -159,6 +153,12 @@ pub(crate) fn set_view_mode(view: &mut Signal<ViewMode>, next: ViewMode, pref_ke
     }
 }
 
+/// Class for one option in the view switcher.
+///
+/// PMS-939: the house segmented-control style, taken from the theme picker's
+/// Base mode row (`components/theme_picker.rs`) - a `bg-surface-2` track with a
+/// raised `bg-surface` pill on the selected option. Selection reads as
+/// elevation and weight, not colour alone.
 pub(crate) fn view_mode_class(selected: bool) -> &'static str {
     if selected {
         "px-3 py-1 rounded-md text-sm font-semibold bg-surface text-content shadow-sm"
@@ -503,8 +503,14 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
                     spawn(async move {
                         let name = file.name();
                         let mime = file.content_type().unwrap_or_default();
-                        if let Ok(bytes) = file.read_bytes().await {
-                            sink.call((name, mime, bytes.to_vec()));
+                        match file.read_bytes().await {
+                            Ok(bytes) => sink.call((name, mime, bytes.to_vec())),
+                            // MAPPS-1245: a dropped image that cannot be read
+                            // inserted nothing and said nothing.
+                            Err(e) => crate::components::markdown_toolbar::report_unreadable_file(
+                                &name,
+                                &e.to_string(),
+                            ),
                         }
                     });
                 },
@@ -661,6 +667,26 @@ pub fn MarkdownEditor(props: MarkdownEditorProps) -> Element {
             }
             }
         }
+    }
+}
+
+/// MAPPS-1245: each view-mode helper carries its own doc, and a dropped
+/// file that cannot be read is reported.
+#[cfg(test)]
+mod mapps_1245_tests {
+    #[test]
+    fn docs_sit_on_their_own_functions_and_read_failures_are_reported() {
+        let src = include_str!("markdown_editor.rs");
+        let doc_of = |sig: &str| {
+            let at = src.find(sig).unwrap();
+            src[src[..at].rfind("\n\n").unwrap()..at].to_string()
+        };
+        assert!(doc_of("pub(crate) fn view_mode_class(")
+            .contains("Class for one option in the view switcher."));
+        assert!(!doc_of("pub(crate) fn set_view_mode(").contains("Class for one option"));
+        assert!(
+            src.contains("Err(e) => crate::components::markdown_toolbar::report_unreadable_file(")
+        );
     }
 }
 

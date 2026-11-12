@@ -30,8 +30,11 @@ pub enum AppError {
         errors: Vec<FieldError>,
     },
 
-    /// Duplicate resource error
-    #[error("{0} already exists")]
+    /// State conflict, of which a duplicate is only one kind. The call site
+    /// writes the whole sentence (PMS-771, mirrored here by MAPPS-1240): the
+    /// old " already exists" suffix doubled itself on the sites that said it,
+    /// so the 23505 mapping read "Record already exists already exists".
+    #[error("{0}")]
     Conflict(String),
 
     /// Bad request with message
@@ -112,8 +115,12 @@ impl AppError {
 
     /// Create a validation error for a single field
     pub fn validation_field(field: impl Into<String>, message: impl Into<String>) -> Self {
+        // The `Validation` Display prefixes "Validation failed: ", so this
+        // message must not repeat that phrase (PMS-298, mirrored by
+        // MAPPS-1240: the wire message read "Validation failed: Validation
+        // failed").
         Self::Validation {
-            message: "Validation failed".to_string(),
+            message: "one or more fields are invalid".to_string(),
             errors: vec![FieldError::new(field, message, "invalid")],
         }
     }
@@ -270,7 +277,8 @@ mod server_impl {
                     // Check for unique constraint violations
                     if let Some(code) = db_err.code() {
                         if code == "23505" {
-                            return Self::Conflict("Record already exists".to_string());
+                            tracing::debug!("Unique violation: {:?}", db_err);
+                            return Self::Conflict("That record already exists".to_string());
                         }
                     }
                     // Log the actual error but return a generic message
@@ -333,17 +341,31 @@ impl From<validator::ValidationErrors> for AppError {
                 errs.iter().map(|e| {
                     FieldError::new(
                         field.to_string(),
-                        e.message.clone().unwrap_or_default().to_string(),
+                        field_error_message(field, e),
                         e.code.to_string(),
                     )
                 })
             })
             .collect();
 
+        // As `validation_field`: not a repeat of the Display prefix.
         Self::Validation {
-            message: "Validation failed".to_string(),
+            message: "one or more fields are invalid".to_string(),
             errors: field_errors,
         }
+    }
+}
+
+/// The message for one `validator` field error. `validator` leaves `message`
+/// as `None` unless the rule spells one out, and that used to become an empty
+/// string the form rendered as a blank inline error (MAPPS-1240). A rule with
+/// no message now names the field and the rule code instead. The server's
+/// `humanize_field_error` writes a fuller sentence from the rule's params;
+/// this is the client's last resort, not a copy of it.
+fn field_error_message(field: &str, e: &validator::ValidationError) -> String {
+    match &e.message {
+        Some(m) if !m.is_empty() => m.to_string(),
+        _ => format!("{field} is invalid ({})", e.code),
     }
 }
 
@@ -362,6 +384,58 @@ impl From<std::io::Error> for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MAPPS-1240: no message repeats itself.
+    #[test]
+    fn a_conflict_prints_the_call_sites_sentence_once() {
+        assert_eq!(
+            AppError::conflict("That record already exists").to_string(),
+            "That record already exists"
+        );
+        let src = include_str!("error.rs");
+        let code = &src[..src.find("mod tests {").unwrap()];
+        assert!(
+            code.contains(r#"return Self::Conflict("That record already exists".to_string());"#)
+        );
+        assert!(!code.contains(concat!("#[error(\"{0} already", " exists\")]")));
+    }
+
+    #[test]
+    fn a_validation_message_is_not_a_repeat_of_its_prefix() {
+        let e = AppError::validation_field("name", "is required");
+        assert_eq!(
+            e.to_string(),
+            "Validation failed: one or more fields are invalid"
+        );
+        let mut errs = validator::ValidationErrors::new();
+        errs.add("name", validator::ValidationError::new("length"));
+        assert_eq!(
+            AppError::from(errs).to_string(),
+            "Validation failed: one or more fields are invalid"
+        );
+    }
+
+    #[test]
+    fn a_rule_with_no_message_names_the_field_and_rule() {
+        let mut errs = validator::ValidationErrors::new();
+        errs.add("name", validator::ValidationError::new("length"));
+        let AppError::Validation { errors, .. } = AppError::from(errs) else {
+            panic!("Validation");
+        };
+        assert_eq!(errors[0].message, "name is invalid (length)");
+
+        let mut errs = validator::ValidationErrors::new();
+        let mut rule = validator::ValidationError::new("email");
+        rule.message = Some("must be a valid email".into());
+        errs.add("email", rule);
+        let AppError::Validation { errors, .. } = AppError::from(errs) else {
+            panic!("Validation");
+        };
+        assert_eq!(
+            errors[0].message, "must be a valid email",
+            "an explicit message is kept"
+        );
+    }
 
     #[test]
     fn test_app_error_status_codes() {
@@ -427,7 +501,7 @@ mod tests {
 
         match error {
             AppError::Validation { message, errors } => {
-                assert_eq!(message, "Validation failed");
+                assert_eq!(message, "one or more fields are invalid");
                 assert_eq!(errors.len(), 1);
                 assert_eq!(errors[0].field, "username");
                 assert_eq!(errors[0].message, "Username is required");

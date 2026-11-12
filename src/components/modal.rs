@@ -171,10 +171,18 @@ fn ModalChrome(
                     role: "dialog",
                     aria_modal: "true",
                     aria_labelledby: "{title_id}",
-                    onmounted: move |e| {
-                        spawn(async move {
-                            let _ = e.set_focus(true).await;
-                        });
+                    onmounted: {
+                        let title = title.clone();
+                        move |e: MountedEvent| {
+                            let title = title.clone();
+                            spawn(async move {
+                                // MAPPS-1246: a dialog that did not take focus
+                                // also does not get the Escape key, so say so.
+                                if let Err(err) = e.set_focus(true).await {
+                                    tracing::warn!("dialog {title:?} could not take focus: {err:?}");
+                                }
+                            });
+                        }
                     },
                     onkeydown: move |e: KeyboardEvent| {
                         if e.key() == Key::Named(NamedKey::Escape) {
@@ -463,6 +471,17 @@ pub enum AlertType {
 }
 
 impl AlertType {
+    /// The dismiss button's focus ring, in the alert's own colour
+    /// (MAPPS-1246). Whole class names, so Tailwind's scan finds each one.
+    fn dismiss_ring_class(&self) -> &'static str {
+        match self {
+            AlertType::Info => "focus:ring-offset-blue-50 focus:ring-blue-600 dark:focus:ring-offset-blue-900 dark:focus:ring-blue-400",
+            AlertType::Success => "focus:ring-offset-green-50 focus:ring-green-600 dark:focus:ring-offset-green-900 dark:focus:ring-green-400",
+            AlertType::Warning => "focus:ring-offset-yellow-50 focus:ring-yellow-600 dark:focus:ring-offset-yellow-900 dark:focus:ring-yellow-400",
+            AlertType::Error => "focus:ring-offset-red-50 focus:ring-red-600 dark:focus:ring-offset-red-900 dark:focus:ring-red-400",
+        }
+    }
+
     fn classes(&self) -> (&'static str, &'static str, &'static str) {
         match self {
             AlertType::Info => (
@@ -552,7 +571,9 @@ pub fn Alert(props: AlertProps) -> Element {
                     div { class: "ml-auto pl-3",
                         IconButton {
                             label: "Dismiss notification",
-                            class: "-mx-1.5 -my-1.5 rounded-md p-1.5 inline-flex {text_class} hover:bg-surface-2 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-green-50 focus:ring-green-600",
+                            // MAPPS-1246: the focus ring follows the alert's
+                            // own colour; it was green for every type.
+                            class: "-mx-1.5 -my-1.5 rounded-md p-1.5 inline-flex {text_class} hover:bg-surface-2 focus:outline-none focus:ring-2 focus:ring-offset-2 {props.alert_type.dismiss_ring_class()}",
                             onclick: move |_| props.ondismiss.call(()),
                             XMarkIcon {}
                         }
@@ -692,6 +713,43 @@ fn ToastRow(props: ToastRowProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1246: the dismiss ring follows the alert type, and a dialog that
+/// cannot take focus is logged.
+#[cfg(test)]
+mod mapps_1246_tests {
+    use super::AlertType;
+
+    #[test]
+    fn each_alert_type_rings_in_its_own_colour() {
+        for (t, colour) in [
+            (AlertType::Info, "blue"),
+            (AlertType::Success, "green"),
+            (AlertType::Warning, "yellow"),
+            (AlertType::Error, "red"),
+        ] {
+            let ring = t.dismiss_ring_class();
+            assert!(ring.contains(&format!("focus:ring-{colour}-600")), "{ring}");
+            assert!(
+                ring.contains(&format!("focus:ring-offset-{colour}-50")),
+                "{ring}"
+            );
+        }
+        let src = include_str!("modal.rs");
+        let code = &src[..src.find("mod mapps_1246_tests").unwrap()];
+        assert!(
+            !code.contains("focus:ring-offset-2 focus:ring-offset-green-50 focus:ring-green-600\"")
+        );
+    }
+
+    #[test]
+    fn a_dialog_that_cannot_take_focus_is_logged() {
+        let src = include_str!("modal.rs");
+        let code = &src[..src.find("mod mapps_1246_tests").unwrap()];
+        assert!(!code.contains("let _ = e.set_focus(true).await;"));
+        assert!(code.contains("dialog {title:?} could not take focus: {err:?}"));
     }
 }
 

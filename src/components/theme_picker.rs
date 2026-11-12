@@ -19,6 +19,20 @@ use crate::modules::theme::{accents, contrast};
 /// modal. Rendered next to the notification bell in the TopBar. The
 /// button uses the nav-chrome palette directly for now (the chrome is
 /// migrated to surface tokens in the same MAPPS-259 sweep).
+/// A swatch's tooltip. MAPPS-1246: a pair whose ratio cannot be computed
+/// says so; it used to read "contrast 0.0:1", a failed computation shown as a
+/// measured value.
+fn accent_tooltip(name: &str, locked: bool, ratio: Option<f64>) -> String {
+    match (locked, ratio) {
+        (true, Some(r)) => format!("{name} - locked: contrast {r:.1}:1 (needs 4.5:1 for WCAG AA)"),
+        (true, None) => {
+            format!("{name} - locked: its contrast could not be computed (needs 4.5:1 for WCAG AA)")
+        }
+        (false, Some(r)) => format!("{name} (contrast {r:.1}:1)"),
+        (false, None) => format!("{name} (contrast could not be computed)"),
+    }
+}
+
 #[component]
 pub fn ThemePickerButton() -> Element {
     let mut open = use_signal(|| false);
@@ -135,16 +149,11 @@ pub fn ThemePicker() -> Element {
                             // already prevents picking a failing combination;
                             // this adds the user-visible "what / why" the AC
                             // calls for.
-                            let ratio = contrast::contrast_ratio(variant.on_accent, variant.fill)
-                                .unwrap_or(0.0);
-                            let tooltip = if locked {
-                                format!(
-                                    "{} - locked: contrast {:.1}:1 (needs 4.5:1 for WCAG AA)",
-                                    a.name, ratio
-                                )
-                            } else {
-                                format!("{} (contrast {:.1}:1)", a.name, ratio)
-                            };
+                            let tooltip = accent_tooltip(
+                                a.name,
+                                locked,
+                                contrast::contrast_ratio(variant.on_accent, variant.fill),
+                            );
                             let selected = accent_id() == a.id;
                             let ring = if selected {
                                 "ring-2 ring-offset-2 ring-offset-surface ring-content"
@@ -223,5 +232,27 @@ pub fn ThemePicker() -> Element {
                 }
             }
         }
+    }
+}
+
+/// MAPPS-1246: an uncomputable ratio is not shown as 0.0:1.
+#[cfg(test)]
+mod tooltip_tests {
+    use super::accent_tooltip;
+
+    #[test]
+    fn the_tooltip_says_when_the_ratio_could_not_be_computed() {
+        assert_eq!(
+            accent_tooltip("Teal", false, Some(5.04)),
+            "Teal (contrast 5.0:1)"
+        );
+        assert_eq!(
+            accent_tooltip("Lime", true, Some(2.1)),
+            "Lime - locked: contrast 2.1:1 (needs 4.5:1 for WCAG AA)"
+        );
+        let broken = accent_tooltip("Odd", true, None);
+        assert!(broken.contains("could not be computed"), "{broken}");
+        assert!(!broken.contains("0.0:1"), "{broken}");
+        assert!(accent_tooltip("Odd", false, None).contains("could not be computed"));
     }
 }

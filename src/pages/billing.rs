@@ -53,7 +53,17 @@ pub(crate) fn humanize_payment_method(raw: &str) -> String {
         Some(PaymentMethod::Cash) => "Cash".to_string(),
         Some(PaymentMethod::Paypal) => "PayPal".to_string(),
         Some(PaymentMethod::Other) => "Other".to_string(),
-        None => raw.to_string(),
+        // MAPPS-1228: a method this build does not know reads with its
+        // underscores spaced and the first letter raised, the same on every
+        // page, instead of the raw token.
+        None => {
+            let words = raw.trim().replace('_', " ");
+            let mut chars = words.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        }
     }
 }
 
@@ -153,8 +163,19 @@ fn computed_tax_amount(rates: &[RemoteTaxRate], rate_id: &str, subtotal: &str) -
     let Some(rate) = rate else {
         return String::new();
     };
-    let rate_pct = Decimal::from_str(rate.rate.trim()).unwrap_or_default();
-    let sub = Decimal::from_str(subtotal.trim()).unwrap_or_default();
+    // MAPPS-1228: an unparseable rate or subtotal is "no tax", as documented,
+    // not a zero amount that reads as a computed figure.
+    let (Ok(rate_pct), Ok(sub)) = (
+        Decimal::from_str(rate.rate.trim()),
+        Decimal::from_str(subtotal.trim()),
+    ) else {
+        tracing::warn!(
+            "tax preview skipped: rate {:?} or subtotal {:?} is not a decimal",
+            rate.rate,
+            subtotal
+        );
+        return String::new();
+    };
     // Half away from zero, the server's rounding (PMS-1029), so the preview
     // and the saved figure agree on a half cent.
     ((sub * rate_pct) / Decimal::from(100))
@@ -335,45 +356,81 @@ pub(crate) fn NoFinancePermission(title: String) -> Element {
     }
 }
 
-/// Invoice list page. GET `/invoices` with optional company / status
-/// filters, server-paginated.
-#[component]
-pub fn InvoiceListPage() -> Element {
-    let auth = crate::hooks::use_auth();
-    let has_finance = auth
+/// MAPPS-1228: who reaches an invoice page. `use_capability("invoices:read")`
+/// is true for every staff bearer, so on its own it let a technician through to
+/// a finance-gated fetch that then failed as "Could not load invoices.". The
+/// capability answers for a contact; for staff it is the finance role.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum InvoiceGate {
+    Open,
+    PortalAccessRequired,
+    NoFinancePermission,
+}
+
+fn invoice_gate(
+    contact_session: bool,
+    staff_session: bool,
+    has_finance: bool,
+    can_read: bool,
+) -> InvoiceGate {
+    if contact_session {
+        return if can_read {
+            InvoiceGate::Open
+        } else {
+            InvoiceGate::PortalAccessRequired
+        };
+    }
+    if staff_session && !has_finance {
+        return InvoiceGate::NoFinancePermission;
+    }
+    if has_finance || can_read {
+        InvoiceGate::Open
+    } else {
+        InvoiceGate::NoFinancePermission
+    }
+}
+
+/// The gate for the signed-in caller. A staff session is a staff bearer with
+/// no contact session over it, the same precedence `use_capability` applies.
+fn use_invoice_gate() -> InvoiceGate {
+    let has_finance = crate::hooks::use_auth()
         .read()
         .user
         .as_ref()
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
+    let can_read = crate::hooks::capabilities::use_capability("invoices:read");
+    let contact_session = crate::hooks::fetch::api::has_contact_session();
+    let staff_session =
+        !contact_session && crate::hooks::fetch::api::current_access_token().is_some();
+    invoice_gate(contact_session, staff_session, has_finance, can_read)
+}
+
+/// Invoice list page. GET `/invoices` with optional company / status
+/// filters, server-paginated.
+#[component]
+pub fn InvoiceListPage() -> Element {
     // mokosh-contact-login prompt 006: a contact with `invoices:read`
-    // reaches the list too. `use_capability` returns true for staff
-    // and platform sessions unconditionally, so this predicate stays
-    // true for the pre-pivot personas and additionally lets the
-    // capable contact through.
-    let contact_can_read = crate::hooks::capabilities::use_capability("invoices:read");
-
+    // reaches the list too; staff need the finance role (MAPPS-1228).
+    let gate = use_invoice_gate();
     use_page_title("Invoices");
-    if !has_finance && !contact_can_read {
-        // MAPPS-775: a customer and a technician are refused for different
-        // reasons and need different words. `NoFinancePermission` says
-        // "restricted to administrator and finance roles. Ask an
-        // administrator", which is true of a technician and false of a
-        // customer: they have no administrator, and the person who can change
-        // this is the MSP they hired. The portal state names the MSP and
-        // offers the ask (PMS-1187).
-        if crate::hooks::fetch::api::has_contact_session() {
-            return rsx! {
-                crate::components::PortalAccessRequired {
-                    title: "Invoices".to_string(),
-                    area: crate::components::INVOICES,
-                }
-            };
-        }
-        return rsx! { NoFinancePermission { title: "Invoices" } };
+    // MAPPS-775: a customer and a technician are refused for different
+    // reasons and need different words. `NoFinancePermission` says
+    // "restricted to administrator and finance roles. Ask an
+    // administrator", which is true of a technician and false of a
+    // customer: they have no administrator, and the person who can change
+    // this is the MSP they hired. The portal state names the MSP and
+    // offers the ask (PMS-1187).
+    match gate {
+        InvoiceGate::Open => rsx! { InvoiceListBody {} },
+        InvoiceGate::PortalAccessRequired => rsx! {
+            crate::components::PortalAccessRequired {
+                title: "Invoices".to_string(),
+                area: crate::components::INVOICES,
+            }
+        },
+        InvoiceGate::NoFinancePermission => rsx! { NoFinancePermission { title: "Invoices" } },
     }
-
-    rsx! { InvoiceListBody {} }
 }
 
 #[component]
@@ -630,6 +687,9 @@ fn InvoiceListBody() -> Element {
                                     company_filter.set(String::new());
                                     status_filter.set(String::new());
                                     overdue_filter.set(String::new());
+                                    // MAPPS-1228: `has_filters` counts the
+                                    // search, so clearing must too.
+                                    search.set(String::new());
                                 },
                                 "Clear filters"
                             }
@@ -975,13 +1035,43 @@ pub(crate) fn invoice_pdf_previews(status: &str) -> bool {
     matches!(status, "draft" | "pending")
 }
 
-pub(crate) fn edit_unavailable(status: &str) -> Option<String> {
+/// MAPPS-1228: the typed partial-payment amount. Blank is `None`, the full
+/// balance; a positive decimal is sent as typed; anything else is refused on
+/// the field before any request, and only that error is the field's. The
+/// server's range refusals (above the balance, below the floor) are the
+/// banner's, with every other payment failure.
+fn parse_pay_amount(typed: &str) -> Result<Option<String>, String> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return Ok(None);
+    }
+    match Decimal::from_str(typed) {
+        Ok(v) if v > Decimal::ZERO => Ok(Some(typed.to_string())),
+        _ => Err("Enter an amount greater than zero, like 25.00.".to_string()),
+    }
+}
+
+/// MAPPS-1228: whether a failed send is the mail relay refusing it. The
+/// server maps that refusal to 502 (`AppError::external_service("mail", ..)`);
+/// a 500 is a server fault and must not read as "the email was not sent".
+fn is_relay_refusal(code: u16) -> bool {
+    code == 502
+}
+
+pub(crate) fn edit_unavailable(status: &str, paid: bool, credited: bool) -> Option<String> {
     // One statement per state: the status badge handles the "what", this
     // helper names the next action in one line and nothing more.
     match status {
         "draft" | "pending" => None,
         "void" => Some("Already replaced. Amend the invoice that replaced it.".to_string()),
-        _ => Some("Already sent. Amend it to edit the replacement draft.".to_string()),
+        // MAPPS-1228: "Amend it" only while Amend is on offer. Otherwise Edit
+        // gives Amend's own reason, so the two greyed controls never point at
+        // each other.
+        _ => Some(
+            amend_unavailable(status, paid, credited).unwrap_or_else(|| {
+                "Already sent. Amend it to edit the replacement draft.".to_string()
+            }),
+        ),
     }
 }
 
@@ -1061,6 +1151,19 @@ pub(crate) fn action_block(
 
 /// MAPPS-727: the Details row for a written-off invoice: the amount, the
 /// date part of the timestamp, and who, when the server named them.
+/// MAPPS-1228: the write-off amount as the Details row shows it. A server
+/// that sends `written_off_at` without `write_off_amount` used to render as a
+/// real $0.00 write-off; the absence is said instead, and logged.
+pub(crate) fn write_off_amount_label(raw: Option<&str>) -> String {
+    match raw.map(str::trim).filter(|a| !a.is_empty()) {
+        Some(amount) => format_money_str(amount),
+        None => {
+            tracing::warn!("invoice write-off has a timestamp but no amount");
+            "Amount not recorded".to_string()
+        }
+    }
+}
+
 pub(crate) fn write_off_line(amount: &str, at: Option<&str>, by: Option<&str>) -> String {
     format!("{amount}{}", stamped_by(at, by))
 }
@@ -1090,17 +1193,15 @@ fn stamped_by(at: Option<&str>, by: Option<&str>) -> String {
     line
 }
 
-/// MAPPS-735: a payment method as the Payments card labels it: the
-/// server's snake_case token with the underscores spaced and the first
-/// letter raised (`credit_card` to "Credit card"). An empty token reads
-/// as "Payment" rather than as a blank.
+/// MAPPS-735: a payment method as the Payments card labels it. MAPPS-1228:
+/// the same words the payments list uses (`humanize_payment_method`), so
+/// `credit_card` is "Credit Card" and `ach` is "ACH Transfer" on both pages.
+/// An empty token reads as "Payment" rather than as a blank.
 pub(crate) fn payment_method_label(method: &str) -> String {
-    let words = method.trim().replace('_', " ");
-    let mut chars = words.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => "Payment".to_string(),
+    if method.trim().is_empty() {
+        return "Payment".to_string();
     }
+    humanize_payment_method(method.trim())
 }
 
 /// The row text for a payment: the method, the date, and the reference
@@ -1634,17 +1735,24 @@ struct PayInvoiceResp {
 /// out of that question entirely.
 #[component]
 pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
-    let contact_can_read = crate::hooks::capabilities::use_capability("invoices:read");
-    if crate::hooks::fetch::api::has_contact_session() && !contact_can_read {
-        use_page_title("Invoice");
-        return rsx! {
-            crate::components::PortalAccessRequired {
-                title: "Invoice".to_string(),
-                area: crate::components::INVOICES,
+    // MAPPS-1228: the list's gate, so a technician following an invoice link
+    // gets the explained refusal rather than "Could not load invoice.".
+    match use_invoice_gate() {
+        InvoiceGate::Open => rsx! { InvoiceDetailBody { ..props } },
+        InvoiceGate::PortalAccessRequired => {
+            use_page_title("Invoice");
+            rsx! {
+                crate::components::PortalAccessRequired {
+                    title: "Invoice".to_string(),
+                    area: crate::components::INVOICES,
+                }
             }
-        };
+        }
+        InvoiceGate::NoFinancePermission => {
+            use_page_title("Invoice");
+            rsx! { NoFinancePermission { title: "Invoice" } }
+        }
     }
-    rsx! { InvoiceDetailBody { ..props } }
 }
 
 #[component]
@@ -1850,6 +1958,11 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     // which reads as the page starting two payments.
     let mut pay_pending = use_signal(|| None::<usize>);
     let mut pay_error = use_signal(String::new);
+    // MAPPS-1228: the amount field's own error (an amount that is not a
+    // number), kept apart from `pay_error`, which is the banner's. Sharing
+    // one signal showed every checkout failure twice and pinned it on the
+    // amount field.
+    let mut pay_amount_error = use_signal(String::new);
     let id_for_pay = props.id.clone();
     // MAPPS-673: the partial-payment amount, as the customer types it. Empty
     // = full balance (the pre-MAPPS-673 default). Kept as a String rather
@@ -2164,17 +2277,20 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                     }
                     // MAPPS-1014: the relay refused the mail. Dialog
                     // closes; the banner above the invoice carries the
-                    // detail and the Retry.
+                    // detail and the Retry. MAPPS-1228: 502 alone, the
+                    // status the server's mail refusal maps to
+                    // (`AppError::external_service`); any other 5xx is a
+                    // server fault, not an unsent email.
                     Err(crate::hooks::fetch::api::ApiError::Status { code, message, .. })
-                        if (500..=599).contains(&code) =>
+                        if is_relay_refusal(code) =>
                     {
                         tracing::warn!("send failed for invoice {invoice_id_for_log}: {message}");
                         confirming_send.set(false);
                         send_failed.set(Some(message));
                     }
                     Err(err) => {
-                        tracing::warn!("send failed for invoice {invoice_id_for_log}: {err:?}");
-                        send_error.set(format!("Could not send invoice: {err}"));
+                        tracing::error!("send failed for invoice {invoice_id_for_log}: {err:?}");
+                        send_error.set(format!("Could not send invoice: {}", err.user_message()));
                     }
                 }
             }
@@ -2277,7 +2393,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
     let edit_block = action_block(
         can_mutate,
         "Can't edit while the server is unreachable",
-        edit_unavailable(status.as_str()),
+        edit_unavailable(status.as_str(), amount_paid_any, amount_credited_any),
     );
     let amend_block = action_block(
         can_mutate,
@@ -2688,9 +2804,9 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                     placeholder: balance_due_display.clone(),
                                     disabled: !can_mutate || *pay_saving.read(),
                                     value: pay_amount.read().clone(),
-                                    error: pay_error.read().clone(),
+                                    error: pay_amount_error.read().clone(),
                                     oninput: move |e: FormEvent| {
-                                        pay_error.set(String::new());
+                                        pay_amount_error.set(String::new());
                                         pay_amount.set(e.value());
                                     },
                                 }
@@ -2733,7 +2849,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                 let is_pending = pay_button_loading(*pay_pending.read(), index);
                                 rsx! {
                                     Button {
-                                        key: "{label}",
+                                        key: "{index}",
                                         variant: ButtonVariant::Primary,
                                         // Only the pressed button spins. Every
                                         // button is still disabled while a
@@ -2754,6 +2870,11 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                                 return;
                                             }
                                             pay_error.set(String::new());
+                                            pay_amount_error.set(String::new());
+                                            if let Err(e) = parse_pay_amount(&pay_amount.read()) {
+                                                pay_amount_error.set(e);
+                                                return;
+                                            }
                                             pay_saving.set(true);
                                             pay_pending.set(Some(index));
                                             let id = id_for_pay.clone();
@@ -2780,12 +2901,8 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                                                     // typed, if any. Blank stays `None`,
                                                     // which is the byte-identical
                                                     // pre-MAPPS-673 full-balance request.
-                                                    let typed = pay_amount.read().trim().to_string();
-                                                    let amount = if typed.is_empty() {
-                                                        None
-                                                    } else {
-                                                        Some(typed)
-                                                    };
+                                                    let amount = parse_pay_amount(&pay_amount.read())
+                                                        .unwrap_or_default();
                                                     let body = PayInvoiceBody {
                                                         success_url: format!("{origin}{path}?paid=1"),
                                                         cancel_url: format!("{origin}{path}"),
@@ -3213,7 +3330,7 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
                 // MAPPS-727: the write-off block, when there was one.
                 let write_off = inv.written_off_at.as_deref().map(|at| {
                     write_off_line(
-                        &format_money_str(inv.write_off_amount.as_deref().unwrap_or("0")),
+                        &write_off_amount_label(inv.write_off_amount.as_deref()),
                         Some(at),
                         inv.written_off_by_name.as_deref(),
                     )
@@ -3433,9 +3550,16 @@ fn InvoiceDetailBody(props: InvoiceDetailPageProps) -> Element {
 
                             Card { title: "Credit Notes",
                                 {
-                                    let notes = credit_notes_resource.read_unchecked().clone().unwrap_or_default();
+                                    let notes_snap = credit_notes_resource.read_unchecked().clone();
+                                    // MAPPS-1230: a failed read is not "no credit notes".
+                                    let notes_failed = matches!(notes_snap, Some(None));
+                                    let notes = notes_snap.flatten().unwrap_or_default();
                                     rsx! {
-                                        if notes.is_empty() {
+                                        if notes_failed {
+                                            p { class: "text-sm text-red-600 dark:text-red-400",
+                                                "Could not load the credit notes for this invoice."
+                                            }
+                                        } else if notes.is_empty() {
                                             p { class: "text-sm text-muted",
                                                 if creditable {
                                                     "No credit notes. Use Create Credit Note to correct this invoice."
@@ -4632,6 +4756,19 @@ const PAYMENT_NOTES_MAX: usize = 2000;
 /// clear "out of range" message rather than a misleading parse error.
 const PAYMENT_AMOUNT_MAX: i64 = 10_000_000_000;
 
+/// MAPPS-1229: whether an amount has more than two significant decimals.
+/// `scale()` counts trailing zeros, so "5.100" was refused as three decimal
+/// places although its value is 5.10.
+fn more_than_two_decimals(d: Decimal) -> bool {
+    d.normalize().scale() > 2
+}
+
+/// MAPPS-1229: the 64-character button-label cap applies to what is sent,
+/// which is the trimmed label.
+fn button_label_too_long(label: &str) -> bool {
+    label.trim().chars().count() > 64
+}
+
 #[derive(Props, Clone, PartialEq)]
 struct RecordPaymentModalProps {
     // MAPPS-235: when set, the modal edits this existing payment (PUT
@@ -4777,7 +4914,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         guard.note_invalid(Some("payment_amount"));
                         String::new()
                     }
-                    Ok(d) if d.scale() > 2 => {
+                    Ok(d) if more_than_two_decimals(d) => {
                         amount_err.set("Amount must have at most 2 decimal places.".to_string());
                         guard.note_invalid(Some("payment_amount"));
                         String::new()
@@ -4852,16 +4989,30 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                 // visible to this tenant) before recording, so a well-formed
                 // but unknown ID gets a field message instead of an opaque
                 // server FK error (MAPPS-215).
+                // MAPPS-1229: only a not-found answer is "no such invoice";
+                // a network error, a 5xx or a 401 is logged and shown as
+                // what it is, so the person does not go hunting for a typo.
                 if let Some(id) = invoice_uuid {
-                    if crate::hooks::fetch::api::get_authed::<InvoiceDetail>(&format!(
+                    match crate::hooks::fetch::api::get_authed_typed::<InvoiceDetail>(&format!(
                         "/invoices/{id}"
                     ))
                     .await
-                    .is_err()
                     {
-                        invoice_err.set("No invoice found with that ID.".to_string());
-                        saving.set(false);
-                        return;
+                        Ok(_) => {}
+                        Err(crate::hooks::fetch::api::ApiError::Status { code: 404, .. }) => {
+                            invoice_err.set("No invoice found with that ID.".to_string());
+                            saving.set(false);
+                            return;
+                        }
+                        Err(err) => {
+                            tracing::error!("payment invoice check failed for {id}: {err}");
+                            error.set(format!(
+                                "Could not check the invoice: {}",
+                                err.user_message()
+                            ));
+                            saving.set(false);
+                            return;
+                        }
                     }
                 }
                 let result = if is_edit {
@@ -5698,7 +5849,12 @@ fn TaxRateListBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        let token = crate::hooks::fetch::api::current_access_token()?;
+        // MAPPS-1229: a missing token is a load failure like any other, and
+        // the banner it produces should have a log line behind it.
+        let Some(token) = crate::hooks::fetch::api::current_access_token() else {
+            tracing::error!("tax rate list load failed: no access token");
+            return None;
+        };
         let path = format!("/tax-rates?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTaxRate>>(&path, &token)
             .await
@@ -6228,7 +6384,10 @@ fn PaymentGatewayConfigBody() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        let token = crate::hooks::fetch::api::current_access_token()?;
+        let Some(token) = crate::hooks::fetch::api::current_access_token() else {
+            tracing::error!("payment gateway list load failed: no access token");
+            return None;
+        };
         crate::hooks::fetch::api::get_all_with_auth::<RemoteGateway>("/payment-gateways", &token)
             .await
             .inspect_err(|e| tracing::error!("payment gateway list load failed: {e}"))
@@ -6924,7 +7083,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         // MAPPS-671: 64-char cap mirrors the server's validator; catching it
         // here gives a field-level error rather than a form-level 422.
         let cdn = client_display_name.read().clone();
-        if cdn.chars().count() > 64 {
+        if button_label_too_long(&cdn) {
             client_display_name_err.set("Button label must be 64 characters or fewer.".to_string());
             return;
         }
@@ -7247,14 +7406,35 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                                                 size: ButtonSize::Small,
                                                 onclick: move |_| {
                                                     let u = url.clone();
+                                                    // MAPPS-1229: the toast follows the write. The
+                                                    // promise was dropped, so a refused write (no
+                                                    // permission, insecure context) still said
+                                                    // "copied" and logged nothing.
                                                     #[cfg(target_arch = "wasm32")]
-                                                    if let Some(win) = web_sys::window() {
-                                                        let _ = win.navigator().clipboard().write_text(&u);
-                                                        crate::hooks::toast::push_toast(
-                                                            crate::components::AlertType::Success,
-                                                            "Webhook endpoint copied to clipboard.".to_string(),
-                                                        );
-                                                    }
+                                                    spawn(async move {
+                                                        let written = match web_sys::window() {
+                                                            Some(win) => wasm_bindgen_futures::JsFuture::from(
+                                                                win.navigator().clipboard().write_text(&u),
+                                                            )
+                                                            .await
+                                                            .map(|_| ())
+                                                            .map_err(|e| format!("{e:?}")),
+                                                            None => Err("no window".to_string()),
+                                                        };
+                                                        match written {
+                                                            Ok(()) => crate::hooks::toast::push_toast(
+                                                                crate::components::AlertType::Success,
+                                                                "Webhook endpoint copied to clipboard.".to_string(),
+                                                            ),
+                                                            Err(e) => {
+                                                                tracing::warn!("webhook endpoint copy failed: {e}");
+                                                                crate::hooks::toast::push_toast(
+                                                                    crate::components::AlertType::Error,
+                                                                    "Could not copy the webhook endpoint. Select it and copy it by hand.".to_string(),
+                                                                );
+                                                            }
+                                                        }
+                                                    });
                                                     #[cfg(not(target_arch = "wasm32"))]
                                                     let _ = u;
                                                 },
@@ -7470,8 +7650,8 @@ mod copy_style_tests {
     #[test]
     fn disabled_control_reasons_are_short_single_statements() {
         let samples: Vec<Option<String>> = vec![
-            edit_unavailable("sent"),
-            edit_unavailable("void"),
+            edit_unavailable("sent", false, false),
+            edit_unavailable("void", false, false),
             void_unavailable("sent"),
             void_unavailable("void"),
             write_off_unavailable("draft"),
@@ -7950,7 +8130,7 @@ mod invoice_action_availability_tests {
     #[test]
     fn each_status_offers_exactly_the_actions_the_server_accepts() {
         for status in STATUSES {
-            let edit = edit_unavailable(status).is_none();
+            let edit = edit_unavailable(status, false, false).is_none();
             let amend = amend_unavailable(status, false, false).is_none();
             let credit = credit_note_unavailable(status, true).is_none();
             let write_off = write_off_unavailable(status).is_none();
@@ -7980,7 +8160,7 @@ mod invoice_action_availability_tests {
         for status in STATUSES {
             assert_eq!(
                 invoice_pdf_previews(status),
-                edit_unavailable(status).is_none(),
+                edit_unavailable(status, false, false).is_none(),
                 "PDF preview-vs-download disagrees with editability for {status}"
             );
         }
@@ -7993,7 +8173,7 @@ mod invoice_action_availability_tests {
     fn every_refusal_says_why_in_a_sentence() {
         for status in STATUSES {
             for reason in [
-                edit_unavailable(status),
+                edit_unavailable(status, false, false),
                 amend_unavailable(status, false, false),
                 credit_note_unavailable(status, true),
                 write_off_unavailable(status),
@@ -8043,7 +8223,7 @@ mod invoice_action_availability_tests {
         let down_and_frozen = action_block(
             false,
             "Can't edit while the server is unreachable",
-            edit_unavailable("sent"),
+            edit_unavailable("sent", false, false),
         );
         assert_eq!(
             down_and_frozen.as_deref(),
@@ -8165,7 +8345,8 @@ mod payments_card_tests {
 
     #[test]
     fn the_method_label_spaces_and_capitalises_the_token() {
-        assert_eq!(payment_method_label("credit_card"), "Credit card");
+        assert_eq!(payment_method_label("credit_card"), "Credit Card");
+        assert_eq!(payment_method_label("ach"), "ACH Transfer");
         assert_eq!(payment_method_label("bank_transfer"), "Bank transfer");
         assert_eq!(payment_method_label("check"), "Check");
         assert_eq!(payment_method_label("  "), "Payment");
@@ -8175,7 +8356,7 @@ mod payments_card_tests {
     fn the_payment_row_names_method_date_and_reference() {
         assert_eq!(
             payment_line("2026-09-02", "credit_card", Some("ch_123")),
-            "Credit card on 2026-09-02 (ref ch_123)"
+            "Credit Card on 2026-09-02 (ref ch_123)"
         );
         assert_eq!(
             payment_line("2026-09-02", "cash", Some("  ")),
@@ -8747,6 +8928,103 @@ mod pay_option_tests {
     }
 }
 
+/// MAPPS-1229: the five findings from the payments, tax-rate and gateway
+/// specification pass. The two checks are tested directly; the rest live in
+/// resources and handlers that run only under `app`, so they are pinned as
+/// source.
+#[cfg(test)]
+mod mapps1229_tests {
+    use super::{button_label_too_long, more_than_two_decimals};
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    fn code() -> String {
+        let src = include_str!("billing.rs");
+        src[..src.find("mod mapps1229_tests").expect("this module")]
+            .lines()
+            .map(|l| l.find("//").map_or(l, |i| &l[..i]))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Finding 1: any failure of the pre-save check said "No invoice found".
+    #[test]
+    fn only_a_404_is_no_such_invoice() {
+        let code = code();
+        let check = &code[code
+            .find("if let Some(id) = invoice_uuid {")
+            .expect("the check")..];
+        let check = &check[..check.find("let result = if is_edit").expect("end of check")];
+        let not_found = check
+            .find("ApiError::Status { code: 404, .. }) => { invoice_err.set(\"No invoice found with that ID.\"")
+            .expect("the 404 arm");
+        let other = check
+            .find(
+                "Err(err) => { tracing::error!(\"payment invoice check failed for {id}: {err}\");",
+            )
+            .expect("the other arm");
+        assert!(not_found < other);
+        assert!(check.contains(
+            "error.set(format!( \"Could not check the invoice: {}\", err.user_message()"
+        ));
+        assert!(
+            !check.contains(".is_err()"),
+            "no failure collapses into not-found"
+        );
+    }
+
+    /// Finding 2: the copy toast fired whether or not the write succeeded.
+    #[test]
+    fn the_copy_toast_follows_the_write() {
+        let code = code();
+        assert!(!code.contains("let _ = win.navigator().clipboard().write_text(&u);"));
+        let copy = &code[code
+            .find("win.navigator().clipboard().write_text(&u),")
+            .expect("the write")..];
+        let success = copy
+            .find("\"Webhook endpoint copied to clipboard.\"")
+            .expect("success toast");
+        let failure = copy
+            .find("tracing::warn!(\"webhook endpoint copy failed: {e}\");")
+            .expect("failure log");
+        assert!(copy.find("match written {").expect("awaited") < success.min(failure));
+    }
+
+    /// Finding 3: a missing token rendered the banner with no log line.
+    #[test]
+    fn a_missing_token_is_logged() {
+        let code = code();
+        assert!(code.contains(
+            r#"tracing::error!("tax rate list load failed: no access token"); return None;"#
+        ));
+        assert!(code.contains(
+            r#"tracing::error!("payment gateway list load failed: no access token"); return None;"#
+        ));
+    }
+
+    /// Finding 4: the cap was checked on the untrimmed label.
+    #[test]
+    fn the_button_label_cap_applies_to_the_trimmed_label() {
+        let sixty_four = "a".repeat(64);
+        assert!(!button_label_too_long(&format!(" {sixty_four} ")));
+        assert!(button_label_too_long(&"a".repeat(65)));
+        assert!(code().contains("if button_label_too_long(&cdn) {"));
+    }
+
+    /// Finding 5: "5.100" was refused as three decimal places.
+    #[test]
+    fn trailing_zeros_are_not_decimal_places() {
+        let d = |s: &str| Decimal::from_str(s).expect("decimal");
+        assert!(!more_than_two_decimals(d("5.100")));
+        assert!(!more_than_two_decimals(d("5.10")));
+        assert!(more_than_two_decimals(d("5.105")));
+        assert!(code().contains("Ok(d) if more_than_two_decimals(d) => {"));
+    }
+}
+
 /// MAPPS-643: the locked-invoice note.
 #[cfg(test)]
 mod mapps643_locked_note_tests {
@@ -8836,5 +9114,164 @@ mod invoice_company_move_tests {
     #[test]
     fn a_cleared_company_blocks_the_save() {
         assert!(edit_modal().contains("Choose the company this invoice is for."));
+    }
+}
+
+/// MAPPS-1228: the nine findings from the invoices specification pass. The
+/// pure decisions are tested directly; the wiring that only runs under `app`
+/// with a DOM is pinned as source.
+#[cfg(test)]
+mod mapps1228_tests {
+    use super::{
+        amend_unavailable, computed_tax_amount, edit_unavailable, humanize_payment_method,
+        invoice_gate, is_relay_refusal, parse_pay_amount, payment_method_label,
+        write_off_amount_label, InvoiceGate, RemoteTaxRate,
+    };
+
+    fn code() -> String {
+        let src = include_str!("billing.rs");
+        src[..src.find("mod mapps1228_tests").expect("this module")]
+            .lines()
+            .map(|l| l.find("//").map_or(l, |i| &l[..i]))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Finding 1: Clear filters left the search, which `has_filters` counts.
+    #[test]
+    fn clear_filters_clears_the_search_too() {
+        assert!(code().contains(
+            "company_filter.set(String::new()); status_filter.set(String::new()); overdue_filter.set(String::new()); search.set(String::new());"
+        ));
+    }
+
+    /// Finding 2: an unparseable rate became a zero amount, not "".
+    #[test]
+    fn an_unparseable_rate_is_no_tax_not_zero() {
+        let rates = vec![RemoteTaxRate {
+            id: uuid::Uuid::new_v4(),
+            name: "Broken".into(),
+            rate: "thirteen".into(),
+            is_default: true,
+            is_active: true,
+        }];
+        assert_eq!(computed_tax_amount(&rates, "", "100"), "");
+        assert_eq!(computed_tax_amount(&rates, "", "abc"), "");
+    }
+
+    /// Finding 3: every staff bearer passed `use_capability("invoices:read")`,
+    /// so a technician reached a finance-gated fetch.
+    #[test]
+    fn a_staff_caller_without_finance_is_refused_with_the_explained_state() {
+        // (contact session, staff session, has finance, can read)
+        assert_eq!(
+            invoice_gate(false, true, false, true),
+            InvoiceGate::NoFinancePermission
+        );
+        assert_eq!(invoice_gate(false, true, true, true), InvoiceGate::Open);
+        assert_eq!(invoice_gate(true, false, false, true), InvoiceGate::Open);
+        assert_eq!(
+            invoice_gate(true, false, false, false),
+            InvoiceGate::PortalAccessRequired
+        );
+        assert_eq!(
+            invoice_gate(false, false, false, true),
+            InvoiceGate::Open,
+            "platform session"
+        );
+        assert_eq!(
+            invoice_gate(false, false, false, false),
+            InvoiceGate::NoFinancePermission
+        );
+        let code = code();
+        assert!(
+            code.contains("pub fn InvoiceListPage() -> Element { let gate = use_invoice_gate();")
+        );
+        assert!(code.contains("match use_invoice_gate() { InvoiceGate::Open => rsx! { InvoiceDetailBody { ..props } },"));
+    }
+
+    /// Finding 4: Edit said "Amend it" while Amend itself was greyed.
+    #[test]
+    fn edit_never_points_at_an_unavailable_amend() {
+        for status in ["sent", "partially_paid", "paid", "void", "written_off"] {
+            for (paid, credited) in [(false, false), (true, false), (false, true)] {
+                let edit = edit_unavailable(status, paid, credited).expect("frozen");
+                match amend_unavailable(status, paid, credited) {
+                    Some(amend) => {
+                        assert_eq!(edit, amend, "{status} paid={paid} credited={credited}")
+                    }
+                    None => assert!(edit.contains("Amend it"), "{status}: {edit}"),
+                }
+            }
+        }
+        assert!(edit_unavailable("draft", true, true).is_none());
+    }
+
+    /// Finding 5: a write-off with no amount rendered as $0.00.
+    #[test]
+    fn a_missing_write_off_amount_is_not_zero() {
+        assert_eq!(write_off_amount_label(None), "Amount not recorded");
+        assert_eq!(write_off_amount_label(Some("  ")), "Amount not recorded");
+        assert_ne!(write_off_amount_label(Some("0")), "Amount not recorded");
+        assert!(code().contains("&write_off_amount_label(inv.write_off_amount.as_deref()),"));
+    }
+
+    /// Finding 6: two labels for one server enum.
+    #[test]
+    fn the_payments_card_and_list_use_one_vocabulary() {
+        for tag in [
+            "check",
+            "credit_card",
+            "ach",
+            "wire",
+            "cash",
+            "paypal",
+            "other",
+            "bank_transfer",
+        ] {
+            assert_eq!(
+                payment_method_label(tag),
+                humanize_payment_method(tag),
+                "{tag}"
+            );
+        }
+    }
+
+    /// Finding 7: equal admin-set labels gave equal keys.
+    #[test]
+    fn pay_buttons_are_keyed_by_position() {
+        let code = code();
+        assert!(code.contains(r#"Button { key: "{index}", variant: ButtonVariant::Primary,"#));
+        assert!(!code.contains(r#"key: "{label}""#));
+    }
+
+    /// Finding 8: every 5xx read as "The email was not sent."
+    #[test]
+    fn only_a_relay_refusal_is_an_unsent_email() {
+        assert!(is_relay_refusal(502));
+        for code in [500, 501, 503, 504] {
+            assert!(!is_relay_refusal(code), "{code}");
+        }
+        let code = code();
+        assert!(code.contains("if is_relay_refusal(code) =>"));
+        assert!(code.contains(
+            r#"tracing::error!("send failed for invoice {invoice_id_for_log}: {err:?}");"#
+        ));
+    }
+
+    /// Finding 9: one pay error drove both the amount field and the banner.
+    #[test]
+    fn a_pay_error_shows_in_one_place() {
+        assert_eq!(parse_pay_amount("  "), Ok(None));
+        assert_eq!(parse_pay_amount(" 25.00 "), Ok(Some("25.00".to_string())));
+        assert!(parse_pay_amount("0").is_err());
+        assert!(parse_pay_amount("-5").is_err());
+        assert!(parse_pay_amount("lots").is_err());
+        let code = code();
+        assert!(code.contains("error: pay_amount_error.read().clone(),"));
+        assert!(!code.contains("error: pay_error.read().clone(),"));
     }
 }

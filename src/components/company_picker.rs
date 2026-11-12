@@ -1,7 +1,8 @@
 //! Reusable Company picker.
 //!
-//! Hits `GET /contacts/companies?q=...&status=active&per_page=20` on each keystroke
-//! (no debounce) and renders the matches in a click-to-select dropdown.
+//! Hits `GET /contacts/companies?q=...&status=active&per_page=20` once the
+//! query has been still for 300 ms (MAPPS-855, `use_debounced_signal`) and
+//! renders the matches in a click-to-select dropdown.
 //! The selected
 //! company's UUID is reported back via the `onselect` callback; the
 //! displayed name is reported via the `value` signal so the calling
@@ -414,6 +415,9 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                         show_create_modal.set(false);
                                     }
                                     Err(err) => {
+                                        // MAPPS-1243: logged as well as shown,
+                                        // like the search failures.
+                                        tracing::warn!("company picker could not create {name_v:?}: {err}");
                                         create_error.set(format!(
                                             "Could not create company: {err}"
                                         ));
@@ -558,5 +562,32 @@ mod tests {
             field < focus && focus < next,
             "the autofocus belongs to new_company_name"
         );
+    }
+}
+
+/// MAPPS-1243: a failed inline create is logged, and the doc says the
+/// search is debounced.
+#[cfg(test)]
+mod mapps_1243_tests {
+    #[test]
+    fn a_failed_create_is_logged_and_the_doc_is_current() {
+        for (file, src) in [
+            ("company_picker.rs", include_str!("company_picker.rs")),
+            ("asset_picker.rs", include_str!("asset_picker.rs")),
+            ("contact_picker.rs", include_str!("contact_picker.rs")),
+        ] {
+            let header: String = src
+                .lines()
+                .take_while(|l| l.starts_with("//!"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(
+                !header.contains(concat!("on each ", "keystroke")),
+                "{file}: {header}"
+            );
+            assert!(header.contains("300 ms"), "{file}");
+        }
+        let src = include_str!("company_picker.rs");
+        assert!(src.contains("company picker could not create {name_v:?}: {err}"));
     }
 }

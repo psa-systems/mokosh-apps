@@ -20,7 +20,10 @@
 //! - 400 -> expired, unknown or malformed; the server deliberately does not
 //!   distinguish these, so neither does this page
 //! - 422 -> per-field validation errors, routed to their inputs
-//! - 429 -> rate limited
+//! - 429 (and a network failure or a 5xx) -> not terminal: the visitor is
+//!   told to try again, and the error is logged (MAPPS-1250: this line said
+//!   429 had its own "rate limited" handling, which it never had; see
+//!   SPEC-9.4.14)
 //!
 //! The field set, its validation and the cross-field rules are all defined
 //! server-side (PMS-731); this page renders whatever it is handed rather than
@@ -67,6 +70,8 @@ struct Receipt {
 /// Terminal states the page can land in, each with its own copy. Kept as an
 /// enum rather than a pile of booleans so it is impossible to render the form
 /// and a terminal message at the same time.
+// SPEC-9.1.21: this enum shape is what makes rendering more than one of
+// terminal/loading/load-failed/live-form at once structurally impossible.
 #[derive(Debug, Clone, PartialEq)]
 enum Terminal {
     /// Submitted successfully; carries the ticket number to quote and, for a
@@ -87,6 +92,8 @@ enum Terminal {
 /// copy. Pick which one from the server-provided message. The retired message
 /// is spelled by `src/modules/forms/request_links.rs` and starts with "This
 /// form has been retired".
+// SPEC-9.4.13: only these two 410 shapes get distinct copy; everything else
+// collapses to the single expired-or-invalid message.
 fn gone_terminal(message: &str) -> Terminal {
     if message.contains("form has been retired") {
         Terminal::Retired
@@ -105,9 +112,13 @@ async fn load_form(
     mut terminal: Signal<Option<Terminal>>,
     tok: String,
 ) {
+    // SPEC-9.8.1: this whole async-call path compiles to a no-op below when
+    // the `app` feature is off.
     #[cfg(feature = "app")]
     {
         use crate::hooks::fetch::api::ApiError;
+        // SPEC-9.4.12, SPEC-9.7.9: the route token is the only credential on
+        // this call, and it is the one public request-form endpoint.
         match crate::hooks::fetch::api::get_typed::<PublicForm>(&format!(
             "/public/request-forms/{tok}"
         ))
@@ -121,7 +132,18 @@ async fn load_form(
             // Anything else (network, 5xx, 429) is not terminal: the link may
             // well work on a retry, so the visitor is told to try again
             // rather than that their link is dead.
-            Err(_) => terminal.set(None),
+            // SPEC-9.4.14: no captcha/rate-limit tracking here; a 429 is just
+            // another non-terminal case.
+            //
+            // MAPPS-1250: logged, and the form cleared. On "Add the next
+            // person" the previous person's form was still in the signal, so
+            // a failed reload rendered it (with its stale person number)
+            // instead of the try-again state.
+            Err(e) => {
+                tracing::warn!("request form load failed: {e}");
+                form.set(None);
+                terminal.set(None);
+            }
         }
     }
     #[cfg(not(feature = "app"))]
@@ -143,6 +165,8 @@ pub fn RequestFormPage(token: String) -> Element {
     // Answers keyed by field name. Booleans are held as "true"/"false" strings
     // so one map covers every field type; `build_payload` converts them back to
     // real JSON types on submit, because the server type-checks each field.
+    // SPEC-9.2.12: one string-keyed map for every field type, booleans
+    // included as the literal strings "true"/"false".
     let mut answers = use_signal(HashMap::<String, String>::new);
     let mut field_errors = use_signal(HashMap::<String, String>::new);
     let mut form_error = use_signal(String::new);
@@ -160,6 +184,8 @@ pub fn RequestFormPage(token: String) -> Element {
         let mut submitting = submitting;
         let mut terminal = terminal;
         move |_| {
+            // SPEC-9.6.10: no-op immediately against a submission already
+            // in flight for this form.
             if submitting() {
                 return;
             }
@@ -173,6 +199,8 @@ pub fn RequestFormPage(token: String) -> Element {
             // short-circuit, or one missing field masks another. Whitespace is
             // not an answer, matching the server, which trims before deciding
             // whether a field was answered at all.
+            // SPEC-9.5.11: evaluate every field and collect every failure;
+            // never return on the first one.
             let mut errs: HashMap<String, String> = HashMap::new();
             for f in &def.fields {
                 let answered = current
@@ -202,6 +230,8 @@ pub fn RequestFormPage(token: String) -> Element {
                 {
                     use crate::hooks::fetch::api::ApiError;
                     let body = SubmitBody { payload };
+                    // SPEC-9.7.9: the same one public, token-keyed endpoint
+                    // the mount-time load uses, submit side.
                     match crate::hooks::fetch::api::post_typed::<Receipt, _>(
                         &format!("/public/request-forms/{tok}"),
                         &body,
@@ -216,6 +246,8 @@ pub fn RequestFormPage(token: String) -> Element {
                         // option set, date-not-in-past) come back here and are
                         // routed to their inputs, so the client fixes the field
                         // rather than reading a banner.
+                        // SPEC-9.5.12: split the server's field errors into
+                        // ones the form can route and ones it can't.
                         Err(e @ ApiError::Status { code: 422, .. }) => {
                             let mut routed = HashMap::new();
                             let mut unrouted = Vec::new();
@@ -238,7 +270,11 @@ pub fn RequestFormPage(token: String) -> Element {
                         Err(ApiError::Status { code: 400, .. }) => {
                             terminal.set(Some(Terminal::Unusable))
                         }
-                        Err(e) => form_error.set(e.user_message()),
+                        // MAPPS-1250: logged as well as shown.
+                        Err(e) => {
+                            tracing::warn!("request form submit failed: {e}");
+                            form_error.set(e.user_message());
+                        }
                     }
                 }
                 #[cfg(not(feature = "app"))]
@@ -278,6 +314,9 @@ pub fn RequestFormPage(token: String) -> Element {
                                     onclick: move |_| {
                                         // Same link, empty form: the next
                                         // person starts from a clean page.
+                                        // SPEC-9.9.5: clear the current
+                                        // person's answers and field errors
+                                        // before fetching the next slot.
                                         answers.write().clear();
                                         field_errors.write().clear();
                                         form_error.set(String::new());
@@ -290,6 +329,11 @@ pub fn RequestFormPage(token: String) -> Element {
                                         // keeps the form off screen so the
                                         // next person cannot submit against
                                         // the stale one.
+                                        // SPEC-9.1.23, SPEC-9.6.11: refetch
+                                        // the form definition rather than
+                                        // only clearing local state, and
+                                        // keep loading true/terminal clear
+                                        // until that refetch resolves.
                                         let mut loading = loading;
                                         loading.set(true);
                                         terminal.set(None);
@@ -419,6 +463,9 @@ pub(crate) fn RequestFormBody(
                 onsubmit.call(());
             },
 
+            // SPEC-9.1.22: every server-returned field, in server-given
+            // order; `FieldInput` below maps each one's declared type to a
+            // widget, falling back to plain text for an unrecognized type.
             for field in def.fields.clone() {
                 FieldInput {
                     key: "{field.name}",
@@ -599,6 +646,8 @@ fn required_by_rule(rules: &[PublicRule], field: &str, answers: &HashMap<String,
 /// Convert the string-keyed answers into the JSON the server type-checks:
 /// booleans as real booleans, everything else as trimmed strings, and blanks
 /// omitted entirely rather than sent as `""`.
+// SPEC-9.2.13: omit a blank/whitespace-only text answer, but always send an
+// explicit boolean (defaulting to false) for every boolean field.
 fn build_payload(def: &PublicForm, answers: &HashMap<String, String>) -> serde_json::Value {
     let mut out = serde_json::Map::new();
     for f in &def.fields {
@@ -619,6 +668,8 @@ fn build_payload(def: &PublicForm, answers: &HashMap<String, String>) -> serde_j
         if trimmed.is_empty() {
             // The server treats blank as absent; sending "" would just make it
             // say so on the round trip.
+            // SPEC-9.9.6: a blank/whitespace-only text answer is discarded
+            // from the payload entirely.
             continue;
         }
         out.insert(
@@ -926,5 +977,36 @@ mod tests {
             !rendered.contains("Person 1 of 1"),
             "a single-person link renders no person-number label at all; got: {rendered}"
         );
+    }
+}
+
+/// MAPPS-1250: load and submit failures are logged, and a failed reload never
+/// leaves the previous person's form on screen.
+#[cfg(test)]
+mod failure_tests {
+    fn code() -> String {
+        let src = include_str!("request_form.rs");
+        src[..src.find("mod failure_tests").unwrap()]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn a_failed_load_is_logged_and_clears_the_form() {
+        let code = code();
+        assert!(!code.contains("Err(_) => terminal.set(None),"));
+        assert!(code.contains("tracing::warn!(\"request form load failed: {e}\"); form.set(None); terminal.set(None);"));
+    }
+
+    #[test]
+    fn a_failed_submit_is_logged() {
+        assert!(code().contains("tracing::warn!(\"request form submit failed: {e}\"); form_error.set(e.user_message());"));
+    }
+
+    #[test]
+    fn the_header_does_not_promise_rate_limit_handling() {
+        let src = include_str!("request_form.rs");
+        assert!(!src.contains(concat!("//! - 429 -> rate", " limited")));
     }
 }
