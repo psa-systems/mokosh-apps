@@ -499,9 +499,8 @@ format owned by this scope is the operator-facing configuration catalog:
 
 ## 2. Repository check scripts
 
-Scope: every file under `scripts/`: the 37 `check-*.sh` lint/invariant scripts,
-`config-docs.nu`, the configuration-documentation generator, and
-`classify-diff.nu`, the diff classifier. Each
+Scope: every file under `scripts/`: the 37 `check-*.sh` lint/invariant scripts
+and `config-docs.nu`, the configuration-documentation generator. Each
 `check-*.sh` script is a standalone, repeatable guard against one named
 regression (most carry an issue id in their header comment); each is invoked
 from `justfile` and, for the ones `just check` depends on, from
@@ -1061,38 +1060,6 @@ those files' own behavior belongs to the sections that own them.
   pass; it must print `confirmed-toggle guard: self-test OK` and exit 0 only
   if every case held, otherwise print a `SELF-TEST FAIL` line per failed case
   and exit 1.
-
-### 2.12 Diff classifier (classify-diff.nu)
-
-- **SPEC-2.12.1**: `classify-diff.nu <base-ref> <head-ref>` must print exactly
-  one of `code`, `comments-only` or `non-code` on stdout and exit 0; with
-  either ref missing it must print a usage line to stderr and exit 2, and
-  with `--self-test` it must run its own tests instead of classifying.
-- **SPEC-2.12.2**: `classify-diff.nu` must treat a changed path as a code file
-  when it ends in one of the C-family suffixes (`.rs .ts .tsx .js .jsx .mjs
-  .cjs .css .scss .sql .c .cpp .cc .h .hpp .java .go .kt`) or one of the
-  hash-family suffixes (`.nu .py .sh .bash .zsh .yml .yaml .toml .just
-  .justfile Dockerfile`), or when its base name is `Dockerfile` or starts with
-  `Dockerfile.`; every other path must be ignored.
-- **SPEC-2.12.3**: `classify-diff.nu` must judge each `+`/`-` content line of
-  a code file, skipping `+++`, `---` and `@@` lines, as a comment when it is
-  blank, starts with `#` in a hash-family file, or starts with `//`, `/*`,
-  `*/`, `*` or `--` in a C-family file, after trimming whitespace.
-- **SPEC-2.12.4**: `classify-diff.nu` must return `code` as soon as any
-  changed line of any code file is not a comment, `comments-only` when at
-  least one code file changed and every changed line was a comment, a blank,
-  or the file changed with no content lines, and `non-code` when no code file
-  changed.
-- **SPEC-2.12.5**: When `git diff --name-only` between the two refs fails
-  (invalid ref, no merge base), `classify-diff.nu` must write git's stderr to
-  its own stderr and answer `code` with exit 0, so a classifier failure never
-  causes a gate to be skipped.
-- **SPEC-2.12.6**: `classify-diff.nu --self-test` must create a throwaway git
-  repository and assert six cases (C-family comment-only change, code change,
-  docs-only change, hash-family comment-only change, whitespace-only change,
-  mixed comment and code change), print `ok: <case> -> <verdict>` per case,
-  print `classify-diff.nu self-test passed` at the end, and exit nonzero with
-  the expected and actual verdicts in the message on the first mismatch.
 
 ## 3. Modules and platform layer
 
