@@ -87,11 +87,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # resolved at the build target platform (i.e. per-arch) instead of
 # the default-for-`COPY --from=image:tag`, which resolves at the
 # build platform.
-FROM caddy:2-alpine@sha256:78bd35025c7ba85961dd149ae670315129954e77abe2383ac47c89106b35ade9 AS caddy-bin
+FROM caddy:2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0 AS caddy-bin
 
 # Runtime stage - serve static assets via Caddy. Each output image
 # in a multi-arch build picks up the matching alpine variant.
-FROM alpine:3.24@sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 # Copy Caddy from the target-arch stage above
 COPY --from=caddy-bin /usr/bin/caddy /usr/bin/caddy
