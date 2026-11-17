@@ -132,7 +132,7 @@ enum CompanyFilter {
 
 /// What the search and the create show when the company scope is unusable.
 const INVALID_COMPANY_FILTER: &str =
-    "This list is scoped to a company that could not be identified. Reload the page and try again.";
+    "This list is scoped to a company that could not be identified. Refresh the page and try again.";
 
 fn classify_company_filter(raw: Option<&str>) -> CompanyFilter {
     match raw.map(str::trim).filter(|c| !c.is_empty()) {
