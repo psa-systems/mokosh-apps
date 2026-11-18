@@ -158,7 +158,7 @@ fn split_invites(
 /// What the switcher says when the team list did not refresh after an
 /// action that itself succeeded (MAPPS-1246).
 fn stale_teams_message(done: &str) -> String {
-    format!("{done}, but the team list could not be refreshed. Reload the page to see it.")
+    format!("{done}, but the team list could not be refreshed. Refresh the page to see it.")
 }
 
 #[component]
@@ -846,7 +846,7 @@ mod mapps_1246_tests {
     fn the_stale_list_message_says_the_action_worked() {
         assert_eq!(
             stale_teams_message("The team was created"),
-            "The team was created, but the team list could not be refreshed. Reload the page to see it."
+            "The team was created, but the team list could not be refreshed. Refresh the page to see it."
         );
     }
 
