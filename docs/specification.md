@@ -700,13 +700,12 @@ those files' own behavior belongs to the sections that own them.
   of a call to `classify_flow_error`), printing both failures when both
   occur rather than stopping at the first.
 - **SPEC-2.5.4**: `check-runner-labels.sh` must independently check, and
-  report every failing one of, three conditions on `.forgejo/workflows/*.yml`:
+  report every failing one of, two conditions on `.forgejo/workflows/*.yml`:
   the Rust-build job in `check.yml` (the job named `cargo`) requesting the
   heavy runner label in its own `runs-on`, not merely the label appearing
-  somewhere in the file; no workflow referencing a retired `*_LATEST`
-  runner label; and `check.yml` not installing OS packages at run time. A
-  missing `check.yml`, or no `cargo` job with a `runs-on`, must exit 2
-  (SPEC-2.5.1).
+  somewhere in the file; and `check.yml` not installing OS packages at run
+  time. A missing `check.yml`, or no `cargo` job with a `runs-on`, must exit
+  2 (SPEC-2.5.1).
 - **SPEC-2.5.5**: `check-cancel-routes.sh` must fail if the sorted set of
   `Link`-rendered Cancel destinations across `src/pages/*.rs` differs at all
   from its pinned expected set, printing a diff of expected versus actual so
