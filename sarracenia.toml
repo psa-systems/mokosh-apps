@@ -7,3 +7,6 @@ exclude = ["CLAUDE.md", "docs/**", "common/**", "tests/**", "**/tests/**", "targ
 [storefront]
 url = "https://docs.a8n.systems"
 site = "docs"
+
+[titles]
+"src" = "Module reference"
