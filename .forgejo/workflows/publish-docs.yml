@@ -87,8 +87,15 @@ jobs:
           # the token's env lifetime to this one step.
           SARRACENIA_TOKEN: ${{ secrets.DOCS_A8N_SYSTEMS_SARRACENIA }}
         run: |
+          # --no-media: sarracenia derives the Storefront media library path
+          # from base_path (lowercase `docs/mokosh-apps`); Storefront's
+          # normalize_media_library_path requires the first segment to match
+          # one of ["Images","Videos","Docs","Logos","Audio","Other"] case-
+          # sensitively, so the lowercase `docs` is refused 400. Drop this
+          # flag once either sarracenia maps base_path to the canonical root
+          # or Storefront's validator calls its own canonical_root_name helper.
           let bin = $"./($env.BINARY_FILE)"
-          ^$bin push
+          ^$bin push --no-media
 
       - name: Report job metrics
         if: always()
