@@ -5,10 +5,10 @@
 #
 # The pushing binary is the `latest` artifact from psa-systems' Forgejo Generic
 # Packages, not a build from HEAD; it lags HEAD by one sarracenia main-push
-# cycle by design. The target site, base path and include/exclude globs live
-# in sarracenia.toml at the repo root; the only values this workflow carries
-# are the runner shape, the publisher binary's registry location, and the
-# secret mapping.
+# cycle by design. The target site, base path and include globs live in
+# sarracenia.toml at docs/public/, and sarracenia runs with cwd = docs/public/
+# so the walk root is the published tree itself; the sidebar on docs.a8n.systems
+# shows content directly under the top-level entry with no intermediate layers.
 name: Publish docs
 
 on:
@@ -87,6 +87,11 @@ jobs:
           # the token's env lifetime to this one step.
           SARRACENIA_TOKEN: ${{ secrets.DOCS_A8N_SYSTEMS_SARRACENIA }}
         run: |
+          # sarracenia walks from cwd (src/lib.rs current_dir()); cd into the
+          # docs/public/ directory so docs/public/ is the walk root. The
+          # sidebar then renders content directly under the top-level entry
+          # rather than nested under "Docs > Public" synthetic layers.
+          #
           # --no-media: sarracenia derives the Storefront media library path
           # from base_path (lowercase `docs/mokosh-apps`); Storefront's
           # normalize_media_library_path requires the first segment to match
@@ -94,7 +99,8 @@ jobs:
           # sensitively, so the lowercase `docs` is refused 400. Drop this
           # flag once either sarracenia maps base_path to the canonical root
           # or Storefront's validator calls its own canonical_root_name helper.
-          let bin = $"./($env.BINARY_FILE)"
+          let bin = $"($env.GITHUB_WORKSPACE)/($env.BINARY_FILE)"
+          cd docs/public
           ^$bin push --no-media
 
       - name: Report job metrics
