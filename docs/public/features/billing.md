@@ -83,7 +83,7 @@ The Billing section shows the block's remaining balance and the current period's
 
 Every invoice and every quote has a customer-facing view. The URL is unique per document, carries the tenant's branding, and shows the document, the payment options, and the activity log stripped of staff-only entries.
 
-The staff view of the same document carries the staff bar and a View as visitor action to see what the customer sees. See [The shell](shell.md).
+The staff view of the same document carries the staff bar and a View as visitor action to see what the customer sees. See `The shell`.
 
 ## Payments appear where
 

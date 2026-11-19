@@ -46,7 +46,7 @@ Deleting a contact is reserved for records that were never real: a typo, a test 
 
 Turning Portal access on invites the contact to the client portal. On save, Mokosh sends the invite email through Bunyip so the contact can sign in with a password or an identity provider.
 
-The contact sees only their own customer in the portal. The staff bar in the signed-in shell is where staff see the same page as the contact would (the View as visitor action; see [The shell](shell.md)).
+The contact sees only their own customer in the portal. The staff bar in the signed-in shell is where staff see the same page as the contact would (the View as visitor action; see `The shell`).
 
 ## Where contacts show up
 

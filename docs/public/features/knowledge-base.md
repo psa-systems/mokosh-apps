@@ -18,7 +18,7 @@ A client reading an article from the portal sees the body and the public metadat
 
 Click New article from the index, or Edit from an article the signed-in user has write access to.
 
-The editor is split: markdown source on the left, rendered preview on the right. Formatting is markdown; code blocks support syntax highlighting; images are attached by paste or by the Attach image button. A deployment that caps attachment size (see the knowledge-base attachment variable in [Configuration](configuration.md)) rejects an oversize file in the client, before the upload.
+The editor is split: markdown source on the left, rendered preview on the right. Formatting is markdown; code blocks support syntax highlighting; images are attached by paste or by the Attach image button. A deployment that caps attachment size (see the knowledge-base attachment variable in `Configuration`) rejects an oversize file in the client, before the upload.
 
 Save as Draft or Publish. A draft is visible only to the editing user and anyone the tenant configures as a reviewer. A published article is visible per its visibility setting.
 
