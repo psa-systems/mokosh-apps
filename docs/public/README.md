@@ -1,4 +1,4 @@
-# Overview
+# Mokosh apps
 
 Mokosh apps is the client for the Mokosh PSA platform. One source tree builds as a WebAssembly single-page app in the browser and as a native desktop binary. The UI is identical across targets.
 
