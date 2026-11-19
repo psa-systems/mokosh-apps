@@ -1,12 +1,17 @@
-# Publishes this repo's docs to docs.a8n.systems under /docs/mokosh-apps.
+# Publishes this repo's user-facing docs to docs.a8n.systems under /docs/mokosh-apps.
+# Internal engineering docs under docs/ (dev-docs/, specification.md, ROADMAP.md,
+# architecture.md, recipes.md, the UI convention docs) stay in the repo and are
+# NOT pushed. Only docs/public/**/*.md is published.
 source = "mokosh-apps"
 base_path = "/docs/mokosh-apps"
-include = ["README.md", "src/**/*.rs", "**/src/**/*.rs"]
-exclude = ["CLAUDE.md", "docs/**", "common/**", "tests/**", "**/tests/**", "target/**", "**/target/**"]
+title = "Mokosh apps"
+include = ["docs/public/**/*.md"]
+exclude = []
 
 [storefront]
 url = "https://docs.a8n.systems"
 site = "docs"
 
 [titles]
-"src" = "Module reference"
+"docs/public/features" = "Features"
+"docs/public/operations" = "Operations"

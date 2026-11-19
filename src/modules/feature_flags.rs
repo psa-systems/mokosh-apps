@@ -105,7 +105,7 @@ mod tests {
             !entrypoint.contains("printf 'team_enabled"),
             "the entrypoint is writing a config key nothing reads"
         );
-        let self_hosting = include_str!("../../docs/self-hosting.md");
+        let self_hosting = include_str!("../../docs/public/self-hosting.md");
         assert!(
             !self_hosting.contains("MOKOSH_TEAM_ENABLED"),
             "the self-hosting table documents a variable nothing reads"
