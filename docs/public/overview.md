@@ -21,7 +21,7 @@ For the server side and its own operator documentation, see the mokosh-server re
 - **First time installing?** Read [Getting started](getting-started.md), then [Installation](installation.md) for the platform you are deploying to.
 - **Setting up OIDC?** [OIDC integration](oidc-integration.md) covers the Bunyip wiring.
 - **Branding a deployment?** [Branding](branding.md).
-- **Using the app?** [The shell](shell.md), then the [Features](features/README.md) section.
+- **Using the app?** [The shell](shell.md), then the [Features](features/overview.md) section.
 - **Something broken?** [Troubleshooting](troubleshooting.md) has the five failures operators hit most often.
 
 ## Features at a glance
