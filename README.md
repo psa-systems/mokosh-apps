@@ -23,7 +23,7 @@ Everything else is in [`docs/`](docs/README.md), indexed there in full:
 - [architecture.md](docs/architecture.md) - the stack, the source layout, the cargo features, and what a build produces
 - [recipes.md](docs/recipes.md) - the task runner, recipe by recipe
 - [desktop.md](docs/desktop.md) - the native desktop build
-- [self-hosting.md](docs/self-hosting.md) - run the published image, and every runtime environment variable
+- [self-hosting.md](docs/public/self-hosting.md) - run the published image, and every runtime environment variable
 - [client-server-integration.md](docs/client-server-integration.md) - how this client reaches mokosh-server, and what the two repositories share on the wire
 
 ## Development happens on Forgejo
