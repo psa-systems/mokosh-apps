@@ -4,7 +4,7 @@ How a running mokosh-apps deployment picks up a new version, and what the operat
 
 ## The web client
 
-A browser tab is pinned to the bundle it loaded. The running tab learns about a new deploy by watching the build revision carried by `_mokosh_config.js`, which the container rewrites on every start. When the running tab's revision differs from the deployed revision, the tab shows an update banner.
+A browser tab is pinned to the bundle it loaded. The running tab learns about a new deploy by watching the build revision carried by `_mokosh_config.json`, which the container rewrites on every start. When the running tab's revision differs from the deployed revision, the tab shows an update banner.
 
 The banner has three states:
 
