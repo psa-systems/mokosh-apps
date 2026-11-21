@@ -46,7 +46,7 @@ jobs:
           }
 
       - name: Clone the repository
-        uses: https://code.forgejo.org/actions/checkout@v5
+        uses: https://code.forgejo.org/actions/checkout@v7
         with:
           # provenance.rs in sarracenia reads git log for the push provenance
           # object; a shallow clone makes it fall back to a sparse record.
