@@ -70,7 +70,7 @@ production container injects into `window.__MOKOSH_CONFIG__` is settable here
 by the same name. That includes the MAPPS-509 branding keys (`brand_name`,
 `brand_logo_url`, `brand_hero_url`), so a desktop install brands itself the
 same way a hosted deployment does, down to the OS window title. See
-[deployment-branding.md](public/branding.md) for what each key changes;
+[branding.md](public/branding.md) for what each key changes;
 the container-side half of that document (Caddy, `entrypoint.sh`,
 `index.html`) does not apply here.
 
