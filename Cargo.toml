@@ -58,7 +58,7 @@ tracing = "0.1.44"
 futures-util = "0.3.34"
 sha2 = "0.11.1"
 base64 = "0.23.1"
-rand = "0.10.3"
+rand = "0.10.4"
 pulldown-cmark = "0.13.6"
 ammonia = "4.2.5"
 # MAPPS-383: shared wire-format DTOs, the single source of truth for types
@@ -87,7 +87,7 @@ version = "1.0.229"
 features = ["derive"]
 
 [dependencies.uuid]
-version = "1.29.2"
+version = "1.29.3"
 features = [
     "v4",
     "v7",
@@ -118,7 +118,7 @@ features = ["derive"]
 # fails to resolve on the native build instead of compiling to a binding that
 # panics at run time.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-gloo-net = "0.7.0"
+gloo-net = "0.8.0"
 wasm-bindgen = "0.2.130"
 js-sys = "0.3.107"
 # MAPPS-299: forward Rust panics in the wasm runtime to console.error with
@@ -151,7 +151,7 @@ version = "0.4.3"
 features = ["wasm_js"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.gloo-timers]
-version = "0.4.0"
+version = "0.4.1"
 features = ["futures"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
