@@ -68,7 +68,10 @@ exists. It enumerates tracked files, so a new page has to be staged before the
 guard can see it.
 
 Every guard, named and one-line described (source: each script's own header
-comment):
+comment). `check-em-dash` is a `common`-submodule recipe like
+`check-tree-ownership` in the Hooks table below, but it is wired into this
+`check:` umbrella (`justfile:81`) rather than `pre-commit`, so its row lives
+here instead:
 
 | Script | What it guards |
 | --- | --- |
@@ -78,6 +81,7 @@ comment):
 | `check-ci-parity.sh` | Every command a `check` recipe runs, including its `--self-test`, has a matching step in `.forgejo/workflows/check.yml`. |
 | `check-class-omissions.sh` | Three specific Tailwind class omissions (auth heading, form-grid breakpoint, table name-cell colour) stay fixed. |
 | `check-company-id-copy.sh` | No "Portal ID" copy under `src/pages/contact_portal/`; the user-facing name is "Company ID". |
+| `check-config-docs` | Fails if `docs/configuration.md` disagrees with `config/variables.toml` or the `${MOKOSH_...}` reads in `oci-build/entrypoint.sh` (MAPPS-1027). |
 | `check-confirmed-toggle.sh` | A checkbox that asks for confirmation renders the user's intent, so cancelling puts the box back. |
 | `check-confirm-destructive.sh` | A destructive mutation never fires straight from a button `onclick`. |
 | `check-csp-host-derived-origin.sh` | The served Content-Security-Policy header names the same host-derived origin the app derives itself. |
@@ -85,6 +89,7 @@ comment):
 | `check-delete-result.sh` | A delete's `Result` is never discarded; a server refusal reaches the user. |
 | `check-dev-sso-scheme.sh` | The dev-SSO overlay bakes in `https://` URLs only, never `http://`. |
 | `check-doc-links.sh` | Every relative Markdown link under `docs/` resolves to a path that exists. |
+| `check-em-dash` *(common)* | Guards against the em-dash, and optionally the en-dash, in a tracked `src`/`docs` file (common submodule recipe, configured via `em_dash_paths`/`em_dash_en_dash` in the justfile). |
 | `check-ellipsis-glyph.sh` | Rendered text uses the single ellipsis glyph (`…`), never three ASCII periods. |
 | `check-email-affordance.sh` | Every action that emails someone renders the mail icon and an `EmailPreview`. |
 | `check-empty-state.sh` | Settings type-editor lists render the full `EmptyState`, never `TableEmpty`'s bare-message mode. |
