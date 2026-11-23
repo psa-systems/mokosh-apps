@@ -36,7 +36,9 @@
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
-# Every link target in one file, as `line<TAB>target`.
+# Every link target in one file, as `line<TAB>target<TAB>text`. `text` is the
+# bracketed link text for an inline link, empty for a reference definition or
+# raw HTML href/src (neither has one).
 #
 # The awk pass carries the state a regex cannot: whether we are inside a fenced
 # code block or an HTML comment, neither of which renders a link.
@@ -74,11 +76,16 @@ targets_in() {
     }
 
     {
-      # Inline links and images: `](target)`.
+      # Inline links and images: `[text](target)`. The text is captured too,
+      # for the text/target basename check below; `[^][]*` deliberately does
+      # not handle a `[` nested inside link text, which this repo does not write.
       s = line
-      while (match(s, /\]\([^)]*\)/)) {
-        t = substr(s, RSTART + 2, RLENGTH - 3)
-        if (t != "") print NR "\t" t
+      while (match(s, /\[[^][]*\]\([^)]*\)/)) {
+        full = substr(s, RSTART, RLENGTH)
+        p = index(full, "](")
+        txt = substr(full, 2, p - 2)
+        t = substr(full, p + 2, length(full) - p - 2)
+        if (t != "") print NR "\t" t "\t" txt
         s = substr(s, RSTART + RLENGTH)
       }
 
@@ -126,7 +133,7 @@ path_of() {
 }
 
 run_over() { # run_over <root>
-  local root="$1" status=0 checked=0 files=0
+  local root="$1" status=0 checked=0 files=0 broken=0 mismatched=0
   local list
   if [ "$root" = "." ]; then
     list=$(git ls-files '*.md' 2>/dev/null)
@@ -144,7 +151,7 @@ run_over() { # run_over <root>
     files=$((files + 1))
     local dir
     dir=$(dirname "$file")
-    while IFS=$'\t' read -r lineno target; do
+    while IFS=$'\t' read -r lineno target text; do
       [ -n "${target:-}" ] || continue
       local path
       path=$(path_of "$target")
@@ -158,19 +165,45 @@ run_over() { # run_over <root>
         *) resolved="$dir/$path" ;;
       esac
       if [ ! -e "$resolved" ]; then
-        if [ "$status" -eq 0 ]; then
+        if [ "$broken" -eq 0 ]; then
           echo "doc-link guard: FAIL (a Markdown link names a path that is not there)"
         fi
         echo "  $file:$lineno: $target -> $resolved"
         status=1
+        broken=1
+      fi
+      # A link's text may name the file it points at, e.g. `` [`foo.md`](foo.md) ``.
+      # A rename that repoints the target without updating that text leaves a
+      # reader unable to tell the stale name from an intentional one, which is
+      # the defect MAPPS-1286 fixed; this keeps it from coming back.
+      if [ -n "${text:-}" ]; then
+        local stripped="${text#\`}"
+        stripped="${stripped%\`}"
+        if printf '%s' "$stripped" | grep -qE '^[A-Za-z0-9._-]+\.md$'; then
+          local target_base="${path##*/}"
+          if [ "$stripped" != "$target_base" ]; then
+            if [ "$mismatched" -eq 0 ]; then
+              echo "doc-link guard: FAIL (a Markdown link's text names a different file than its target)"
+            fi
+            echo "  $file:$lineno: link text '$stripped' -> target names '$target_base'"
+            status=1
+            mismatched=1
+          fi
+        fi
       fi
     done < <(targets_in "$file")
   done <<< "$list"
 
-  if [ "$status" -ne 0 ]; then
+  if [ "$broken" -ne 0 ]; then
     echo "Repoint it at the file's current location, or drop the link. A link to"
     echo "another repository cannot resolve in a checkout of this one: write it as"
     echo "a code span instead."
+  fi
+  if [ "$mismatched" -ne 0 ]; then
+    echo "Change the link text to match the target's filename, or the target to"
+    echo "match the text, whichever one is correct."
+  fi
+  if [ "$status" -ne 0 ]; then
     return 1
   fi
   echo "doc-link guard: clean ($checked relative links across $files Markdown files all resolve)"
@@ -239,6 +272,24 @@ if [ "${1:-}" = "--self-test" ]; then
     status=1
   else
     echo "self-test: a target one directory short fails the guard"
+  fi
+
+  # MAPPS-1286: link text naming a `.md` filename must match its target's
+  # basename, the defect left behind by a file move that repointed the target
+  # but not the text naming it.
+  build_ok
+  printf '[`nested.md`](../real.md)\n' >> "$fixtures/docs/sub/page.md"
+  out=$("$0" "$fixtures/docs" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" -ne 1 ]; then
+    echo "self-test: FAIL (a text/target basename mismatch did not fail the guard, exit $rc)"
+    printf '%s\n' "$out"
+    status=1
+  elif ! printf '%s' "$out" | grep -q "'nested.md'.*'real.md'"; then
+    echo "self-test: FAIL (the mismatch failure did not name both filenames)"
+    printf '%s\n' "$out"
+    status=1
+  else
+    echo "self-test: a link text naming a different file than its target fails the guard"
   fi
 
   [ "$status" -eq 0 ] && echo "doc-link guard self-test: clean"
