@@ -68,7 +68,7 @@ A deployment that needs role changes to take effect without a sign-out configure
 **Cause**:
 
 - **Desktop**: the update URL is unreachable, returns a non-JSON body, or the installer-download URL is not writable by the running process.
-- **Web**: the container was not restarted after the image bump, so `_mokosh_config.js` still carries the old build revision; the running tab compares its revision against the stale shim and sees no change.
+- **Web**: the container was not restarted after the image bump, so `_mokosh_config.json` still carries the old build revision; the running tab compares its revision against the stale shim and sees no change.
 
 **Fix (desktop)**:
 
