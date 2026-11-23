@@ -31,23 +31,6 @@ The account menu on the top bar opens a popover with:
 
 The hub URL comes from `MOKOSH_HUB_BASE_URL`; see [Configuration](configuration.md).
 
-## Keyboard shortcuts
-
-A handful of shortcuts work from any screen. They are not case sensitive.
-
-| Shortcut | Action |
-| --- | --- |
-| `/` | Focus the global search |
-| `g` then `d` | Go to Dashboard |
-| `g` then `t` | Go to Tickets |
-| `g` then `c` | Go to Customers |
-| `g` then `b` | Go to Billing |
-| `?` | Show the shortcut cheat sheet |
-| `Esc` | Close the active dialog or popover |
-| `Cmd+K` / `Ctrl+K` | Open the global command palette, when enabled |
-
-Dialog-local shortcuts (save, cancel, submit) are shown on the dialog itself.
-
 ## The theme toggle
 
 The theme choice is a per-user preference. Light and Dark are explicit; System follows the OS theme and switches when the OS switches. The desktop app listens for OS theme changes through the webview and swaps without a reload.
