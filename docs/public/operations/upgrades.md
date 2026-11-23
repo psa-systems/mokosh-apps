@@ -28,52 +28,7 @@ A deployment that wants to delay the client picking up a new revision pins an ol
 
 ## The desktop binary
 
-A desktop binary is not served a bundle. Updates arrive through the installer the operator distributes, not through the running app.
-
-The app checks for a newer installer at a configurable update URL. When one is available, the app shows an update notice with a link to download the new installer. The user downloads, runs the installer, and the new binary replaces the old one.
-
-### What the app checks
-
-On launch and periodically while open, the app fetches an `updates.json` manifest from the update URL. The manifest lists the latest version per platform, along with a download URL. The app compares its own version against the manifest; a newer manifest version shows the update notice.
-
-A desktop app with no update URL configured (the default) never checks for updates and never shows the notice.
-
-### Operator knobs
-
-Point the desktop app at an update URL the operator controls. The URL carries a per-platform `updates.json` with at least:
-
-```json
-{
-  "windows": {
-    "version": "0.14.0",
-    "url": "https://downloads.msp.example.com/mokosh-apps/0.14.0/mokosh-apps-setup.exe"
-  },
-  "macos": {
-    "version": "0.14.0",
-    "url": "https://downloads.msp.example.com/mokosh-apps/0.14.0/mokosh-apps.dmg"
-  },
-  "linux": {
-    "version": "0.14.0",
-    "url": "https://downloads.msp.example.com/mokosh-apps/0.14.0/mokosh-apps.AppImage"
-  }
-}
-```
-
-Set the update URL in the desktop `config.json`:
-
-```json
-{
-  "update_check_url": "https://downloads.msp.example.com/mokosh-apps/updates.json"
-}
-```
-
-Serve the manifest over HTTPS. The app fetches it with its own OS HTTP client; no cookies, no credentials.
-
-### What breaks if the update URL is unreachable
-
-The app logs a warning on each failed check and keeps running. The update notice does not appear. Users keep their current version; nothing is lost.
-
-See [Troubleshooting](../troubleshooting.md) for the common update-check failures.
+A desktop binary is not served a bundle, and it has no in-app update check: the running app never looks for a newer version. Updates arrive only through a new installer, which the operator redistributes through whatever channel they already use (an internal download page, email, a software deployment tool). The user downloads the new installer, runs it, and it replaces the old binary. Until they do, the old binary keeps running with no notice or warning that a newer version exists.
 
 ## Rolling the server
 
