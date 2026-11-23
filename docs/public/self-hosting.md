@@ -42,9 +42,11 @@ small `/_mokosh_config.js` from them on each start, and the SPA reads it before
 falling through to its compile-time defaults. Only variables that are set and
 non-empty are emitted. Restart the container to pick up a change.
 
-Every operator-facing variable, with its Required and Added-in facts and the
-breaking changes in the last five releases, is in
-[`configuration.md`](configuration.md). The table is generated from
+[`configuration.md`](configuration.md) is a hand-maintained summary of the
+operator-facing subset of these variables. The generated, CI-checked source of
+truth, with every variable's Required and Added-in facts and the breaking
+changes in the last five releases, is
+[`../configuration.md`](../configuration.md): its table is generated from
 `config/variables.toml` by `just config-docs` and CI fails on drift.
 `just config-since <running version>` lists the changes to review before an
 upgrade.
