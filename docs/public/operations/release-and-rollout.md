@@ -61,7 +61,7 @@ deployment repo, not in this source repo. The file to edit is the host's
 Set the image to the release you intend to ship:
 
 ```yaml
-mokosh_apps_image: dev.a8n.run/psa-systems/mokosh-www:v0.2.0
+mokosh_apps_image: dev.a8n.run/psa-systems-public/mokosh-www:v0.2.0
 ```
 
 The image is built and tagged by
