@@ -61,22 +61,13 @@ A deployment that needs role changes to take effect without a sign-out configure
 3. For a browser deployment, check the browser console for the exact URL and the CORS error message. mokosh-server's `CORS_ORIGIN` must list the client origin verbatim, no wildcard.
 4. For a desktop deployment, check that `CORS_ORIGIN` on the server lists the desktop webview's origin per OS; see [Installation](installation.md).
 
-## Update check fails
+## Update banner never appears
 
-**Symptom**: the desktop app logs "Update check failed" repeatedly. The web client's update banner never fires even after a new image is deployed.
+**Symptom**: the web client's update banner never fires even after a new image is deployed. (The desktop binary has no in-app update check and never shows an update notice; see [Upgrades](operations/upgrades.md).)
 
-**Cause**:
+**Cause**: the container was not restarted after the image bump, so `_mokosh_config.json` still carries the old build revision; the running tab compares its revision against the stale shim and sees no change.
 
-- **Desktop**: the update URL is unreachable, returns a non-JSON body, or the installer-download URL is not writable by the running process.
-- **Web**: the container was not restarted after the image bump, so `_mokosh_config.json` still carries the old build revision; the running tab compares its revision against the stale shim and sees no change.
-
-**Fix (desktop)**:
-
-1. Fetch the update URL from the operator's shell: `curl https://downloads.msp.example.com/mokosh-apps/updates.json` should return the JSON shape documented in [Upgrades](operations/upgrades.md).
-2. If the fetch works but the app still logs a failure, check the app's log for the next line: a permission error on the install directory, a signature check failure, or a disk-full condition.
-3. On Linux, confirm the AppImage path is writable by the user running the app.
-
-**Fix (web)**:
+**Fix**:
 
 1. On the host serving `mokosh-www`, run `docker compose up --detach` to restart the container; the entrypoint rewrites `_mokosh_config.js` with the new build revision.
 2. Reload the tab; the update banner fires.
