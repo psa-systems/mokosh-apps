@@ -38,8 +38,8 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, ConfirmDialog, ErrorBanner,
-    PageHeader, StatusBanner,
+    use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonVariant, Card, ConfirmDialog,
+    ErrorBanner, PageHeader, StatusBanner,
 };
 use crate::pages::settings::{AdminOnlyNotice, SettingsBreadcrumb};
 use crate::Route;
@@ -287,6 +287,19 @@ fn IssuerSettingsPage(issuer: Issuer) -> Element {
     rsx! { IssuerSettingsBody { issuer } }
 }
 
+/// What the browser was sent back with after the provider's consent screen.
+/// Any value other than `connected`/`failed`, or none, shows no banner.
+fn return_banner(flag: Option<&str>, display: &str) -> Option<(BannerTone, String)> {
+    match flag? {
+        "connected" => Some((BannerTone::Success, format!("{display} is connected."))),
+        "failed" => Some((
+            BannerTone::Error,
+            format!("{display} did not complete the connection, so nothing was stored. Try connecting again."),
+        )),
+        _ => None,
+    }
+}
+
 #[component]
 fn IssuerSettingsBody(issuer: Issuer) -> Element {
     // SPEC-10.54.3
@@ -300,6 +313,10 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
         .await
         .inspect_err(|e| tracing::error!("invoice issuer status load failed: {e}"))
         .ok()
+    });
+    let returned = use_signal(|| {
+        crate::utils::url::current_query_param("invoice_issuer")
+            .and_then(|flag| return_banner(Some(&flag), issuer.display))
     });
     let mut error = use_signal(String::new);
     let mut busy = use_signal(|| false);
@@ -459,6 +476,9 @@ fn IssuerSettingsBody(issuer: Issuer) -> Element {
             breadcrumbs: rsx! {
                 SettingsBreadcrumb { current: route }
             },
+        }
+        if let Some((tone, message)) = returned() {
+            StatusBanner { tone, class: "mb-4", "{message}" }
         }
         if !error().is_empty() {
             ErrorBanner { class: "mb-4", "{error}" }
@@ -1109,6 +1129,21 @@ mod tests {
             message.contains("remembered"),
             "and that reconnecting does not start from an empty page: {message}"
         );
+    }
+
+    /// The consent return flag becomes a banner naming the provider.
+    #[test]
+    fn the_return_flag_becomes_a_banner_naming_the_provider() {
+        for display in [XERO.display, QUICKBOOKS.display] {
+            let (tone, msg) = return_banner(Some("connected"), display).expect("connected");
+            assert_eq!(tone, BannerTone::Success);
+            assert!(msg.contains(display), "{msg}");
+            let (tone, msg) = return_banner(Some("failed"), display).expect("failed");
+            assert_eq!(tone, BannerTone::Error);
+            assert!(msg.contains(display), "{msg}");
+            assert!(return_banner(Some("other"), display).is_none());
+            assert!(return_banner(None, display).is_none());
+        }
     }
 
     /// Neither provider's copy names the other.

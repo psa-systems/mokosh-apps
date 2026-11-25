@@ -3014,6 +3014,22 @@ mod emailed_link_routes {
             "/settings/integrations/google-contacts?contact_sync=connected",
         ),
         (
+            "invoice_issuer::consent_return (xero, connected)",
+            "/settings/integrations/xero?invoice_issuer=connected",
+        ),
+        (
+            "invoice_issuer::consent_return (xero, failed)",
+            "/settings/integrations/xero?invoice_issuer=failed",
+        ),
+        (
+            "invoice_issuer::consent_return (quickbooks, connected)",
+            "/settings/integrations/quickbooks?invoice_issuer=connected",
+        ),
+        (
+            "invoice_issuer::consent_return (quickbooks, failed)",
+            "/settings/integrations/quickbooks?invoice_issuer=failed",
+        ),
+        (
             "quotes::send_quote (the next target)",
             "/quotes/2f1c2f1e-0000-4000-8000-00000000abcd",
         ),
