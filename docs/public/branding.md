@@ -4,7 +4,7 @@ How an operator makes the `mokosh-www` image present as their own brand:
 the logo, the wordmark, the tab title, the favicons, the PWA manifest and
 the marketing hero. Everything here is applied at container start, from
 the compose file plus a few mounted files. No rebuild, no fork, no source
-edit (MAPPS-509).
+edit.
 
 This covers the **platform's own** identity, the one that renders before
 anyone signs in. It is a different layer from the per-tenant branding
@@ -153,7 +153,7 @@ falls back to its built-in value.
 | `MOKOSH_BRAND_NAME` | `brand_name` | `Mokosh Platform` | Tab title (bare and as the `"{page} \| {brand}"` suffix), the app top-bar wordmark, the sign-in wordmark, the client-portal footer ("Powered by ..."), the marketing wordmark and copyright line, "Sign in to ...", "Welcome to ...", the profile role-badge tooltip and personal-info subtitle, the System Status subtitle, the demo-data copy, the theme-picker note and the update banner. |
 | `MOKOSH_BRAND_LOGO_URL` | `brand_logo_url` | built-in `icon-192.png` | The logo in the app top bar and on the sign-in screen. Its `alt` text follows the brand name. |
 | `MOKOSH_BRAND_HERO_URL` | `brand_hero_url` | built-in `mokosh-hero.png` | The illustration on the marketing landing page. Setting it also replaces the alt text, which otherwise describes artwork that is no longer on the page. |
-| `MOKOSH_DOCS_BASE_URL` | `docs_base_url` | derived (`https://docs.<tld>` on a `msp.<tld>` host) or none (hidden) | The documentation subdomain base URL (e.g. `https://docs.a8n.systems`). Set it to override the derived value, or to configure a deployment (such as the desktop build) with no host to derive from. Shows a top-level **Documentation** entry in the sidebar and activates the contextual help links (each deep-links to an article under this base). When neither resolves, both stay hidden so no link points at a missing site (MAPPS-453, MAPPS-999). `MOKOSH_DOCS_URL` is a deprecated fallback for the same field. |
+| `MOKOSH_DOCS_BASE_URL` | `docs_base_url` | derived (`https://docs.<tld>` on a `msp.<tld>` host) or none (hidden) | The documentation subdomain base URL (e.g. `https://docs.a8n.systems`). Set it to override the derived value, or to configure a deployment (such as the desktop build) with no host to derive from. Shows a top-level **Documentation** entry in the sidebar and activates the contextual help links (each deep-links to an article under this base). When neither resolves, both stay hidden so no link points at a missing site. `MOKOSH_DOCS_URL` is a deprecated fallback for the same field. |
 
 `src/branding.rs` is the single reader for the three brand vars
 (`MOKOSH_BRAND_NAME`, `MOKOSH_BRAND_LOGO_URL`, `MOKOSH_BRAND_HERO_URL`); every

@@ -4,7 +4,7 @@
 # Quick start:
 #   1. Copy this file to compose.yml in a fresh directory.
 #   2. Edit the MOKOSH_* env vars below to point at your own mokosh-server
-#      API and OIDC issuer. See docs/self-hosting.md for the full list of
+#      API and OIDC issuer. See docs/public/self-hosting.md for the full list of
 #      operator-settable variables.
 #   3. docker compose up --detach
 #   4. Browse to http://localhost:8080 (or front with your own TLS
@@ -64,7 +64,7 @@ services:
 
       # Branding. All optional: leave them unset and the SPA keeps its
       # built-in name and artwork. See
-      # docs/deployment-branding.md for the static files (favicons,
+      # docs/public/branding.md for the static files (favicons,
       # apple-touch-icon, manifest, index.html title) you mount alongside
       # these, and for the CSP and cache-header constraints.
       #
@@ -104,7 +104,7 @@ services:
     # Caddyfile default works for the SPA-only case behind an upstream
     # reverse proxy. The branding paths are the ones referenced by
     # MOKOSH_BRAND_LOGO_URL / MOKOSH_BRAND_HERO_URL above, plus the
-    # static files listed in docs/deployment-branding.md.
+    # static files listed in docs/public/branding.md.
     # volumes:
     #   - ./Caddyfile:/etc/caddy/Caddyfile:ro
     #   - ./branding:/usr/share/caddy/branding:ro

@@ -5,7 +5,7 @@
 //! on the container; `oci-build/entrypoint.sh` emits them into
 //! `_mokosh_config.js` and [`crate::modules::runtime_config::get`] reads
 //! them here. Nothing is baked in at build time, so branding a deployment
-//! never needs a rebuild or a fork. See `docs/deployment-branding.md`.
+//! never needs a rebuild or a fork. See `docs/public/branding.md`.
 //!
 //! This module holds the ONLY user-visible spellings of the product name
 //! and the ONLY references to the built-in logo/hero assets. Every render

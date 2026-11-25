@@ -10,7 +10,7 @@ cp oci-build/compose.example.yml compose.yml
 docker compose up --detach
 ```
 
-[`oci-build/compose.example.yml`](../oci-build/compose.example.yml) is the
+[`oci-build/compose.example.yml`](../../oci-build/compose.example.yml) is the
 authoritative reference: it carries the same variables described here, with the
 production notes, alongside each one.
 
@@ -20,7 +20,7 @@ mokosh-server, which has its own repository and its own compose file.
 ## The image
 
 `dev.a8n.run/psa-systems-public/mokosh-www`, built from
-[`oci-build/Dockerfile`](../oci-build/Dockerfile) and serving the WASM bundle
+[`oci-build/Dockerfile`](../../oci-build/Dockerfile) and serving the WASM bundle
 with Caddy.
 
 - `:vX.Y.Z` pins a specific release.
@@ -31,21 +31,23 @@ matching the host kernel automatically.
 
 Pin a `:vX.Y.Z` tag for predictable rollouts. Rolling the SPA across more than
 one replica has an ordering constraint of its own, so that a load balancer never
-serves two builds at once: [`spa-rollout-runbook.md`](spa-rollout-runbook.md).
+serves two builds at once: [`operations/release-and-rollout.md`](operations/release-and-rollout.md).
 
 ## Runtime configuration
 
 Configuration is supplied as environment variables on the container, not baked
 into the image, so one image serves staging, production and every self-host
-deployment. [`oci-build/entrypoint.sh`](../oci-build/entrypoint.sh) writes a
+deployment. [`oci-build/entrypoint.sh`](../../oci-build/entrypoint.sh) writes a
 small `/_mokosh_config.js` from them on each start, and the SPA reads it before
 falling through to its compile-time defaults. Only variables that are set and
 non-empty are emitted. Restart the container to pick up a change.
 
-Every operator-facing variable, with its Required / Added-in facts and the
-Breaking changes in the last five releases, is in
-[`configuration.md`](configuration.md). The table is generated from
-`config/variables.toml` by `just config-docs` and CI fails on drift (MAPPS-1027).
+[`configuration.md`](configuration.md) is a hand-maintained summary of the
+operator-facing subset of these variables. The generated, CI-checked source of
+truth, with every variable's Required and Added-in facts and the breaking
+changes in the last five releases, is
+[`../configuration.md`](../configuration.md): its table is generated from
+`config/variables.toml` by `just config-docs` and CI fails on drift.
 `just config-since <running version>` lists the changes to review before an
 upgrade.
 
@@ -53,10 +55,10 @@ The visitor addresses their Company from the URL path
 (`/portal/{portal_id}/...`), so `MOKOSH_PORTAL_HOST` needs one A or AAAA record
 and a certificate covering that single host. It replaced the per-MSP subdomain
 variable `MOKOSH_PORTAL_HOST_SUFFIX`, which required a DNS wildcard and a
-matching TLS SAN (MAPPS-649).
+matching TLS SAN.
 
 The `MOKOSH_BRAND_*` variables, and the static files an operator mounts
-alongside them, are [`deployment-branding.md`](deployment-branding.md).
+alongside them, are [`branding.md`](branding.md).
 
 ## Ingress and cookies
 
@@ -77,5 +79,4 @@ there is no migration step and no downtime window beyond the container restart.
 
 Open tabs do not need a hard refresh. The config shim carries the build
 revision, the running bundle polls it, and a redeploy raises a reload prompt and
-reloads at the next safe boundary. What each banner means, and how the version
-comparison against the server works, is [`versioning.md`](versioning.md).
+reloads at the next safe boundary. The upgrade flow is covered in [`operations/upgrades.md`](operations/upgrades.md).

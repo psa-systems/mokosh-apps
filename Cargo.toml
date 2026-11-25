@@ -60,7 +60,7 @@ sha2 = "0.11.1"
 base64 = "0.23.1"
 rand = "0.10.3"
 pulldown-cmark = "0.13.6"
-ammonia = "4.2.4"
+ammonia = "4.2.5"
 # MAPPS-383: shared wire-format DTOs, the single source of truth for types
 # crossing the mokosh-server / mokosh-apps boundary. The URL is HTTPS, not
 # ssh://, because the pre-commit container and the Forgejo check runner have
@@ -87,7 +87,7 @@ version = "1.0.229"
 features = ["derive"]
 
 [dependencies.uuid]
-version = "1.29.1"
+version = "1.29.2"
 features = [
     "v4",
     "v7",

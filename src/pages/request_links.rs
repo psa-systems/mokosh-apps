@@ -510,7 +510,7 @@ pub(crate) fn SendRequestLinkModal(
 
         // SPEC-9.48.8: every check runs before the first return
         let Some(company_uuid) = company_uuid else {
-            error.set("This company could not be identified. Reload the page.".to_string());
+            error.set("This company could not be identified. Refresh the page.".to_string());
             return;
         };
         let form_uuid = Uuid::parse_str(form_id.read().trim()).ok();

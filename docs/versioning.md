@@ -130,7 +130,7 @@ endpoint ships.
 [`src/hooks/update_check.rs`](../src/hooks/update_check.rs) keeps an
 open tab from getting pinned to an old WASM bundle across a redeploy of
 the **same** version. It compares the bundle's baked-in `GIT_HASH`
-against the live `build_sha` field in `_mokosh_config.js` (served
+against the live `build_sha` field in `_mokosh_config.json` (served
 `Cache-Control: no-cache`, baked from the image's `GIT_SHA`). On a
 mismatch it reloads at the next safe boundary. The target here is again
 "whatever container is currently serving this origin" - inherently the
