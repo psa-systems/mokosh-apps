@@ -66,7 +66,7 @@ concurrency:
 
 # SPEC-1.10.3: classify, cargo, guards and secrets are the four jobs.
 jobs:
-  # MAPPS-1221/PC-134/STD-3.1: classify the PR diff with the shared `common`
+  # MAPPS-1221/PC-134/PSTD-1.3.1: classify the PR diff with the shared `common`
   # action instead of a repo-local classifier, so the skip rule stays in one
   # place across the fleet. `result` is one of `code`, `comments-only` or
   # `non-code` (always `code` outside a pull_request event); the `cargo` job
@@ -142,19 +142,19 @@ jobs:
         run: mkdir -p assets && touch assets/styles.css
 
       # SPEC-1.8.7: formatting, lint, and the wasm/desktop build/test matrix, all in this one job.
-      # MAPPS-1221/STD-3.1: fmt still runs on a comments-only diff; only a
+      # MAPPS-1221/PSTD-1.3.1: fmt still runs on a comments-only diff; only a
       # non-code (docs-only) diff skips it too.
       - name: Check formatting
         # SPEC-1.10.4: fmt skips only a non-code diff.
         if: needs.classify.outputs.result != 'non-code'
         run: cargo fmt --all --check
 
-      # MAPPS-1221/STD-3.1: skipped on a comments-only or non-code diff.
+      # MAPPS-1221/PSTD-1.3.1: skipped on a comments-only or non-code diff.
       - name: Clippy
         if: needs.classify.outputs.result == 'code'
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      # MAPPS-1221/STD-3.1: skipped on a comments-only or non-code diff.
+      # MAPPS-1221/PSTD-1.3.1: skipped on a comments-only or non-code diff.
       - name: Check web/WASM build
         if: needs.classify.outputs.result == 'code'
         run: cargo clippy --locked --all-targets --target wasm32-unknown-unknown -- -D warnings
@@ -164,12 +164,12 @@ jobs:
       # `#[cfg(feature = "desktop")]` arm, or a web-only import the desktop
       # feature set does not satisfy - merged green and surfaced to whoever
       # next built the desktop app.
-      # MAPPS-1221/STD-3.1: skipped on a comments-only or non-code diff.
+      # MAPPS-1221/PSTD-1.3.1: skipped on a comments-only or non-code diff.
       - name: Check desktop build
         if: needs.classify.outputs.result == 'code'
         run: cargo check --locked --no-default-features --features desktop,multi-tenant
 
-      # MAPPS-1221/STD-3.1: skipped on a comments-only or non-code diff.
+      # MAPPS-1221/PSTD-1.3.1: skipped on a comments-only or non-code diff.
       - name: Unit tests
         if: needs.classify.outputs.result == 'code'
         run: cargo test --locked --lib

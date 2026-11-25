@@ -242,7 +242,7 @@ jobs:
 
       # MAPPS-827: the link-preview contract's only automated check
       # (scripts/check-link-preview.sh, documented as the verification for
-      # the whole contract in docs/deployment-branding.md) had never run
+      # the whole contract in docs/public/branding.md) had never run
       # outside a developer typing `just check-link-preview`. It needs
       # docker, which `just check` does not have, so this is the workflow
       # that builds the image and already has it. --self-test first, so a

@@ -87,7 +87,7 @@ version = "1.0.229"
 features = ["derive"]
 
 [dependencies.uuid]
-version = "1.29.1"
+version = "1.29.2"
 features = [
     "v4",
     "v7",

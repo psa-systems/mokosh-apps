@@ -152,7 +152,7 @@ build_config_fields() {
     printf 'oidc_scopes\t%s\n' "${MOKOSH_OIDC_SCOPES:-}"
     # PMS-1337: `team_enabled` (MAPPS-329) is gone from here. PMS-791 phase 2
     # made Teams core and retired the flag in the SPA, but this line and its row
-    # in docs/self-hosting.md stayed, so an operator could set
+    # in docs/public/self-hosting.md stayed, so an operator could set
     # MOKOSH_TEAM_ENABLED, see it land in `_mokosh_config.js`, and get no
     # behaviour at all - a knob that looks supported and reads nothing, which is
     # exactly what makes somebody reintroduce it.
@@ -162,7 +162,7 @@ build_config_fields() {
     # origin (mount the file into /usr/share/caddy) or on the API origin:
     # the Caddyfile CSP is `img-src 'self' data: {API origin}`. Everything
     # outside /assets/* and /wasm/* is served no-cache, so a remounted
-    # file propagates on the next load. See docs/deployment-branding.md.
+    # file propagates on the next load. See docs/public/branding.md.
     # MAPPS-880: the server's KB attachment size cap
     # (`KB_ATTACHMENT_MAX_BYTES`, operator-tunable there too). Unset means
     # the SPA keeps its compile-time 5 MiB default, so a deployment that
@@ -224,7 +224,7 @@ origin_of() {
 # twitter:image require. A link-preview crawler fetches the image from its own
 # servers, with no page to resolve a relative path against, so it drops a
 # root-relative value - and root-relative is exactly what
-# docs/deployment-branding.md recommends for the logo, because the browser CSP
+# docs/public/branding.md recommends for the logo, because the browser CSP
 # is `img-src 'self'`. Join such a value onto MOKOSH_PUBLIC_URL's origin. With
 # no MOKOSH_PUBLIC_URL there is no correct absolute form, so this yields empty
 # and the caller omits the image tags instead of emitting an unfetchable one.
