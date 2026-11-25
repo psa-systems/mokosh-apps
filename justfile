@@ -182,7 +182,7 @@ check-defined-colors:
     bash scripts/check-defined-colors.sh --self-test
     bash scripts/check-defined-colors.sh
 
-# MAPPS-398 / DEV-769: keep check.yml on the heavy runner label, no *_LATEST labels, no run-time package installs
+# MAPPS-398 / DEV-769: keep check.yml on the heavy runner label, no run-time package installs
 [group: 'check']
 check-runner-labels:
     bash scripts/check-runner-labels.sh --self-test

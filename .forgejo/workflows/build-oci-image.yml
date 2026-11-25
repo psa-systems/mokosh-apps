@@ -64,7 +64,7 @@ jobs:
     name: Build and push mokosh-www image
     # Heavy label: runs `docker buildx build`, which compiles the WASM bundle
     # inside the builder stage on this host.
-    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_HEAVY }}
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_HEAVY }}
     permissions:
       contents: read
       packages: write
