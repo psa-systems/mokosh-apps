@@ -221,7 +221,7 @@ fn App() -> Element {
     // prefs into localStorage (server wins) and re-apply, so the choice
     // follows the user across devices.
     use_theme_sync();
-    // Background poll of `_mokosh_config.js` `build_sha`. Reloads the
+    // Background poll of `_mokosh_config.json` `build_sha`. Reloads the
     // tab at the next visibility-hidden boundary when a new SPA build
     // is detected, so users pick up deploys automatically (no
     // Ctrl+Shift+R required).

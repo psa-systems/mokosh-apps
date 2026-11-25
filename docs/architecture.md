@@ -117,7 +117,7 @@ Both build [`oci-build/Dockerfile`](../oci-build/Dockerfile), which compiles the
 bundle and serves it with Caddy under
 [`oci-build/Caddyfile`](../oci-build/Caddyfile). The published image is
 `dev.a8n.run/psa-systems-public/mokosh-www`, multi-arch for `linux/amd64` and
-`linux/arm64`. Running it is [`self-hosting.md`](self-hosting.md).
+`linux/arm64`. Running it is [`self-hosting.md`](public/self-hosting.md).
 
 The image is configured at container start rather than at build time.
 [`oci-build/entrypoint.sh`](../oci-build/entrypoint.sh) writes a small

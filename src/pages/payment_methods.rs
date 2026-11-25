@@ -354,7 +354,7 @@ fn ContactPaymentMethodsBody() -> Element {
 fn return_urls(origin: Option<String>, base: &str) -> Result<(String, String), String> {
     match origin.map(|o| o.trim().trim_end_matches('/').to_string()).filter(|o| !o.is_empty()) {
         Some(origin) => Ok((format!("{origin}{base}?added=1"), format!("{origin}{base}"))),
-        None => Err("Could not work out this page's address to return to after adding a card. Reload the page and try again.".to_string()),
+        None => Err("Could not work out this page's address to return to after adding a card. Refresh the page and try again.".to_string()),
     }
 }
 

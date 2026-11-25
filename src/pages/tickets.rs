@@ -6028,7 +6028,7 @@ fn TicketDetailBody(props: TicketDetailPageProps) -> Element {
                         // SPEC-9.5.2: a failed journal source degrades gracefully; the gap is listed, not a hard error.
                         if !journal_gaps.is_empty() {
                             p { class: "mt-4 text-xs text-red-600 dark:text-red-400",
-                                "This ticket's {journal_gaps_label} could not be loaded, so the journal is missing entries. Reload the page to try again."
+                                "This ticket's {journal_gaps_label} could not be loaded, so the journal is missing entries. Refresh the page to try again."
                             }
                         }
                         // MAPPS-517: the journal is assembled here from three
