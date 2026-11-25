@@ -3014,6 +3014,14 @@ mod emailed_link_routes {
             "/settings/integrations/google-contacts?contact_sync=connected",
         ),
         (
+            "contact_sync::complete_connect (Microsoft)",
+            "/settings/integrations/microsoft-contacts?contact_sync=connected",
+        ),
+        (
+            "contact_sync::complete_connect (Microsoft, failed)",
+            "/settings/integrations/microsoft-contacts?contact_sync=failed",
+        ),
+        (
             "quotes::send_quote (the next target)",
             "/quotes/2f1c2f1e-0000-4000-8000-00000000abcd",
         ),

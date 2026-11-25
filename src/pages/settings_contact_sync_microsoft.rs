@@ -200,6 +200,27 @@ pub fn MicrosoftContactsSettingsPage() -> Element {
     rsx! { MicrosoftContactsSettingsBody {} }
 }
 
+/// What the browser was sent back with after Microsoft's consent screen.
+/// Unknown values and absence map to no banner.
+fn return_banner(flag: Option<&str>) -> Option<(crate::components::BannerTone, &'static str)> {
+    use crate::components::BannerTone;
+    match flag? {
+        "connected" => Some((
+            BannerTone::Success,
+            "Microsoft 365 Contacts is connected. Nothing is imported until you choose what to import.",
+        )),
+        "reconnected" => Some((
+            BannerTone::Success,
+            "Reconnected to Microsoft 365. Imports resume on the next sync.",
+        )),
+        "failed" => Some((
+            BannerTone::Error,
+            "Microsoft did not complete the connection, so nothing was stored. Try connecting again.",
+        )),
+        _ => None,
+    }
+}
+
 #[component]
 fn MicrosoftContactsSettingsBody() -> Element {
     let mut overview = use_resource(|| async move {
@@ -209,6 +230,10 @@ fn MicrosoftContactsSettingsBody() -> Element {
             .await
             .inspect_err(|e| tracing::error!("contact sync status load failed: {e}"))
             .ok()
+    });
+    let returned = use_signal(|| {
+        crate::utils::url::current_query_param("contact_sync")
+            .and_then(|flag| return_banner(Some(&flag)))
     });
     let mut error = use_signal(String::new);
     let mut notice = use_signal(String::new);
@@ -351,6 +376,9 @@ fn MicrosoftContactsSettingsBody() -> Element {
             breadcrumbs: rsx! {
                 SettingsBreadcrumb { current: Route::SettingsMicrosoftContacts {} }
             },
+        }
+        if let Some((tone, message)) = returned() {
+            StatusBanner { tone, class: "mb-4", "{message}" }
         }
         if !notice().is_empty() {
             StatusBanner { tone: crate::components::BannerTone::Success, class: "mb-4", "{notice}" }
@@ -537,6 +565,26 @@ fn MicrosoftContactsSettingsBody() -> Element {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_return_flag_from_microsoft_becomes_a_banner() {
+        use crate::components::BannerTone;
+        for flag in ["connected", "reconnected", "failed"] {
+            let (_, msg) = super::return_banner(Some(flag)).expect(flag);
+            assert!(msg.contains("Microsoft"), "{msg}");
+            assert!(!msg.contains("Google"), "{msg}");
+        }
+        assert_eq!(
+            super::return_banner(Some("failed")).map(|b| b.0),
+            Some(BannerTone::Error)
+        );
+        assert_eq!(
+            super::return_banner(Some("connected")).map(|b| b.0),
+            Some(BannerTone::Success)
+        );
+        assert_eq!(super::return_banner(Some("other")), None);
+        assert_eq!(super::return_banner(None), None);
+    }
+
     use super::*;
     use crate::pages::settings_contact_sync::card_state_of;
 
