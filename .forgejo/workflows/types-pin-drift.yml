@@ -32,7 +32,7 @@ jobs:
     name: how far behind is the pin
     # Medium label: `cargo update` and git reads only; the base image ships
     # cargo and nothing here compiles or links.
-    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_MEDIUM }}
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_MEDIUM }}
 
     steps:
       - name: Clone the repository
