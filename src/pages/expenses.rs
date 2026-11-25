@@ -644,11 +644,7 @@ fn ExpenseListBody() -> Element {
                                 let id = row.id;
                                 // SPEC-10.39.6
                                 let who = member_label(&names, members_end, row.user_id);
-                                let decided = row
-                                    .approver_id
-                                    .and_then(|a| names.get(&a).cloned())
-                                    .filter(|n| !n.is_empty())
-                                    .unwrap_or_default();
+                                let decided = approver_label(&names, members_end, row.approver_id);
                                 let incurred = row.incurred_on.clone();
                                 let total = format_money_minor(row.total_minor);
                                 let (label, tone) = status_badge(&row.status);
@@ -680,11 +676,7 @@ fn ExpenseListBody() -> Element {
                                         }
                                         TableCell { class: "text-right font-medium", "{total}" }
                                         TableCell {
-                                            if decided.is_empty() {
-                                                span { class: "text-subtle", "-" }
-                                            } else {
-                                                span { "{decided}" }
-                                            }
+                                            span { "{decided}" }
                                         }
                                         TableCell {
                                             Badge { variant: tone, "{label}" }
@@ -1717,6 +1709,31 @@ mod tests {
         let unnamed = approver_label(&names, MemberLookupEnd::Complete, Some(Uuid::new_v4()));
         assert_ne!(unnamed, "Nobody yet");
         assert_eq!(unnamed, "A former member");
+    }
+
+    /// The claims list must not collapse an approver whose name did not
+    /// resolve to the same "-" shown when nobody has decided yet.
+    /// `ExpenseListBody` computes its "Decided by" column the same way the
+    /// detail page does: through `approver_label`, which already carries
+    /// this distinction.
+    #[test]
+    fn the_list_shows_an_unresolved_approver_not_a_dash() {
+        let names = HashMap::new();
+        let approver = Uuid::new_v4();
+        let decided = approver_label(&names, MemberLookupEnd::Complete, Some(approver));
+        assert_eq!(decided, "A former member");
+        assert_ne!(decided, "-");
+        assert_ne!(decided, "");
+
+        let src = include_str!("expenses.rs");
+        let body = &src[src.find("fn ExpenseListBody").expect("the body")
+            ..src.find("fn NewExpenseModal").expect("the modal")];
+        assert!(
+            body.contains("approver_label(&names, members_end, row.approver_id)"),
+            "the list's \"Decided by\" column must be computed with approver_label, \
+             identically to the detail page, or it can collapse an unresolved \
+             approver back to \"-\""
+        );
     }
 
     /// MAPPS-1230: "finished" is for terminal statuses only.
