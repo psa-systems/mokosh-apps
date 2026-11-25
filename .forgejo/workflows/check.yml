@@ -77,7 +77,7 @@ jobs:
   classify:
     name: classify changed files
     # Only diffs file paths and greps `+`/`-` lines, compiles nothing.
-    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_MEDIUM }}
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_MEDIUM }}
     outputs:
       result: ${{ steps.classify-diff.outputs.result }}
     steps:
@@ -101,7 +101,7 @@ jobs:
     # Heavy label: compiles and links Rust (clippy, wasm, desktop, tests) on the
     # runner, which needs the dev image's C toolchain.
     # SPEC-1.10.8: heavy label for the compile job, medium for the rest.
-    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_HEAVY }}
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_HEAVY }}
 
     steps:
       - name: Clone the repository
@@ -255,7 +255,7 @@ jobs:
     #
     # check-runner-labels.sh validates that the `cargo` job runs on
     # BASE_HEAVY and that no job installs OS packages at run time.
-    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_MEDIUM }}
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_MEDIUM }}
 
     # Backstop, not a target. The guard set is ~38 shell/nu/just
     # invocations that each take seconds; the full job runs in well
@@ -622,7 +622,7 @@ jobs:
     # job (BUNYIP-786): the composite action runs as named steps of this job,
     # a failing scanner is named in the UI, and the URL-form stops Renovate's
     # github-actions manager from treating `psa-systems/common` as github.com.
-    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_MEDIUM }}
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_MEDIUM }}
     defaults:
       run:
         shell: nu {0}

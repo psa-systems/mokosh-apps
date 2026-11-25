@@ -21,5 +21,5 @@ jobs:
     # manager stops treating `psa-systems/common` as github.com.
     uses: https://dev.a8n.run/psa-systems/common/.forgejo/workflows/create-release.yml@e728773130496a6e84e0d87de9390f3d98939019 # main
     # Medium label: release API calls only, nothing compiles.
-    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_MEDIUM }}
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_MEDIUM }}
     secrets: inherit

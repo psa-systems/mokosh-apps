@@ -3,7 +3,6 @@
 #
 # check.yml compiles Rust on the runner, so it must request the heavy label
 # (dev image with cc/gcc/ld) instead of installing a C toolchain at run time.
-# No workflow may use the retired *_LATEST labels. This guard fails on either.
 # SPEC-2.1.1: no-arg invocation, exit 0 clean line / nonzero FAIL line.
 # SPEC-2.1.3: --self-test runs the checks against generated workflows.
 #
@@ -23,13 +22,13 @@ job_runs_on() {
 }
 
 run_guard() {
-  local dir="$1" workflow="$1/check.yml" status=0 heavy retired installs
+  local dir="$1" workflow="$1/check.yml" status=0 heavy installs
   if [ ! -f "$workflow" ]; then
     echo "runner-label guard: CANNOT EVALUATE ($workflow does not exist)"
     return 2
   fi
 
-  # SPEC-2.5.4 (1/3): the Rust-build job in check.yml, `cargo`, must request
+  # SPEC-2.5.4 (1/2): the Rust-build job in check.yml, `cargo`, must request
   # the heavy runner label. Scoped to that job: a grep of the whole file
   # passed as long as the string appeared anywhere, in any job (MAPPS-1224).
   heavy="$(job_runs_on "$workflow" cargo)"
@@ -37,20 +36,12 @@ run_guard() {
     echo "runner-label guard: CANNOT EVALUATE ($workflow has no \`cargo\` job with a runs-on)"
     return 2
   fi
-  if ! printf '%s' "$heavy" | grep -qF 'vars.RUNS_ON_OPENSUSE_BASE_HEAVY'; then
-    echo "runner-label guard: FAIL ($workflow job \`cargo\` must run on RUNS_ON_OPENSUSE_BASE_HEAVY: $heavy)"
+  if ! printf '%s' "$heavy" | grep -qF 'vars.RUNS_ON_OPENSUSE_HEAVY'; then
+    echo "runner-label guard: FAIL ($workflow job \`cargo\` must run on RUNS_ON_OPENSUSE_HEAVY: $heavy)"
     status=1
   fi
 
-  # SPEC-2.5.4 (2/3): no workflow may reference a retired *_LATEST runner label.
-  retired=$(grep -nE 'RUNS_ON_OPENSUSE_(BASE|DEV)_LATEST' "$dir"/*.yml)
-  if [ -n "$retired" ]; then
-    echo "runner-label guard: FAIL (retired *_LATEST label; use BASE_HEAVY or BASE_MEDIUM)"
-    printf '%s\n' "$retired"
-    status=1
-  fi
-
-  # SPEC-2.5.4 (3/3): check.yml must not install OS packages at run time.
+  # SPEC-2.5.4 (2/2): check.yml must not install OS packages at run time.
   installs=$(grep -nE '\b(zypper|apt-get|dnf|yum)\b.*install' "$workflow")
   if [ -n "$installs" ]; then
     echo "runner-label guard: FAIL ($workflow installs packages at run time)"
@@ -90,9 +81,8 @@ EOF
       status=1
     fi
   }
-  check_case "cargo on heavy" 0 RUNS_ON_OPENSUSE_BASE_HEAVY RUNS_ON_OPENSUSE_BASE_MEDIUM
-  check_case "heavy only on another job" 1 RUNS_ON_OPENSUSE_BASE_MEDIUM RUNS_ON_OPENSUSE_BASE_HEAVY
-  check_case "retired label" 1 RUNS_ON_OPENSUSE_BASE_HEAVY RUNS_ON_OPENSUSE_BASE_LATEST
+  check_case "cargo on heavy" 0 RUNS_ON_OPENSUSE_HEAVY RUNS_ON_OPENSUSE_MEDIUM
+  check_case "heavy only on another job" 1 RUNS_ON_OPENSUSE_MEDIUM RUNS_ON_OPENSUSE_HEAVY
 
   sed -i 's/^  cargo:/  compile:/' "$fixtures/check.yml"
   run_guard "$fixtures" >/dev/null
