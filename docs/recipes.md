@@ -52,7 +52,7 @@ The broad ones:
 
 | Recipe | What it does |
 | --- | --- |
-| `just check` | Everything below except `check-docker`, `check-link-preview`, `check-types-pin-strict` and `check-csp-host-derived-origin`. |
+| `just check` | Everything below except `check-docker`, `check-link-preview`, `check-types-pin-strict`, `check-csp-host-derived-origin` and `check-oci-runtime`. |
 | `just check-web` | `cargo clippy --all-targets --target wasm32-unknown-unknown -- -D warnings`. |
 | `just check-desktop` | Type-check the native desktop build. |
 | `just check-clippy` | `cargo clippy --all-targets -- -D warnings` on the host target. |
@@ -102,6 +102,7 @@ here instead:
 | `check-loading-recipe.sh` | A busy surface renders the shared `TableLoading`/`DetailSkeleton`, never a hand-rolled "Loading…" string. |
 | `check-no-demo-rows.sh` | A page renders only backend rows; a failed fetch never falls back to seeded demo rows. |
 | `check-nu-interpolation.sh` | An unescaped `(` inside a Nushell interpolated string is caught before it runs as a subexpression. |
+| `check-oci-runtime.sh` | The image boots and serves the runtime-config shim as `appuser` and as a `--user 10000:10000` override, and an unwritable runtime dir exits non-zero at start. |
 | `check-page-width.sh` | The page-width cap lives on the page component, never back on `AppShell`. |
 | `check-per-page-cap.sh` | No call site requests a page size at or above the server's `per_page` cap. |
 | `check-prose-layer.sh` | The Markdown prose corrections stay in a cascade layer that outranks the typography plugin. |
@@ -114,7 +115,7 @@ here instead:
 | `check-theme-tokens.sh` | Components use the semantic theme token utilities, never hardcoded neutral or brand colours. |
 | `check-types-pin.sh` | The `mokosh-types` git pin does not silently drift behind the server's default branch. |
 
-Four are deliberately outside `just check`:
+Five are deliberately outside `just check`:
 
 - `just check-docker` builds the production image, and the check runner has no
   Docker.
@@ -122,6 +123,9 @@ Four are deliberately outside `just check`:
   container and fetches the result with `curl`, for the same reason.
 - `just check-csp-host-derived-origin` runs the real entrypoint and Caddyfile
   in a container and asserts the CSP against a live request, for the same
+  reason.
+- `just check-oci-runtime` runs the real entrypoint and Caddyfile in a
+  container and asserts the runtime-config shim's boot behaviour, for the same
   reason.
 - `just check-types-pin-strict` treats any lock move on mokosh-server as a
   finding, where `check-types-pin` narrows that to moves that actually change
