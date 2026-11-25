@@ -9,7 +9,7 @@ use dioxus::prelude::*;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, ConfirmDialog, DataTable,
-    ErrorBanner, IconSize, Input, MailIcon, PageHeader, Select, SelectOption, Table, TableBody,
+    BannerTone, ErrorBanner, IconSize, Input, MailIcon, PageHeader, Select, SelectOption, StatusBanner, Table, TableBody,
     TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::hooks::auth::use_auth;
@@ -82,6 +82,8 @@ pub fn InvitationsPage() -> Element {
     let is_org_tenant = auth.read().is_org_tenant();
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Non-fatal: invite saved but the mail dispatch failed.
+    let mut warning = use_signal(String::new);
     // PMS-518: per-field inline error slot for the email field, fed by the
     // FormGuard in handle_invite. The form-level `error` banner is kept for the
     // server send failure, which has no single field to attach to.
@@ -200,6 +202,7 @@ pub fn InvitationsPage() -> Element {
         let team_v: Option<uuid::Uuid> = team_id.read().trim().parse::<uuid::Uuid>().ok();
         is_submitting.set(true);
         error.set(String::new());
+        warning.set(String::new());
         spawn(async move {
             #[cfg(feature = "app")]
             {
@@ -211,12 +214,17 @@ pub fn InvitationsPage() -> Element {
                 struct Created {
                     #[allow(dead_code)]
                     id: uuid::Uuid,
+                    #[serde(default)]
+                    mail_sent: Option<bool>,
                 }
                 // SPEC-6.7.12: send the invitation.
                 match crate::hooks::fetch::api::post_authed::<Created, _>("/invitations", &body)
                     .await
                 {
-                    Ok(_) => {
+                    Ok(created) => {
+                        if mail_failed(created.mail_sent) {
+                            warning.set(MAIL_NOT_SENT_WARNING.to_string());
+                        }
                         email.set(String::new());
                         invites.restart();
                     }
@@ -297,6 +305,9 @@ pub fn InvitationsPage() -> Element {
             form { class: "space-y-4", onsubmit: handle_invite,
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
+                }
+                if !warning.read().is_empty() {
+                    StatusBanner { tone: BannerTone::Warning, "{warning.read()}" }
                 }
                 div {
                     class: if is_org_tenant { "grid grid-cols-1 gap-4 sm:grid-cols-3 sm:items-end" } else { "grid grid-cols-1 gap-4 sm:grid-cols-2 sm:items-end" },
@@ -491,5 +502,24 @@ pub fn InvitationsPage() -> Element {
                 }
             }
         }
+    }
+}
+
+const MAIL_NOT_SENT_WARNING: &str = "Invitation created, but the email could not be sent; share the link manually or check the mail relay";
+
+/// Only an explicit `false` warns; `None` (older server) and `Some(true)` keep the plain success path.
+fn mail_failed(mail_sent: Option<bool>) -> bool {
+    mail_sent == Some(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mail_sent_cases() {
+        assert!(mail_failed(Some(false)));
+        assert!(!mail_failed(Some(true)));
+        assert!(!mail_failed(None));
     }
 }
