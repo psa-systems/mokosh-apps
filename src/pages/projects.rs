@@ -438,6 +438,12 @@ fn remaining_hours(budget_hours: Option<f64>, logged: f64) -> Option<f64> {
     budget_hours.map(|b| b - logged)
 }
 
+/// Money left on the budget, or `None` with no budget to subtract from.
+/// Same contract as `remaining_hours`, for the Budget card's money figure.
+fn remaining_money(budget: Option<f64>, spent: f64) -> Option<f64> {
+    budget.map(|b| b - spent)
+}
+
 /// MAPPS-1227: whether the list is narrowed by a search or a status, which is
 /// what decides between "no projects yet" and "nothing matches".
 fn filters_active(search: &str, status: &str) -> bool {
@@ -1641,8 +1647,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                 );
                 let spent = p.actual_amount.unwrap_or(0.0);
                 let budget = p.budget_amount.unwrap_or(0.0);
-                // SPEC-13.12.4: remaining budget, absent amounts count as zero
-                let remaining = budget - spent;
+                // SPEC-13.12.4: remaining budget, absent when no budget is set
+                let remaining = remaining_money(p.budget_amount, spent);
                 let util = if budget > 0.0 {
                     ((spent / budget) * 100.0).clamp(0.0, 100.0).round() as u32
                 } else {
@@ -1791,7 +1797,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     }
                                     div { class: "flex justify-between",
                                         span { class: "text-sm text-muted", "Remaining" }
-                                        span { class: "font-medium", "{format_money_f64(Some(remaining))}" }
+                                        span { class: "font-medium", "{format_money_f64(remaining)}" }
                                     }
                                     div { class: "w-full bg-surface-2 rounded-full h-2 mt-2",
                                         div { class: "bg-green-600 h-2 rounded-full", style: "width: {util}%" }
@@ -3199,7 +3205,10 @@ mod mapps1038_company_tests {
 /// only runs under `app` with a DOM, so it is pinned as source.
 #[cfg(test)]
 mod mapps1227_tests {
-    use super::{filters_active, remaining_hours, task_status_badge_prefer, RemoteTaskStatus};
+    use super::{
+        filters_active, remaining_hours, remaining_money, task_status_badge_prefer,
+        RemoteTaskStatus,
+    };
     use crate::components::BadgeVariant;
 
     fn code() -> String {
@@ -3290,6 +3299,17 @@ mod mapps1227_tests {
         assert_eq!(remaining_hours(None, 3.5), None);
         assert_eq!(remaining_hours(Some(10.0), 3.5), Some(6.5));
         assert!(code().contains("let remaining_h = remaining_hours(p.budget_hours, logged_h);"));
+    }
+
+    /// The Budget card's money Remaining had the same shape as Finding 5
+    /// (hours) but was not converted. No budget set with amounts already
+    /// logged against the project must not show a negative Remaining.
+    #[test]
+    fn no_money_budget_has_no_remaining() {
+        assert_eq!(remaining_money(None, 500.0), None);
+        assert_eq!(remaining_money(Some(1000.0), 500.0), Some(500.0));
+        assert!(code().contains("let remaining = remaining_money(p.budget_amount, spent);"));
+        assert!(code().contains("format_money_f64(remaining)"));
     }
 
     /// Finding 6: a failed task or history load read "No tasks yet." / "No
