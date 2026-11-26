@@ -579,16 +579,21 @@ fn attribution_parts(
 /// shared banner instead.
 /// Route a 422's field errors between the template-variable rows and the
 /// template-variables banner (SPEC-12.5.3). Returns the updated row slots and
-/// the messages for the banner. A `template_variables` error that names an
-/// existing row lands in that row's slot; one that names no row (or an index
-/// past the end) goes to the banner. Any other field error, `title` or `slug`
-/// say, belongs to neither: the form's top banner already shows it through
+/// the messages for the banner. The server's index names a row in the
+/// filtered array actually POSTed (blank rows dropped before send), so it is
+/// translated through `posted_index_map` (POSTed index -> UI row index)
+/// before indexing into `row_errors`, which is keyed by UI row.
+/// A translated index that lands on an existing row gets that row's slot;
+/// one with no corresponding UI row (map empty, or index out of its bounds)
+/// goes to the banner. Any other field error, `title` or `slug` say, belongs
+/// to neither: the form's top banner already shows it through
 /// `ApiError::user_message`, and repeating it under Template variables put a
 /// title error in the wrong section (MAPPS-1225).
 fn route_template_var_errors(
     fields: &[crate::utils::error::FieldError],
     mut row_errors: Vec<String>,
     row_count: usize,
+    posted_index_map: &[usize],
 ) -> (Vec<String>, Vec<String>) {
     if row_errors.len() < row_count {
         row_errors.resize(row_count, String::new());
@@ -598,7 +603,10 @@ fn route_template_var_errors(
         if !fe.field.starts_with("template_variables") {
             continue;
         }
-        if let Some(slot) = parse_tplvar_index(&fe.field).and_then(|i| row_errors.get_mut(i)) {
+        let ui_slot = parse_tplvar_index(&fe.field)
+            .and_then(|posted_index| posted_index_map.get(posted_index))
+            .and_then(|&ui_index| row_errors.get_mut(ui_index));
+        if let Some(slot) = ui_slot {
             if slot.is_empty() {
                 *slot = fe.message.clone();
             } else {
@@ -3969,38 +3977,43 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         // only shapes the request body.
         let tplvar_rows = template_vars.read().clone();
         let tplvar_allowed = template_var_allowed_raw.read().clone();
-        let template_vars_body: Vec<KbTemplateVariable> = tplvar_rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| {
-                let allowed: Vec<String> = tplvar_allowed
-                    .get(index)
-                    .map(|raw| {
-                        raw.split(',')
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                KbTemplateVariable {
-                    name: row.name.trim().to_string(),
-                    label: row.label.trim().to_string(),
-                    allowed_values: allowed,
-                    default: row
-                        .default
-                        .as_ref()
-                        .map(|d| d.trim().to_string())
-                        .filter(|d| !d.is_empty()),
-                }
-            })
-            .filter(|v| {
-                !(v.name.is_empty()
-                    && v.label.is_empty()
-                    && v.allowed_values.is_empty()
-                    && v.default.is_none())
-            })
-            .collect();
+        // Carry each surviving entry's original UI row index alongside it,
+        // so a 422 naming a POSTed index can be translated back to the UI
+        // row that produced it after blank rows are dropped.
+        let (tplvar_posted_index_map, template_vars_body): (Vec<usize>, Vec<KbTemplateVariable>) =
+            tplvar_rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    let allowed: Vec<String> = tplvar_allowed
+                        .get(index)
+                        .map(|raw| {
+                            raw.split(',')
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let var = KbTemplateVariable {
+                        name: row.name.trim().to_string(),
+                        label: row.label.trim().to_string(),
+                        allowed_values: allowed,
+                        default: row
+                            .default
+                            .as_ref()
+                            .map(|d| d.trim().to_string())
+                            .filter(|d| !d.is_empty()),
+                    };
+                    (index, var)
+                })
+                .filter(|(_, v)| {
+                    !(v.name.is_empty()
+                        && v.label.is_empty()
+                        && v.allowed_values.is_empty()
+                        && v.default.is_none())
+                })
+                .unzip();
         // Clear the per-row slots so a corrected row no longer carries
         // its old 422 message; a fresh set lands below on a new failure.
         let row_count = tplvar_rows.len();
@@ -4087,6 +4100,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                 fields,
                                 template_var_errors.read().clone(),
                                 row_count,
+                                &tplvar_posted_index_map,
                             );
                             template_var_errors.set(row_errors);
                             if !banner.is_empty() {
@@ -6690,7 +6704,7 @@ mod mapps1225_error_visibility_tests {
             fe("template_variables[9].name", "Row nine is gone"),
             fe("template_variables", "Too many variables"),
         ];
-        let (rows, banner) = route_template_var_errors(&fields, Vec::new(), 2);
+        let (rows, banner) = route_template_var_errors(&fields, Vec::new(), 2, &[0, 1]);
         assert_eq!(rows, vec![String::new(), "Name is required".to_string()]);
         assert_eq!(
             banner,
@@ -6705,9 +6719,39 @@ mod mapps1225_error_visibility_tests {
     #[test]
     fn a_second_error_on_a_row_is_appended_not_replaced() {
         let fields = vec![fe("template_variables.0.name", "Second")];
-        let (rows, banner) = route_template_var_errors(&fields, vec!["First".to_string()], 1);
+        let (rows, banner) = route_template_var_errors(&fields, vec!["First".to_string()], 1, &[0]);
         assert_eq!(rows, vec!["First; Second".to_string()]);
         assert!(banner.is_empty());
+    }
+
+    /// UI row 0 is blank and dropped before send, so UI row 1 (named "x")
+    /// lands at POSTed index 0. A 422 on `template_variables[0]`
+    /// must translate through the map and land in `row_errors[1]`, the UI
+    /// row that produced it, not in `row_errors[0]`, the blank row the user
+    /// never touched.
+    #[test]
+    fn a_posted_index_translates_to_the_ui_row_that_produced_it() {
+        let fields = vec![fe("template_variables[0].name", "Invalid name")];
+        let posted_index_map = vec![1]; // POSTed index 0 came from UI row 1
+        let (rows, banner) = route_template_var_errors(&fields, Vec::new(), 2, &posted_index_map);
+        assert_eq!(rows, vec![String::new(), "Invalid name".to_string()]);
+        assert!(banner.is_empty());
+    }
+
+    /// An index with no corresponding UI row (map empty, or index out of its
+    /// bounds) still falls back to the banner, unchanged from current
+    /// behavior.
+    #[test]
+    fn an_unmapped_posted_index_falls_back_to_the_banner() {
+        let fields = vec![fe("template_variables[0].name", "Orphaned")];
+        let (rows, banner) = route_template_var_errors(&fields, Vec::new(), 1, &[]);
+        assert_eq!(rows, vec![String::new()]);
+        assert_eq!(banner, vec!["Orphaned".to_string()]);
+
+        let fields = vec![fe("template_variables[5].name", "Out of range")];
+        let (rows, banner) = route_template_var_errors(&fields, Vec::new(), 1, &[0]);
+        assert_eq!(rows, vec![String::new()]);
+        assert_eq!(banner, vec!["Out of range".to_string()]);
     }
 
     /// Finding 4: a failed load rendered the "No ticket-driving articles yet"
