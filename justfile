@@ -65,6 +65,12 @@ dev_extra_volumes := "dev-mokosh-apps-target"
 em_dash_paths := "src docs"
 em_dash_en_dash := "true"
 
+# check.yml pins the secrets-scan composite action by a 40-character commit
+# SHA, which Nosey Parker's Generic Secret rule flags; the CI job already
+# suppresses this exact finding via noseyparker_findings_exclude, so the
+# local commit-msg hook's staged-content scan does the same.
+secrets_noseyparker_findings_exclude := "5ea6a266e38a359ff88be14c9235d517260ad043"
+
 # SPEC-1.8.13: shared recipes from the common submodule.
 import 'common/common.just'
 
