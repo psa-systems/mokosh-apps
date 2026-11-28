@@ -11,9 +11,9 @@
 # guard scripts the CI-parity guard pins to it. The two justfile guards the
 # reusable workflow would have contributed run below instead.
 #
-# The split: `cargo` on BASE_HEAVY compiles fmt / clippy / wasm / desktop
+# The split: `cargo` on HEAVY compiles fmt / clippy / wasm / desktop
 # / unit tests / cargo-audit (the dev image's C toolchain is the only
-# reason this needs HEAVY). `guards` on BASE_MEDIUM runs every bash /
+# reason this needs HEAVY). `guards` on MEDIUM runs every bash /
 # nu / just guard plus the doc-link + config-docs + CI-parity checks
 # (no compiler involved, no reason to hold a scarce HEAVY slot).
 # `secrets` keeps its own base-medium job unchanged.
@@ -22,7 +22,7 @@
 # `run:` blocks in THIS file (not per-job), so splitting is safe for
 # that guard: every command still appears in some job's run block.
 # check-runner-labels.sh requires the `cargo` job itself to run on
-# BASE_HEAVY, so renaming that job, or moving the compile to another job,
+# HEAVY, so renaming that job, or moving the compile to another job,
 # means updating the guard too.
 name: Check
 
@@ -251,10 +251,10 @@ jobs:
     # the lockfile, and the base image ships cargo for it (as
     # types-pin-drift.yml relies on too). The dev image's compile
     # toolchain would sit idle, so take a base-medium slot and leave
-    # BASE_HEAVY for the cargo job above.
+    # HEAVY for the cargo job above.
     #
     # check-runner-labels.sh validates that the `cargo` job runs on
-    # BASE_HEAVY and that no job installs OS packages at run time.
+    # HEAVY and that no job installs OS packages at run time.
     runs-on: ${{ vars.RUNS_ON_OPENSUSE_MEDIUM }}
 
     # Backstop, not a target. The guard set is ~38 shell/nu/just
