@@ -20,7 +20,7 @@ Click New article from the index, or Edit from an article the signed-in user has
 
 The editor is split: markdown source on the left, rendered preview on the right. Formatting is markdown; code blocks support syntax highlighting; images are attached by paste or by the Attach image button. A deployment that caps attachment size (see the knowledge-base attachment variable in `Configuration`) rejects an oversize file in the client, before the upload.
 
-The markdown source field supports `Cmd+B`/`Ctrl+B` for Bold, `Cmd+I`/`Ctrl+I` for Italic, and `Cmd+K`/`Ctrl+K` for Link, matching the formatting toolbar above it. These shortcuts work only in this field, not elsewhere in the app.
+The markdown source field supports `Cmd+B`/`Ctrl+B` for Bold, `Cmd+I`/`Ctrl+I` for Italic, and `Cmd+K`/`Ctrl+K` for Link, matching the formatting toolbar above it. The same shortcuts work in every markdown field that uses this editor, including the ticket description and contact notes fields.
 
 Save as Draft or Publish. A draft is visible only to the editing user and anyone the tenant configures as a reviewer. A published article is visible per its visibility setting.
 
